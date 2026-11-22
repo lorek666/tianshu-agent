@@ -14,6 +14,7 @@ from .conversation import QUESTION_INSTRUCTION
 from .errors import TianshuError
 
 RUN_MISSION = "run.mission"
+RUN_MISSION_PENDING = "run.mission_pending"
 TASK_KINDS = ("general", "coding", "research", "project_ops", "summarize")
 RENDERER_VERSION = "mission-input-v1"
 SYSTEM_PROMPT = (
@@ -65,6 +66,11 @@ MISSION_EVENT_SCHEMA = _object({
     "messages_digest": _SHA, "messages_ref": _REF,
     "material_storage": {"type": "string", "enum": ["blob", "inline"]},
     "effective_tools": {"type": "array", "items": TOOL_IDENTITY_SCHEMA},
+})
+PENDING_MISSION_EVENT_SCHEMA = _object({
+    **copy.deepcopy(MISSION_EVENT_SCHEMA["properties"]),
+    "selected_servers": {"type": "array", "items": _TEXT},
+    "requested_tools": {"type": ["array", "null"], "items": _TEXT},
 })
 
 
@@ -154,12 +160,22 @@ class MissionSpecV1:
         return self.to_dict()["tool_allowlist"]
 
 
-def tool_identity(spec) -> dict[str, str]:
+def tool_identity(spec, registry=None) -> dict[str, str]:
     from .tools import description_digest, schema_digest
 
-    return {"tool_id": spec.tool_id, "version": spec.version,
+    binding = registry.mcp_binding(spec.tool_id) if registry is not None else None
+    version = (
+        binding.semantic_tool_version
+        if binding is not None and binding.semantic_tool_version else spec.version
+    )
+    return {"tool_id": spec.tool_id, "version": version,
             "schema_hash": schema_digest(spec.input_schema),
             "description_hash": description_digest(spec.description)}
+
+
+def _matches_identity(spec, identity, registry) -> bool:
+    # 原含 generation 的快照仍须精确匹配；不把旧记录改写为语义版本。
+    return identity in (tool_identity(spec), tool_identity(spec, registry))
 
 
 def _criteria(values):
@@ -212,7 +228,7 @@ def _make_mission(task_id, goal_revision, user_goal, *, registry, task_kind, cri
         "profile": {"id": task_kind, "version": "1.0",
                     "digest": _digest(_METHODS[task_kind].encode())},
         "criteria": _criteria(criteria),
-        "tool_allowlist": [tool_identity(registry.spec(row["name"]))
+        "tool_allowlist": [tool_identity(registry.spec(row["name"]), registry)
                            for row in registry.manifest() if row["name"] in candidates],
         "prompt": {"template_id": "tianshu-general", "version": "1.0",
                    "digest": template_digest, "content_ref": "content://sha256:" + template_digest},
@@ -278,15 +294,33 @@ def validate_snapshot(value) -> MissionSpecV1:
     return mission
 
 
-def _snapshot(log, run_id: str, events=None):
+def validate_pending_snapshot(value) -> MissionSpecV1:
+    _check(PENDING_MISSION_EVENT_SCHEMA, value, "Mission 待发现输入")
+    for key in ("selected_servers", "requested_tools"):
+        values = value[key]
+        if values is not None and (
+            any(not item for item in values) or len(values) != len(set(values))
+        ):
+            raise TianshuError("Mission 待发现范围必须非空且不重复")
+    if not value["selected_servers"]:
+        raise TianshuError("Mission 待发现输入必须明确选择 MCP server")
+    return validate_snapshot({
+        key: value[key] for key in MISSION_EVENT_SCHEMA["properties"]
+    })
+
+
+def _snapshot(log, run_id: str, events=None, *, pending=False):
     events = log.read_run(run_id) if events is None else events
-    facts = [e for e in events if e.type == RUN_MISSION]
+    event_type = RUN_MISSION_PENDING if pending else RUN_MISSION
+    facts = [e for e in events if e.type == event_type]
     if not facts:
         return None
     if len(facts) != 1 or not events or events[0].type != "run.start":
         raise TianshuError("Mission 快照必须唯一并绑定 run.start")
     event, start = facts[0], events[0]
-    mission = validate_snapshot(event.payload)
+    mission = (
+        validate_pending_snapshot(event.payload) if pending else validate_snapshot(event.payload)
+    )
     if (event.actor_kind != "core" or event.seq <= start.seq
             or mission.task_id != start.task_id
             or mission.goal_revision != start.payload["goal_revision"]
@@ -317,6 +351,133 @@ def mission_messages(log, run_id: str, *, events=None) -> list[dict[str, Any]] |
     return copy.deepcopy(fact[0]["messages"]) if fact else None
 
 
+def pending_mission_for(log, run_id: str, *, events=None):
+    fact = _snapshot(log, run_id, events, pending=True)
+    return copy.deepcopy(fact[0]) if fact else None
+
+
+def assert_pending_configuration(pending, *, mission=None, task_kind="general",
+                                 criteria=(), tool_ids=None) -> None:
+    seed = MissionSpecV1.of(pending["mission"])
+    if (
+        mission is not None or task_kind != seed.task_kind or _criteria(criteria) != seed.criteria
+        or (None if tool_ids is None else list(tool_ids)) != pending["requested_tools"]
+    ):
+        raise TianshuError("request_id 与已有 Mission 待发现配置不一致")
+
+
+def _input_payload(log, mission, messages, *, template_content=SYSTEM_PROMPT):
+    messages_ref = _store(log, _bytes(messages))
+    _store(log, template_content.encode())
+    return {
+        "format_version": 1, "mission": mission.to_dict(), "mission_digest": mission.digest,
+        "renderer_version": RENDERER_VERSION, "template_content": template_content,
+        "messages": messages, "messages_digest": _digest(_bytes(messages)),
+        "messages_ref": messages_ref,
+        "material_storage": "blob" if log.blob_dir is not None else "inline",
+        "effective_tools": [],
+    }
+
+
+def prepare_run_mission(
+    log, run_id: str, *, registry, selected_servers=(), mission=None,
+    task_kind="general", criteria=(), tool_ids=None,
+) -> MissionSpecV1:
+    """保存新 Run 输入；共享 Mission 或无 MCP 的 Run 仍立即固定。"""
+    from .conversation import checked_conversation
+    from .run_policy import EFFECTS, RunExecutionPolicyV1
+    from .task_attachments import attachments_fact
+    from .tool_registry import tool_id_for_server
+    from .workflow import workflow_for
+
+    events = log.read_run(run_id)
+    if (mission is not None or not selected_servers
+            or RunExecutionPolicyV1.of(events[0].payload["execution_policy"]) != EFFECTS):
+        return freeze_mission(
+            log, run_id, mission=mission, registry=registry, task_kind=task_kind,
+            criteria=criteria, tool_ids=tool_ids,
+        )
+    selected = list(dict.fromkeys(selected_servers))
+    with log.transaction() as tx:
+        if _snapshot(log, run_id, events) or _snapshot(log, run_id, events, pending=True):
+            raise TianshuError("Mission 输入已经保存")
+        start = events[0]
+        row = log.conn.execute(
+            "SELECT goal,goal_revision FROM tasks WHERE task_id=?", (start.task_id,),
+        ).fetchone()
+        if row is None:
+            raise TianshuError("Mission Task 投影缺失")
+        seed = _make_mission(
+            start.task_id, row["goal_revision"], row["goal"], registry=registry,
+            task_kind=task_kind, criteria=criteria, tool_ids=None,
+        ).to_dict()
+        known = {
+            tool["tool_id"]: tool for tool in seed["tool_allowlist"]
+            if (binding := registry.mcp_binding(tool["tool_id"])) is None
+            or binding.server in selected
+        }
+        if tool_ids is not None:
+            if (not isinstance(tool_ids, (list, tuple))
+                    or any(not isinstance(item, str) for item in tool_ids)
+                    or len(tool_ids) != len(set(tool_ids))
+                    or any(
+                        item not in known and not any(
+                            item.startswith(tool_id_for_server(server, "")) for server in selected
+                        ) for item in tool_ids
+                    )):
+                raise TianshuError("Mission 工具必须属于固定候选或明确选择的 MCP server")
+        seed["tool_allowlist"] = list(known.values())
+        seed = MissionSpecV1.of(seed)
+        messages = compile_initial_messages(
+            start.payload.get("task", seed.user_goal), start.payload.get("out") or None,
+            conversation=checked_conversation(log, events), attachments=attachments_fact(events),
+            workflow=workflow_for(log, run_id, events=events), mission=seed,
+        )
+        payload = _input_payload(log, seed, messages, template_content=SYSTEM_PROMPT)
+        payload.update(
+            selected_servers=selected,
+            requested_tools=None if tool_ids is None else list(tool_ids),
+        )
+        validate_pending_snapshot(payload)
+        tx.append(run_id, RUN_MISSION_PENDING, payload, task_id=start.task_id, actor_kind="core")
+        return seed
+
+
+def _resolve_pending(pending, registry) -> MissionSpecV1:
+    seed = MissionSpecV1.of(pending["mission"])
+    known = {tool["tool_id"]: tool for tool in seed.tool_allowlist}
+    candidates = _make_mission(
+        seed.task_id, seed.goal_revision, seed.user_goal, registry=registry,
+        task_kind=seed.task_kind, criteria=seed.criteria, tool_ids=None,
+    )
+    requested = pending["requested_tools"]
+    resolved = []
+    for tool in candidates.tool_allowlist:
+        tool_id = tool["tool_id"]
+        if requested is not None and tool_id not in requested:
+            continue
+        if tool_id in known:
+            if tool == known[tool_id]:
+                resolved.append(tool)
+        else:
+            binding = registry.mcp_binding(tool_id)
+            if binding is not None and binding.server in pending["selected_servers"]:
+                resolved.append(tool)
+    value = seed.to_dict()
+    value["tool_allowlist"] = resolved
+    if resolved != seed.tool_allowlist:
+        value["mission_id"] = "mission_" + uuid.uuid4().hex
+    return MissionSpecV1.of(value)
+
+
+def finalize_pending_mission(log, run_id: str, *, registry) -> MissionSpecV1 | None:
+    """发现完成后只固定一次；已固定快照和历史 Run 不被重算。"""
+    current = mission_for(log, run_id)
+    if current is not None or pending_mission_for(log, run_id) is None:
+        return current
+    return freeze_mission(log, run_id, registry=registry)
+
+
 def freeze_mission(
     log, run_id: str, *, mission: MissionSpecV1 | dict | None = None, registry=None,
     task_kind: str = "general", criteria=(), tool_ids=None,
@@ -325,7 +486,7 @@ def freeze_mission(
     from .conversation import checked_conversation
     from .run_policy import PURE_ONLY, RunExecutionPolicyV1
     from .task_attachments import attachments_fact
-    from .tool_registry import current_registry
+    from .tool_registry import current_registry, tool_id_for_server
     from .workflow import workflow_for
 
     registry = registry if registry is not None else current_registry()
@@ -333,6 +494,7 @@ def freeze_mission(
         raise TianshuError("Mission 必须是版本化使命对象")
     if isinstance(mission, dict):
         mission = MissionSpecV1.of(mission)
+    shared = mission is not None
     if mission is not None:
         mission = MissionSpecV1.of(mission.to_dict())
     with log.transaction() as tx:
@@ -352,24 +514,32 @@ def freeze_mission(
                 e.type == "model.intent" for e in events):
             raise TianshuError("Mission 必须在新 Run 首次模型调用前固定")
         start = events[0]
+        pending = pending_mission_for(log, run_id, events=events)
+        if pending is not None:
+            if mission is not None:
+                raise TianshuError("不能替换已有 Mission 待发现输入")
+            mission = _resolve_pending(pending, registry)
         # 不创建存储或修改投影；复用当前数据库已存在的 Task 行。
-        row = log.conn.execute("SELECT goal,goal_revision FROM tasks WHERE task_id=?",
-                               (start.task_id,)).fetchone()
-        if row is None:
+        task_row = log.conn.execute(
+            "SELECT goal,goal_revision,mcp_servers FROM tasks WHERE task_id=?",
+            (start.task_id,),
+        ).fetchone()
+        if task_row is None:
             raise TianshuError("Mission Task 投影缺失")
         if mission is None:
             mission = _make_mission(
-                start.task_id, row["goal_revision"], row["goal"], registry=registry,
+                start.task_id, task_row["goal_revision"], task_row["goal"], registry=registry,
                 task_kind=task_kind, criteria=criteria, tool_ids=tool_ids,
             )
         if (mission.task_id != start.task_id
                 or mission.goal_revision != start.payload["goal_revision"]
-                or mission.goal_revision != row["goal_revision"]
-                or mission.user_goal != row["goal"]):
+                or mission.goal_revision != task_row["goal_revision"]
+                or mission.user_goal != task_row["goal"]):
             raise TianshuError("Mission 目标或任务修订绑定已改变")
-        if mission.to_dict()["prompt"]["digest"] != _digest(SYSTEM_PROMPT.encode()):
+        if (pending is None
+                and mission.to_dict()["prompt"]["digest"] != _digest(SYSTEM_PROMPT.encode())):
             raise TianshuError("当前编译器无法新建此 Mission 模板的 Run，请使用原模板版本")
-        if mission.to_dict()["profile"] != {
+        if pending is None and mission.to_dict()["profile"] != {
             "id": mission.task_kind, "version": "1.0",
             "digest": _digest(_METHODS[mission.task_kind].encode()),
         }:
@@ -381,28 +551,35 @@ def freeze_mission(
                 if (prior.payload["mission"]["mission_id"] == mission.mission_id
                         and prior.payload["mission_digest"] != mission.digest):
                     raise TianshuError("Mission 身份已绑定另一份内容；必须建立新修订")
-        messages = compile_initial_messages(
+        messages = copy.deepcopy(pending["messages"]) if pending else compile_initial_messages(
             start.payload.get("task", mission.user_goal), start.payload.get("out") or None,
             conversation=checked_conversation(log, events), attachments=attachments_fact(events),
             workflow=workflow_for(log, run_id, events=events), mission=mission,
         )
         policy = RunExecutionPolicyV1.of(start.payload["execution_policy"])
         selected = start.payload.get("tools")
-        tools = [tool for tool in mission.tool_allowlist
-                 if (selected is None or tool["tool_id"] in selected)
-                 and (spec := registry.spec(tool["tool_id"])) is not None and spec.exposed
-                 and tool_identity(spec) == tool
-                 and (policy != PURE_ONLY or spec.side_effect_level == "pure")]
-        messages_ref = _store(log, _bytes(messages))
-        _store(log, SYSTEM_PROMPT.encode())
-        payload = {
-            "format_version": 1, "mission": mission.to_dict(), "mission_digest": mission.digest,
-            "renderer_version": RENDERER_VERSION, "template_content": SYSTEM_PROMPT,
-            "messages": messages, "messages_digest": _digest(_bytes(messages)),
-            "messages_ref": messages_ref,
-            "material_storage": "blob" if log.blob_dir is not None else "inline",
-            "effective_tools": tools,
-        }
+        servers = json.loads(task_row["mcp_servers"] or "[]")
+        tools = []
+        for tool in mission.tool_allowlist:
+            tool_id = tool["tool_id"]
+            if selected is not None and tool_id not in selected:
+                continue
+            spec = registry.spec(tool_id)
+            if spec is None:
+                # 共享使命允许离线候选留在上限；真实路由仍须精确注册身份。
+                if (shared and policy != PURE_ONLY
+                        and mission.task_kind not in ("research", "summarize")
+                        and any(tool_id.startswith(tool_id_for_server(server, ""))
+                                for server in servers)):
+                    tools.append(tool)
+            elif (spec.exposed and _matches_identity(spec, tool, registry)
+                  and (policy != PURE_ONLY or spec.side_effect_level == "pure")):
+                tools.append(tool)
+        payload = _input_payload(
+            log, mission, messages,
+            template_content=pending["template_content"] if pending else SYSTEM_PROMPT,
+        )
+        payload["effective_tools"] = tools
         validate_snapshot(payload)
         tx.append(run_id, RUN_MISSION, payload, task_id=start.task_id, actor_kind="core")
         return mission
@@ -412,8 +589,8 @@ def effective_manifest(log, run_id: str, registry, manifest) -> list[dict[str, A
     """固定使命 ∩ 固定注册身份 ∩ 调用方已过滤的 Run 资格；不是授权。"""
     fact = _snapshot(log, run_id)
     if fact is None:
-        return manifest
+        return [] if pending_mission_for(log, run_id) is not None else manifest
     fixed = {t["tool_id"]: t for t in fact[0]["effective_tools"]}
     return [row for row in manifest if row["name"] in fixed
             and (spec := registry.spec(row["name"])) is not None
-            and spec.exposed and tool_identity(spec) == fixed[row["name"]]]
+            and spec.exposed and _matches_identity(spec, fixed[row["name"]], registry)]

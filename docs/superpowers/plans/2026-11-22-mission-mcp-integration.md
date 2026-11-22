@@ -32,7 +32,7 @@
 
 **Interfaces:** 契约规定 pending 保存初始输入、已知工具身份及选中 server；最终 Mission 在首次模型 intent 前唯一固定。
 
-- [ ] 独立提交 `docs(contract):`，写清旧方案、新方案、理由和影响模块。
+- [x] 独立提交 `docs(contract):`，写清旧方案、新方案、理由和影响模块。
 
 ### Task 2: Separate semantic routing identity
 
@@ -40,8 +40,8 @@
 
 **Interfaces:** `McpToolBinding.semantic_tool_version`；Mission 的 `tool_identity(spec, registry=None)` 使用稳定版本；执行 `ToolSpec.version` 不变。
 
-- [ ] 写跨 generation 相同 schema 及 schema 漂移回归，运行并观察真实红。
-- [ ] 最小实现并运行同组测试转绿。
+- [x] 写跨 generation 相同 schema 及 schema 漂移回归，运行并观察真实红。
+- [x] 最小实现并运行同组测试转绿。
 
 ### Task 3: Finalize pending Mission after discovery
 
@@ -49,8 +49,8 @@
 
 **Interfaces:** `prepare_run_mission(...)` 保存 pending 或立即冻结；`finalize_pending_mission(...)` 在发现后幂等冻结；`pending_mission_for(...)` 校验重试配置。
 
-- [ ] 写 direct/queued 真实 stdio 发现、事务外探针及 request_id 冲突红测。
-- [ ] 写共享 Mission、不选中 server、显式 tool_ids、profile、已知漂移及冻结恢复回归。
-- [ ] 实现 pending 的封闭契约、事件注册与入口接缝，确认全组转绿。
-- [ ] 同步知识库能力边界与独立 changelog。
+- [x] 写 direct/queued 真实 stdio 发现、事务外探针及 request_id 冲突红测。
+- [x] 写共享 Mission、不选中 server、显式 tool_ids、profile、已知漂移及冻结恢复回归。
+- [x] 实现 pending 的封闭契约、事件注册与入口接缝，确认定向组转绿。
+- [x] 同步知识库能力边界与独立 changelog。
 - [ ] 运行 Mission、MCP、执行准入、事件、控制面和工作流域回归及 Ruff/lock/diff；完整候选的全量与独立复审由 root 执行。

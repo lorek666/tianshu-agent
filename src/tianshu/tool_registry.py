@@ -99,6 +99,7 @@ class McpToolBinding:
     narrowed: tuple[str, ...] = ()
     remote_identity: str = ""
     server_generation: str = ""
+    semantic_tool_version: str = ""
 
     @property
     def uri(self) -> str:
@@ -206,6 +207,7 @@ def _admit_one(
     remote_identity: str = "",
     remote_url: str = "",
     server_generation: str = "",
+    semantic_remote_identity: str = "",
 ) -> AdmittedMcpTool | None:
     """把一个发现到的工具归一/绑定成 `ToolSpec`；任何一步不成立就记拒绝原因。"""
     from .tools import ToolSpec, description_digest, schema_digest
@@ -264,6 +266,11 @@ def _admit_one(
         narrowed=narrowed,
         remote_identity=remote_identity,
         server_generation=server_generation,
+        semantic_tool_version=tool_version_for(
+            server=server, tool=tool.name,
+            raw_schema=tool.raw.get("inputSchema", {}), normalized=normalized,
+            description=description, remote_identity=semantic_remote_identity,
+        ),
     )
     spec = ToolSpec(
         tool_id=tool_id,
@@ -352,6 +359,9 @@ def admit_mcp_tools(
         item = _admit_one(server, tool, rejected=rejected,
                           remote_identity=clients.remote_identity(server) if remote_url else "",
                           server_generation=clients.server_generation(server),
+                          semantic_remote_identity=(
+                              remote_url + "\n" + config.bearer_token_env if remote_url else ""
+                          ),
                           remote_url=remote_url)
         if item is None:
             continue

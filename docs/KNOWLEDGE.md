@@ -104,6 +104,14 @@
 
 ## 4. 关键决策（D1–D7）与硬约束
 
+- **Mission 的 MCP 身份与执行 Session 分离（2026-11-22，本地候选）**：
+  Mission 以 schema、描述和稳定 server 身份固定路由；审批、Grant 与 Receipt
+  继续使用含 generation 的执行版本。显式选择 MCP 的新 effects Run 在 claim 后、
+  SQLite 写事务外发现，先保存 `run.mission_pending` 的输入材料，再固定唯一
+  `run.mission`。共享 Mission 的有效工具是冻结上限，实际始终与当前真实注册表
+  精确取交集；不增加候选、不放宽 pure_only、不自动升级已知 schema。
+  见[接缝修复记录](changelog/2026-11-22-mission-mcp-integration.md)。
+
 - **结构封套不冒充发布者信任（2026-11-20）**：最终 macOS App 只执行 `codesign --sign - --timestamp=none`，不 force/deep 签名、不清 xattr、不使用证书或修改 Gatekeeper 策略；已有封套拒绝，其他非 linker 签名由 no-force 原生语义拒绝。只允许主程序与精确新封套变化，原资源/Info.plist/权限不变；原生 strict 验证必须覆盖归档恢复副本。此局部修复不改 C1–C5、T1 成本/信任政策、schema、索引 `signed: false` 或原生启动/数据/凭据验收门禁。静态可选封套兼容不等于生成路径可省略原生检查。
 
 - **本机任务触发（2026-11-21 实现分支）**：间隔沿用原表；日历、目录和本机事件单独持久化，旧程序不会消费。目录仅监听只读工作区中的直属普通文件；事件入口仅接受认证本机客户端提供的任务 ID 和事件 ID。基线或去重记录与入队同事务提交。具体用法、系统时区数据要求及轮询边界见[本机任务触发](changelog/2026-11-21-local-schedule-triggers.md)。
@@ -323,6 +331,14 @@
 
 ## 5. 踩坑教训（别再踩）
 
+- **发现前不能冻结空工具集合（2026-11-22）**：先用旧 registry 写
+  `run.start.tools` 和 Mission，再在首个模型步骤发现 MCP，会让真实工具永久被空
+  交集过滤。新任务需保存输入后再发现、固定；共享 Mission 则保留已确认身份作为
+  上限，在每次实际路由时核对当前 Session 的语义身份。删除执行版本的 generation
+  会使旧审批跨会话复用，不能用这种方式修复路由。真实 stdio/HTTP Session、
+  schema 漂移与旧 generation 快照负控见
+  [本轮记录](changelog/2026-11-22-mission-mcp-integration.md)。
+
 - **已保存响应不免除运行收尾检查（2026-11-22）**：恢复最终正文时必须与正常路径
   一样经过人工否决和子任务等待；不能以“无需再问模型”为由直接成功。Goal 还必须
   同时拒绝 `partial` 与 `unknown`，前者可能包含已生效操作和未知操作，不能当作
@@ -517,6 +533,13 @@
 - 细节见 [CONTRIBUTING.md](../CONTRIBUTING.md) 与 [AGENTS.md](../AGENTS.md)。
 
 ## 7. 已知限制 / 未决问题
+
+- **Mission / MCP 接缝候选不等于自动隔离交付（2026-11-22）**：
+  pending/frozen 输入和稳定语义版本仅修复路由与发现顺序；受管 stdio 正向测试使用
+  明确的部分边界路径。真实 Seatbelt 脱组后代仍证明 process_tree 边界未 enforced，
+  完整自动四边界组合继续 fail-closed。完整候选的全量、独立第二读者与 hosted CI
+  必须另行绑定，不沿用本分支定向回归。历史无 Mission/pending 的 Run 不补写，
+  已含 generation 的历史身份也不放宽。
 
 - **Agent 主循环 P0 设计草案（2026-11-22，待批准、未实施）**：
   [主循环规格](SPEC-AGENT-LOOP-2026-11-22.md)提出统一 Mission、结构化 Plan、

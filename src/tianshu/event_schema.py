@@ -41,7 +41,7 @@ from .conversation import validate_guidance, validate_turns
 from .errors import TianshuError
 from .execpolicy import ISOLATION_BOUNDARIES, ISOLATION_LEVELS
 from .goal_contracts import GOAL_V2_SCHEMAS
-from .mission import MISSION_EVENT_SCHEMA
+from .mission import MISSION_EVENT_SCHEMA, PENDING_MISSION_EVENT_SCHEMA
 from .model_route import ModelRouteV1
 from .run_policy import RunExecutionPolicyV1
 from .task_attachments import (
@@ -546,6 +546,7 @@ CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
 
     **CONSENT_EVENT_SCHEMAS,
     "run.mission": copy.deepcopy(MISSION_EVENT_SCHEMA),
+    "run.mission_pending": copy.deepcopy(PENDING_MISSION_EVENT_SCHEMA),
     "goal.created": _obj(
         {
             "format_version": {"type": "integer", "const": 1},
@@ -1287,7 +1288,7 @@ V1_ONLY_EVENTS = frozenset({
     "execution.admitted", "execution.ended",
     *CONSENT_EVENT_SCHEMAS,
     *GOAL_V2_SCHEMAS,
-    "run.mission",
+    "run.mission", "run.mission_pending",
     "goal.created", "goal.round_started", "goal.closed",
     "run.attachments", "run.conversation", "run.guidance_applied", "run.guidance_requested",
     "run.model_route", "run.workflow", "run.workflow_request",
@@ -1663,6 +1664,13 @@ def payload_errors(
             validate_snapshot(payload)
         except TianshuError as exc:
             errors.append(f"$：{exc}")
+    if not errors and event_type == "run.mission_pending":
+        from .mission import validate_pending_snapshot
+
+        try:
+            validate_pending_snapshot(payload)
+        except TianshuError as exc:
+            errors.append(f"$：{exc}")
     if not errors and event_type == "run.start" and version == 2:
         try:
             RunExecutionPolicyV1.of(payload["execution_policy"])
@@ -1794,7 +1802,7 @@ def minimal_payload(event_type: str) -> dict[str, Any]:
         payload["attachments"] = normalize_attachments([
             {"name": "x", "media_type": "text/plain", "data_base64": ""},
         ])
-    if event_type == "run.mission":
+    if event_type in ("run.mission", "run.mission_pending"):
         from .mission import (
             SYSTEM_PROMPT,
             MissionSpecV1,
@@ -1816,5 +1824,7 @@ def minimal_payload(event_type: str) -> dict[str, Any]:
             "messages_ref": _content_ref(_bytes(messages)), "material_storage": "inline",
             "effective_tools": [],
         }
+        if event_type == "run.mission_pending":
+            payload.update(selected_servers=["x"], requested_tools=None)
     validate_payload(event_type, payload)
     return payload

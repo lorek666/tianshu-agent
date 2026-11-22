@@ -273,6 +273,10 @@ def test_cancelled_run_sends_no_mcp_frames(tmp_path):
     )
     try:
         task = _task(stack, ws=_ws(tmp_path))
+        # 本例测调用前取消，不把“发现前取消”混作已发现动作的执行证据。
+        from tianshu.run_policy import EFFECTS
+
+        stack.dispatcher.prepare_run(task.task_id, EFFECTS)
         stack.dispatcher._cancel_requested = lambda run_id: True
         engine = engine_for(stack, _script(("mcp__fake__echo", {"message": "hi"})))
         result = _drive(stack, engine, task)
@@ -290,7 +294,7 @@ def test_cancelled_run_sends_no_mcp_frames(tmp_path):
 # ---------------------------------------------------------------- 工具面（c1）
 
 
-def test_manifest_and_run_start_record_mcp_tools(tmp_path):
+def test_manifest_and_frozen_mission_record_mcp_tools(tmp_path):
     _log, stack, clients = _stack(tmp_path)
     try:
         task = _task(stack, ws=_ws(tmp_path))
@@ -304,8 +308,12 @@ def test_manifest_and_run_start_record_mcp_tools(tmp_path):
         start = next(
             e for e in _log.read_run(result.run_id, verify=False) if e.type == "run.start"
         )
-        assert "mcp__fake__echo" in start.payload["tools"]
-        assert "read_text" in start.payload["tools"]
+        assert "tools" not in start.payload
+        frozen = next(
+            e for e in _log.read_run(result.run_id) if e.type == "run.mission"
+        )
+        fixed = {tool["tool_id"] for tool in frozen.payload["effective_tools"]}
+        assert {"mcp__fake__echo", "read_text"} <= fixed
     finally:
         clients.close_all()
 

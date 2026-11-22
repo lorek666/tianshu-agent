@@ -444,7 +444,7 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         """新建一个 Run 并立刻驱动它。"""
         import uuid
 
-        from .mission import freeze_mission, mission_messages
+        from .mission import mission_messages, prepare_run_mission
         from .tool_registry import current_registry
         from .workflow import prepare_workflow
 
@@ -454,7 +454,9 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
                 self._log, snapshots=self._snapshots, memory=self._memory,
                 contents=self._contents, data_root=self._tasks.data_root,
             )
-        self._dispatcher.prepare_run(task_id, execution_policy)
+        self._dispatcher.prepare_run(
+            task_id, execution_policy, discover_mcp=not bool(task.mcp_servers),
+        )
         payload = {
             "task": task.goal,
             "out": out_name or "",
@@ -465,6 +467,8 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
             "tools": [t for t in current_registry().ids() if execution_policy != PURE_ONLY
                       or current_registry().spec(t).side_effect_level == "pure"],
         }
+        if task.mcp_servers and execution_policy != PURE_ONLY:
+            payload.pop("tools")
         with self._log.transaction():
             task = self._task(task_id)
             payload["task"] = task.goal
@@ -475,9 +479,11 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
                 task.task_id, run_id=run_id, payload=payload, execution_policy=execution_policy,
                 workflow=workflow if workflow.source_text else None,
             )
-            freeze_mission(self._log, run.run_id, mission=mission,
-                           registry=self._dispatcher.registry, task_kind=task_kind,
-                           criteria=criteria)
+            prepare_run_mission(
+                self._log, run.run_id, mission=mission,
+                registry=self._dispatcher.registry, selected_servers=task.mcp_servers,
+                task_kind=task_kind, criteria=criteria,
+            )
             job = self._claims.enqueue(run.run_id)
         writable = [b.identity() for b in task.workspaces if b.can_write]
         if execution_policy == PURE_ONLY:
@@ -487,12 +493,32 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         self._tasks.transition(run.run_id, RUN_QUEUED, reason="enqueued")
         claim = self._claims.claim(job.job_id)
         self._tasks.transition(run.run_id, RUN_RUNNING, claim=claim, reason="started")
+        self._finalize_run_mission(run.run_id, claim)
         progress = _fresh_progress(
             task.goal, out_name, workflow=workflow if workflow.source_text else None,
             frozen_messages=mission_messages(self._log, run.run_id),
         )
         self._tasks.save_cursor(run.run_id, progress.to_cursor(), claim)
         return self._drive(run.run_id, claim, progress)
+
+    def _finalize_run_mission(self, run_id: str, claim: JobClaim) -> None:
+        from .mission import finalize_pending_mission, mission_for, pending_mission_for
+
+        events = self._log.read_run(run_id)
+        frozen = mission_for(self._log, run_id, events=events)
+        pending = pending_mission_for(self._log, run_id, events=events)
+        if frozen is None and pending is None:
+            return
+        if frozen is not None and any(e.type == "model.intent" for e in events):
+            return
+        self._claims.assert_claim(claim)
+        try:
+            self._dispatcher.prepare_model_mcp(claim, queued_desktop=True)
+        except DiskAdmissionError:
+            # MCP 被空间门禁阻止时仍固定已保存输入，不将发现变成读取或模型的前提。
+            pass
+        if pending is not None:
+            finalize_pending_mission(self._log, run_id, registry=self._dispatcher.registry)
 
     # ---------------------------------------------------------------- 恢复
 
@@ -564,6 +590,8 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         if run.parent_run_id:
             self._tasks.mark_subtask_running(run_id)
 
+        self._finalize_run_mission(run_id, claim)
+        frozen_messages = mission_messages(self._log, run_id)
         if stored is None:
             # 没有游标（例如 Run 是直接由 TaskStore 开的）：按 run.start 里记的
             # 目标与输出文件名重建首轮提示，不能凭记忆补。

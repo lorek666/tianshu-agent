@@ -1156,17 +1156,23 @@ class _DispatcherExecMixin:
         if discover_mcp and execution_policy != PURE_ONLY and self._mcp_clients is not None:
             self._discover_mcp(remote_names)
 
-    def _discover_mcp(self, remote_names: tuple[str, ...]) -> None:
+    def _discover_mcp(
+        self, remote_names: tuple[str, ...], *, local_names: tuple[str, ...] | None = None,
+    ) -> None:
         from .tool_registry import build_registry, set_registry
 
         if self._mcp_clients is None:
             return
         initialized = not self._mcp_prepared
-        if initialized:
+        local_changed = False
+        if local_names is not None:
+            local_changed = self._mcp_clients.start_selected_locals(local_names)
+            self._mcp_prepared = True
+        elif initialized:
             self._mcp_clients.start_all()
             self._mcp_prepared = True
         remote_changed = bool(remote_names) and self._mcp_clients.start_remotes(remote_names)
-        if initialized or remote_changed:
+        if initialized or remote_changed or local_changed:
             self._registry = build_registry(self._mcp_clients)
             set_registry(self._registry)
 
@@ -1254,7 +1260,7 @@ class _DispatcherExecMixin:
         remotes = tuple(name for name in selected if configs[name].url)
         isolated = bool(task.exec_policy is not None and task.exec_policy.isolation_requires)
         if not remotes and (
-            not queued_desktop and not isolated or self._mcp_prepared or not selected
+            not queued_desktop and not isolated or not selected
         ):
             return
         self._claims.assert_claim(claim)
@@ -1265,7 +1271,7 @@ class _DispatcherExecMixin:
             contents=self._contents, data_root=self._data_root,
         )
         self._tasks.require_effect_space(claim.run_id, targets=(), data_root=self._data_root)
-        self._discover_mcp(remotes)
+        self._discover_mcp(remotes, local_names=selected)
 
     def prepare_pending_mcp(
         self, run_id: str, claim: JobClaim, request_id: str | None,

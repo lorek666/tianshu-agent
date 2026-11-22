@@ -1460,6 +1460,28 @@ class McpClients:
                     changed = True
         return changed
 
+    def start_selected_locals(self, names: tuple[str, ...]) -> bool:
+        """只发现本次明确选择的本地 server；失败或已存在会话绝不自动重启。"""
+        self._started = True
+        changed = False
+        for name in dict.fromkeys(names):
+            config = self._configs.get(name)
+            if (config is None or config.url or name in self._servers
+                    or name in self._failures):
+                continue
+            server = StdioServer(
+                config, default_cwd=self._default_cwd, environ=self._environ,
+                execution_scope=self._execution_scope,
+            )
+            try:
+                server.start()
+            except McpServerUnavailable as exc:
+                self._failures[name] = str(exc)
+                continue
+            self._servers[name] = server
+            changed = True
+        return changed
+
     def remote_identity(self, name: str) -> str:
         config = self._configs.get(name)
         if config is None or not config.url:

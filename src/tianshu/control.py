@@ -861,16 +861,34 @@ class ControlPlane:
                 "request_id": request_id, "requested_source_run_id": source_run_id,
             }
             if prior is not None:
-                from .mission import MissionSpecV1, freeze_mission, mission_for
+                from .mission import (
+                    MissionSpecV1,
+                    assert_pending_configuration,
+                    freeze_mission,
+                    mission_for,
+                    pending_mission_for,
+                )
                 from .model_route import model_route_fact
 
                 prior_events = self._log.read_run(prior.run_id)
                 old_route = model_route_fact(prior_events)
                 old_mission = mission_for(self._log, prior.run_id, events=prior_events)
+                pending = pending_mission_for(self._log, prior.run_id, events=prior_events)
                 requested_mission = params.get("mission")
                 if requested_mission is not None:
                     requested_mission = MissionSpecV1.of(requested_mission)
-                if old_mission is not None:
+                if pending is not None:
+                    try:
+                        assert_pending_configuration(
+                            pending, mission=requested_mission,
+                            task_kind=params.get("task_kind", "general"),
+                            criteria=params.get("criteria", ()), tool_ids=params.get("tool_ids"),
+                        )
+                    except TianshuError as exc:
+                        raise ControlError(
+                            "conflict", "request_id 与已有 Mission 使命不一致",
+                        ) from exc
+                if old_mission is not None and pending is None:
                     try:
                         freeze_mission(
                             self._log, prior.run_id, mission=requested_mission,
@@ -900,7 +918,9 @@ class ControlPlane:
                 )
             elif needs_images and not self._model_slot.supports_image_attachments:
                 raise ControlError("bad_params", "所选模型未开启图片附件能力")
-            self._stack.dispatcher.prepare_run(task_id, execution_policy, discover_remote=False)
+            self._stack.dispatcher.prepare_run(
+                task_id, execution_policy, discover_remote=False, discover_mcp=False,
+            )
             payload = {
                 "task": task.goal,
                 "out": out_name or "",
@@ -910,6 +930,8 @@ class ControlPlane:
                 },
                 "tools": [] if mode == "compact" else _exposed_tool_ids(execution_policy),
             }
+            if mode != "compact" and task.mcp_servers and execution_policy != PURE_ONLY:
+                payload.pop("tools")
             # 旧调用没有续接材料时不产生新事件，保证历史视图与默认路径兼容。
             use_workflow = (
                 mode != "execute" or workflow.source_text
@@ -934,13 +956,14 @@ class ControlPlane:
             if route is not None:
                 tx.append(run.run_id, RUN_MODEL_ROUTE, route.to_payload(),
                           task_id=task_id, actor_kind="core")
-            from .mission import freeze_mission
+            from .mission import prepare_run_mission
 
             if not task.is_control:
-                freeze_mission(
+                prepare_run_mission(
                     self._log, run.run_id, registry=self._stack.dispatcher.registry,
                     mission=params.get("mission"), task_kind=params.get("task_kind", "general"),
                     criteria=params.get("criteria", ()), tool_ids=params.get("tool_ids"),
+                    selected_servers=task.mcp_servers,
                 )
             # 认领者（daemon 驱动线程）负责 created → queued → running。
             self._claims.enqueue(run.run_id)

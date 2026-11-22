@@ -106,6 +106,7 @@ EVENT_TYPES: frozenset[str] = frozenset(
         "run.attachments",
         "run.conversation",
         "run.mission",
+        "run.mission_pending",
         "run.guidance_applied",
         "run.guidance_requested",
         "run.workflow",
