@@ -152,6 +152,11 @@ prompt = {template_id, version, digest, content_ref}
 - Mission 的 MCP 工具版本绑定 schema、描述和稳定服务身份，不包含每次启动的
   Session generation；审批、Grant 和实际执行仍绑定独立 Session 的执行版本。
   已有包含 generation 的 Mission 快照保持原精确身份，不改写或放宽历史记录。
+- `run.mission.effective_tools` 是冻结的路由上限，不是当前在线清单或授权承诺。
+  共享 Mission 的 effects Run 可保留来自 Task 明确选择 server、当前尚未发现的
+  固定 MCP 身份；显式 `run.start.tools` 仍是上限。实际模型清单和派发始终与
+  当前真实注册表身份及 Run 资格取交集，不增加候选、不接受已知 schema 漂移，
+  pure_only 不保留未知 MCP。首轮发现仍在 claim 后、写事务外进行，不重写快照。
 - 新 Run 首次模型 intent 前追加唯一 `run.mission`，同事务绑定 Mission、
   模板正文、渲染器版本、有效工具清单及编译后起始消息的内容引用和摘要。
   不仅保存一个指向当前代码常量的版本号。

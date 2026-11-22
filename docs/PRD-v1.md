@@ -600,6 +600,10 @@ server 范围及首轮输入材料；claim 后在 SQLite 写事务外发现，�
 Mission 路由使用不含 Session generation 的稳定语义版本，执行侧继续核验具体
 Session 版本。历史无 pending 的 Run 不补写，已有精确快照不放宽；字段约束见
 [主循环规格 §5.3](SPEC-AGENT-LOOP-2026-11-22.md#53-固定恢复与回放)。
+共享 Mission 的 `effective_tools` 是冻结的路由上限，不表示工具当前在线或已获授权：
+effects Run 可保留来自 Task 明确选择 server、但当前注册表尚未发现的固定 MCP 身份；
+实际提供或派发时始终再与当前真实注册表身份及 Run 资格取交集，不加入新候选，
+不接受 schema 漂移，也不将未知 MCP 作为 pure 工具。
 
 ```
 Event {
