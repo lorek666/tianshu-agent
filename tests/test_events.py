@@ -38,6 +38,7 @@ FAMILIES = frozenset(
         "goal",
         "job",
         "model",
+        "plan",
         "policy",
         "receipt",
         "recovery",
@@ -46,6 +47,7 @@ FAMILIES = frozenset(
         "task",
         "tool",
         "undo",
+        "verification",
     }
 )
 REQUIRED_ENVELOPE = {"seq", "run_id", "type", "ts", "actor", "payload", "payload_hash"}

@@ -638,7 +638,8 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         run = self._tasks.get_run(run_id)
         task = self._task(run.task_id)
         payload = self._tasks.run_payload(run_id)
-        from .verification_driver import binding_for, drive as drive_verification
+        from .verification_driver import binding_for
+        from .verification_driver import drive as drive_verification
 
         if binding_for(self._log, run_id) is not None:
             return drive_verification(self, run_id, claim, progress, task)
