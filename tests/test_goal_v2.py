@@ -284,6 +284,106 @@ def planned(env, *, step_count=1, **changes):
     return view
 
 
+@pytest.mark.parametrize("material,damage", [
+    ("evidence", "missing"), ("observation", "corrupt"),
+])
+def test_goal_close_rejects_damaged_saved_verification_material(env, material, damage):
+    from tianshu.plans import read_material
+
+    goal = planned(env)
+    (env[3] / "report.md").write_bytes(b"report")
+    advance(env, goal, "execute")
+    drive(env[1], "报告已生成")
+    advance(env, get(env, goal), "verify")
+    drive(env[1])
+    goal = get(env, goal)
+    assert goal["status"] == "awaiting_review" and goal["phase"] == "finish", goal
+    result = env[1].log.read_run(
+        goal["verification_run_id"], event_types=("verification.result",))[0]
+    ref = result.payload["evidence_refs"][0]
+    if material == "observation":
+        ref = read_material(env[1], env[2].task_id, ref)["content_refs"][0]
+    path = env[1].contents.blob_dir / ref.rsplit(":", 1)[1]
+    if damage == "missing":
+        path.unlink()
+    else:
+        path.write_bytes(b'{"fabricated":true}')
+    before = env[1].log.seq_head()
+    with pytest.raises(ControlError) as error:
+        env[0].handle("goal.v2.close", {
+            "goal_id": goal["goal_id"], "request_id": "close_without_evidence",
+            "outcome": "completed", "expected_state_revision": goal["state_revision"],
+        })
+    assert error.value.code == "conflict"
+    assert env[1].log.seq_head() == before
+    assert get(env, goal)["status"] == "awaiting_review"
+
+
+@pytest.mark.parametrize("stream,damage", [
+    ("stdout", "missing"), ("stdout", "corrupt"),
+    ("stderr", "missing"), ("stderr", "corrupt"),
+])
+def test_goal_close_rejects_damaged_complete_command_log(env, stream, damage):
+    from support import approve_pending, engine_for
+
+    from tianshu.execpolicy import ExecPolicy
+    from tianshu.goal_v2 import GoalCoordinator
+    from tianshu.verification_driver import command_binding
+
+    executable = str(Path(sys.executable).resolve())
+    task = env[1].tasks.create_task("验收完整日志", [str(env[3])], exec_policy=ExecPolicy(
+        argv_allowlist=(executable,), cwd_roots=(env[3],), timeout_ms=2000,
+        max_output_bytes=128,
+    ))
+    env = env[0], env[1], task, env[3]
+    goal = create(env, execution_policy=EFFECTS.to_dict())
+    advance(env, goal)
+    mission = GoalCoordinator(env[1]).mission(goal["goal_id"])
+    proposal = candidate(mission)
+    manifest, document = proposal["verification_manifest"], proposal["plan"]
+    manifest["checks"][0].update(kind="command_exit", inputs={
+        **command_binding(env[1], task.task_id, executable),
+        "argv": [executable, "-c", f"import sys; sys.{stream}.write('x' * 10000)"],
+        "cwd_binding_id": "0", "expected_exit_codes": [0], "timeout_ms": 2000,
+    })
+    document["verification_manifest"] = {
+        "content_ref": "content://sha256:" + jcs_sha256(manifest),
+        "digest": jcs_sha256(manifest),
+    }
+    drive(env[1], json.dumps(proposal))
+    goal = get(env, goal)
+    plan = PlanStore(env[1]).get(goal["plan_id"])
+    PlanStore(env[1]).confirm(plan["plan_id"], expected_revision=1,
+                            document_digest=plan["document_digest"], request_id="confirm")
+    advance(env, goal, "execute")
+    drive(env[1], "待运行已确认检查")
+    advance(env, get(env, goal), "verify")
+    drive(env[1])
+    goal = get(env, goal)
+    run_id = goal["verification_run_id"]
+    assert approve_pending(env[1], run_id)
+    engine_for(env[1], ScriptedModel([])).resume_run(run_id)
+    GoalCoordinator(env[1]).tick(goal["goal_id"])
+    goal = get(env, goal)
+    assert (goal["status"], goal["phase"]) == ("awaiting_review", "finish"), str(goal["blocker"])
+    output = env[1].log.read_run(run_id, event_types=("tool.result",))[0].payload["output"]
+    assert output["truncated"] is True
+    path = env[1].snapshots.blob_dir / output[stream + "_ref"]
+    assert path.read_bytes() == b"x" * 10000
+    if damage == "missing":
+        path.unlink()
+    else:
+        path.write_bytes(b"fabricated log")
+    before = env[1].log.seq_head()
+    with pytest.raises(ControlError) as error:
+        env[0].handle("goal.v2.close", {
+            "goal_id": goal["goal_id"], "request_id": "close_without_full_log",
+            "outcome": "completed", "expected_state_revision": goal["state_revision"],
+        })
+    assert error.value.code == "conflict"
+    assert env[1].log.seq_head() == before
+
+
 def test_auto_verifies_and_completes_at_exact_request_limit(env):
     goal = planned(env, mode="bounded_auto", completion_policy="verified",
                    budget_limits={"requests": 2})

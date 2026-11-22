@@ -32,6 +32,47 @@ def test_graph_confirmation_and_human_decision_via_real_rpc(env):
         plane.handle("verification.decide", {**params, "actor": "human"})
 
 
+@pytest.mark.parametrize("level", ["evidence", "review", "artifact"])
+@pytest.mark.parametrize("damage", ["missing", "corrupt", "ungranted"])
+def test_human_decision_refuses_damaged_frozen_material_before_writing(env, level, damage):
+    from tianshu.plans import read_material
+
+    plane = ControlPlane(env[0], model=ScriptedModel([]))
+    stack = env[0]
+    view, request = human_plan(env)
+    evidence_ref = request["evidence_refs"][0]
+    evidence = read_material(stack, view["task_id"], evidence_ref)
+    review_ref = evidence["content_refs"][0]
+    review = read_material(stack, view["task_id"], review_ref)
+    ref = {"evidence": evidence_ref, "review": review_ref,
+           "artifact": review["artifacts"][0]["content_ref"]}[level]
+    digest = ref.rsplit(":", 1)[1]
+    path = stack.contents.blob_dir / digest
+    if damage == "missing":
+        path.unlink()
+    elif damage == "corrupt":
+        path.write_bytes(b'{"fabricated":true}')
+    else:
+        stack.log.conn.execute(
+            "DELETE FROM content_grants WHERE digest=? AND task_id=?", (digest, view["task_id"]),
+        )
+    params = {
+        **{k: request[k] for k in (
+            "plan_id", "revision", "step_id", "check_id", "check_digest",
+            "attempt_id", "input_fingerprint", "evidence_refs",
+        )},
+        "format_version": 1, "request_id": "accept_without_material",
+        "expected_state_revision": view["state_revision"],
+        "task_id": view["task_id"], "mission_digest": view["document"]["mission_digest"],
+        "plan_digest": view["document_digest"], "decision": "accept", "reason": "已逐项核对",
+    }
+    before = stack.log.seq_head()
+    with pytest.raises(ControlError):
+        plane.handle("verification.decide", params)
+    assert stack.log.seq_head() == before
+    assert not stack.log.read_types(("verification.decided", "verification.result"))
+
+
 def test_production_consent_store_rejects_run_without_confirmed_mission_plan(env):
     stack = env[0]
     plane = ControlPlane(stack, model=ScriptedModel([]))

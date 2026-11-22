@@ -304,6 +304,8 @@ def contains_ref(value, ref):
 
 
 def step_verified(stack, view, step_id):
+    from .verification_evidence import evidence_verified
+
     step = next(s for s in view["steps"] if s["step_id"] == step_id)
     events = [e for e in stack.log.read_types(VERIFICATION_EVENTS, task_id=view["task_id"])
               if e.payload["plan_id"] == view["plan_id"]
@@ -331,6 +333,9 @@ def step_verified(stack, view, step_id):
         if not results or results[-1].payload["result"] != "passed":
             return False
         if results[-1].payload["input_fingerprint"] != current:
+            return False
+        check = next(c for c in view["manifest"]["checks"] if c["check_id"] == check_id)
+        if not evidence_verified(stack, view, check, requests[-1], results[-1]):
             return False
     return True
 
@@ -536,6 +541,9 @@ def decide_check(stack, params, *, actor):
             raise ValueError("该 attempt 已结束或已被替代")
         if input_fingerprint(stack, params["task_id"]) != params["input_fingerprint"]:
             raise ValueError("验收材料已经变化")
+        from .verification_evidence import human_request_verified
+        if not human_request_verified(stack, view, check, request):
+            raise ValueError("待审证据材料缺失、损坏或绑定失效")
         task = stack.tasks.get_task(params["task_id"])
         for run in stack.tasks.list_runs(task.task_id):
             if run.effect_state in ("unknown", "partial"):

@@ -76,9 +76,92 @@ def test_worker_failed_check_cannot_satisfy_step(env):
     assert PlanStore(stack).get(view["plan_id"])["steps"][0]["state"] == "failed"
 
 
-@pytest.mark.parametrize("mutate_before_spawn", [False, True])
+@pytest.mark.parametrize("material", ["evidence", "observation"])
+@pytest.mark.parametrize("damage", ["missing", "corrupt"])
+def test_saved_verification_material_damage_invalidates_satisfied_step(env, material, damage):
+    from tianshu.plans import read_material
+    from tianshu.verification_driver import start_verification
+
+    stack, ws, view = env
+    (ws / "report.md").write_bytes(b"report")
+    run = start_verification(stack, view, "write", request_id="verify")
+    with Worker(stack, model=ScriptedModel([]), heartbeat_interval_ms=0) as worker:
+        worker.run_once()
+        assert not worker.errors
+    result = stack.log.read_run(run.run_id, event_types=("verification.result",))[0]
+    ref = result.payload["evidence_refs"][0]
+    if material == "observation":
+        ref = read_material(stack, view["task_id"], ref)["content_refs"][0]
+    assert PlanStore(stack).get(view["plan_id"])["steps"][0]["state"] == "satisfied"
+    path = stack.contents.blob_dir / ref.rsplit(":", 1)[1]
+    if damage == "missing":
+        path.unlink()
+    else:
+        path.write_bytes(b'{"fabricated":true}')
+    assert PlanStore(stack).get(view["plan_id"])["steps"][0]["state"] == "invalidated"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("task_id", "other_task"), ("mission_id", "other_mission"),
+    ("plan_digest", "0" * 64), ("step_id", "other_step"), ("run_id", "other_run"),
+    ("attempt_id", "other_attempt"), ("kind", "source_snapshot"),
+    ("input_fingerprint", "0" * 64), ("content_refs", []), ("format_version", 2),
+])
+def test_valid_cas_with_unbound_evidence_cannot_satisfy_step(env, field, value):
+    from tianshu.plans import put_material, read_material
+    from tianshu.verification_driver import start_verification
+
+    stack, ws, view = env
+    (ws / "report.md").write_bytes(b"report")
+    run = start_verification(stack, view, "write", request_id="verify")
+    with Worker(stack, model=ScriptedModel([]), heartbeat_interval_ms=0) as worker:
+        worker.run_once()
+        assert not worker.errors
+    result = stack.log.read_run(run.run_id, event_types=("verification.result",))[0]
+    requested = stack.log.read_run(run.run_id, event_types=("verification.requested",))[0]
+    evidence = read_material(stack, view["task_id"], result.payload["evidence_refs"][0])
+    evidence[field] = value
+    ref = put_material(stack, view["task_id"], evidence, run_id=run.run_id)
+    seq = stack.log.append(run.run_id, "verification.requested",
+                           {**requested.payload, "evidence_refs": [ref],
+                            "request_id": "invalid_evidence"},
+                           task_id=view["task_id"], actor_kind="core")
+    stack.log.append(run.run_id, "verification.result",
+                     {**result.payload, "evidence_refs": [ref], "verified_event_seq": seq},
+                     task_id=view["task_id"], actor_kind="core")
+    assert PlanStore(stack).get(view["plan_id"])["steps"][0]["state"] == "invalidated"
+
+
+@pytest.mark.parametrize("material", ["evidence", "observation"])
+def test_saved_verification_material_requires_task_visibility(env, material):
+    from tianshu.plans import read_material
+    from tianshu.verification_driver import start_verification
+
+    stack, ws, view = env
+    (ws / "report.md").write_bytes(b"report")
+    run = start_verification(stack, view, "write", request_id="verify")
+    with Worker(stack, model=ScriptedModel([]), heartbeat_interval_ms=0) as worker:
+        worker.run_once()
+        assert not worker.errors
+    result = stack.log.read_run(run.run_id, event_types=("verification.result",))[0]
+    ref = result.payload["evidence_refs"][0]
+    if material == "observation":
+        ref = read_material(stack, view["task_id"], ref)["content_refs"][0]
+    assert PlanStore(stack).get(view["plan_id"])["steps"][0]["state"] == "satisfied"
+    stack.log.conn.execute(
+        "DELETE FROM content_grants WHERE digest=? AND task_id=?",
+        (ref.rsplit(":", 1)[1], view["task_id"]),
+    )
+    assert PlanStore(stack).get(view["plan_id"])["steps"][0]["state"] == "invalidated"
+
+
+@pytest.mark.parametrize("mutate_before_spawn,material_damage", [
+    (False, "snapshot_missing"), (True, None),
+    (False, "stdout_missing"), (False, "stdout_corrupt"),
+    (False, "stderr_missing"), (False, "stderr_corrupt"),
+])
 def test_verification_command_waits_for_real_approval_and_checks_exit_code(
-    env, monkeypatch, mutate_before_spawn,
+    env, monkeypatch, mutate_before_spawn, material_damage,
 ):
     import copy
     import sys
@@ -90,10 +173,14 @@ def test_verification_command_waits_for_real_approval_and_checks_exit_code(
     from tianshu.verification_driver import command_binding, start_verification
 
     stack, ws, _ = env
+    stream = "stderr" if material_damage and material_damage.startswith("stderr") else "stdout"
+    truncated = material_damage not in (None, "snapshot_missing")
+    code = (f"import sys; sys.{stream}.write('x' * 10000)" if truncated
+            else "print('check complete')")
     executable = str(Path(sys.executable).resolve())
     task = stack.tasks.create_task("运行已确认检查", [str(ws)], exec_policy=ExecPolicy(
         argv_allowlist=(executable,), cwd_roots=(ws,), timeout_ms=2000,
-        max_output_bytes=4096,
+        max_output_bytes=128 if truncated else 4096,
     ))
     mission = prepare_mission(stack.tasks, task.task_id, criteria=[
         {"criterion_id": "report", "description": "命令退出值正确", "mode": "machine"},
@@ -102,7 +189,7 @@ def test_verification_command_waits_for_real_approval_and_checks_exit_code(
     check = copy.deepcopy(base["manifest"]["checks"][0])
     check.update(kind="command_exit", inputs={
         **command_binding(stack, task.task_id, executable),
-        "argv": [executable, "-c", "print('check complete')"],
+        "argv": [executable, "-c", code],
         "cwd_binding_id": "0", "expected_exit_codes": [0], "timeout_ms": 2000,
     })
     manifest = {**base["manifest"], "mission_id": mission["mission_id"],
@@ -160,6 +247,20 @@ def test_verification_command_waits_for_real_approval_and_checks_exit_code(
     assert evidence["kind"] == "command_result"
     assert evidence["event_seqs"] == [check_result.payload["verified_event_seq"]]
     assert replay(stack.log, run.run_id).ok
+    if not mutate_before_spawn:
+        detail = read_material(stack, task.task_id, evidence["content_refs"][0])
+        if truncated:
+            assert detail["output"]["truncated"] is True
+            path = stack.snapshots.blob_dir / detail["output"][stream + "_ref"]
+            assert path.read_bytes() == b"x" * 10000
+        else:
+            snapshot_ref = detail["output"]["stdout_snapshot"]
+            path = stack.contents.blob_dir / snapshot_ref.rsplit(":", 1)[1]
+        if material_damage.endswith("missing"):
+            path.unlink()
+        else:
+            path.write_bytes(b"fabricated log")
+        assert plans.get(view["plan_id"])["steps"][0]["state"] == "invalidated"
 
 
 def test_human_check_after_dependencies_even_when_listed_first(env):

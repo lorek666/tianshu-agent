@@ -252,6 +252,36 @@ def test_human_acceptance_rejects_changed_inputs(env):
         decide_check(env[0], params, actor=HumanIdentity.local_cli())
 
 
+@pytest.mark.parametrize("damage", ["missing", "corrupt"])
+def test_human_saved_artifact_damage_invalidates_accepted_step(env, damage):
+    from tianshu.permissions import HumanIdentity
+    from tianshu.plans import read_material
+    from tianshu.verification import decide_check
+
+    view, request = human_plan(env)
+    params = {
+        **{k: request[k] for k in (
+            "plan_id", "revision", "step_id", "check_id", "check_digest",
+            "attempt_id", "input_fingerprint", "evidence_refs",
+        )},
+        "format_version": 1, "request_id": "accept",
+        "expected_state_revision": view["state_revision"],
+        "task_id": view["task_id"], "mission_digest": jcs_sha256(view["mission"]),
+        "plan_digest": view["document_digest"], "decision": "accept", "reason": "已审阅产物",
+    }
+    decide_check(env[0], params, actor=HumanIdentity.local_cli())
+    assert store(env).get(view["plan_id"])["steps"][0]["state"] == "satisfied"
+    evidence = read_material(env[0], view["task_id"], request["evidence_refs"][0])
+    material = read_material(env[0], view["task_id"], evidence["content_refs"][0])
+    ref = material["artifacts"][0]["content_ref"]
+    path = env[0].contents.blob_dir / ref.rsplit(":", 1)[1]
+    if damage == "missing":
+        path.unlink()
+    else:
+        path.write_bytes(b'{"data":"fabricated"}')
+    assert store(env).get(view["plan_id"])["steps"][0]["state"] == "invalidated"
+
+
 def test_human_request_freezes_actual_artifact_and_rejects_missing(env):
     from tianshu.plans import read_material
     view, request = human_plan(env)
@@ -358,12 +388,13 @@ def test_step_transition_is_idempotent_and_checks_run_ownership(env):
         plans.change_step(view["plan_id"], "write", "blocked", request_id="running")
 
 
-def test_source_reference_reads_raw_content_and_exact_event_reference(env):
+@pytest.mark.parametrize("damage", ["missing", "corrupt"])
+def test_source_reference_reads_raw_content_and_exact_event_reference(env, damage):
     from tianshu.contents import make_ref
     from tianshu.event_schema import minimal_payload
     from tianshu.fsutil import atomic_write_bytes
-    from tianshu.verification import observe_check
-    stack, task, _, _, _, manifest = env
+    from tianshu.verification import observe_check, request_check
+    stack, task, _, mission, document, manifest = env
     raw = b"plain source\r\n\xff"
     digest = hashlib.sha256(raw).hexdigest()
     ref = make_ref(digest)
@@ -378,10 +409,29 @@ def test_source_reference_reads_raw_content_and_exact_event_reference(env):
         "locator": "paragraph 1",
     }}
     assert observe_check(stack, task.task_id, check)["result"] == "passed"
+    manifest["checks"] = [copy.deepcopy(check)]
+    document["verification_manifest"] = {
+        "digest": jcs_sha256(manifest), "content_ref": "content://sha256:" + jcs_sha256(manifest),
+    }
+    plans = store(env)
+    view = plans.create(task.task_id, mission, document, manifest, request_id="create_source")
+    plans.confirm(view["plan_id"], expected_revision=1,
+                  document_digest=view["document_digest"], request_id="confirm_source")
+    plans.change_step(view["plan_id"], "write", "running", request_id="run_source")
+    view = plans.change_step(view["plan_id"], "write", "verifying", request_id="verify_source")
+    request_check(stack, view, "write", "exists", run_id=run.run_id, request_id="source_check")
+    plans.change_step(view["plan_id"], "write", "satisfied", request_id="source_satisfied")
+    assert plans.get(view["plan_id"])["steps"][0]["state"] == "satisfied"
     payload["output"] = {"text": "unbound prefix" + ref}
     seq = stack.log.append(run.run_id, "tool.result", payload, task_id=task.task_id)
     check["inputs"]["source_event_seq"] = seq
     assert observe_check(stack, task.task_id, check)["result"] == "inconclusive"
+    path = stack.contents.blob_dir / digest
+    if damage == "missing":
+        path.unlink()
+    else:
+        path.write_bytes(b"fabricated source")
+    assert plans.get(view["plan_id"])["steps"][0]["state"] == "invalidated"
 
 
 def test_document_schemas_match_runtime_contracts():
