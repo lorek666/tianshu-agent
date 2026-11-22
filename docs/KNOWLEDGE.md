@@ -286,7 +286,8 @@
   新增 adapter-local `auto/off/prefix-v1/responses-explicit-v1`，仅改 wire 副本；保留内置
   manifest 目录次序、schema 数组和历史消息。官方 OpenAI 默认稳定 key，Anthropic 与新版
   Responses 显式模式须主动开启。原生缓存读取/写入沿既有事件 v2 保存；`evaluate
-  --cache-report` 复用 C5 判据，按 provider 分母、未知覆盖和上下文条件分组。当前本地候选的
+  --cache-report` 复用 C5 判据，按 provider 分母、未知覆盖和 `scope × 上下文条件` 分组；
+  报告须是工作根外的新文件，调用前拒绝路径冲突，独占创建防止截断已有证据。当前本地候选的
   最终门禁与未验证范围见[记录](changelog/2026-11-22-prompt-cache.md)，不套用上一批 PASS。
 
 ## 5. 踩坑教训（别再踩）

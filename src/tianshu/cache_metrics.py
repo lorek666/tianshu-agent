@@ -151,7 +151,7 @@ def build_cache_report(
         samples, unpaired, duplicates = _requests(
             sorted(unique.values(), key=lambda event: event.seq)
         )
-        requests.extend({**sample, "case_id": observation.case_id,
+        requests.extend({**sample, "case_id": observation.case_id, "scope": case["scope"],
                          "run_index": observation.run_index} for sample in samples)
         workflows = {
             event.run_id: event.payload for event in events if event.type == "run.workflow"
@@ -174,7 +174,7 @@ def build_cache_report(
                 for event in unique.values()
             ))
         runs.append({
-            "case_id": observation.case_id, "run_id": observation.run_id,
+            "case_id": observation.case_id, "scope": case["scope"], "run_id": observation.run_id,
             "run_index": observation.run_index, "fixture_digest": case["fixture_digest"],
             "conditions": conditions,
             "condition": conditions[0] if len(conditions) == 1 else (
@@ -195,13 +195,14 @@ def build_cache_report(
             "usage": summarize_usage(samples),
         })
     usage_groups: dict[tuple, list] = defaultdict(list)
-    quality_groups: dict[str, list] = defaultdict(list)
+    quality_groups: dict[tuple[str, str], list] = defaultdict(list)
     for request in requests:
         usage_groups[(
-            request["provider"], request["adapter"], request["model"], request["condition"],
+            request["scope"], request["provider"], request["adapter"],
+            request["model"], request["condition"],
         )].append(request)
     for run in runs:
-        quality_groups[run["condition"]].append(run)
+        quality_groups[(run["scope"], run["condition"])].append(run)
     return {
         "schema": SCHEMA, "suite_version": suite.suite_version,
         "repeat": suite.repeat, "model": dict(suite.identity),
@@ -225,12 +226,13 @@ def build_cache_report(
         ],
         "usage": summarize_usage(requests),
         "usage_by_provider_condition": [
-            {"provider": key[0], "adapter": key[1], "model": key[2], "condition": key[3],
+            {"scope": key[0], "provider": key[1], "adapter": key[2],
+             "model": key[3], "condition": key[4],
              **summarize_usage(samples)}
             for key, samples in sorted(usage_groups.items(), key=lambda item: str(item[0]))
         ],
         "quality_by_condition": [
-            {"condition": condition, "samples": len(group),
+            {"scope": scope, "condition": condition, "samples": len(group),
              "valid_samples": sum(not run["invalid"] for run in group),
              "invalid_samples": sum(run["invalid"] for run in group),
              "unavailable_samples": sum(run["unavailable"] is not None for run in group),
@@ -242,7 +244,7 @@ def build_cache_report(
                  if any(not run["invalid"] for run in group) else None
              ),
              "safety_failed": sum(run["safety_failed"] is True for run in group)}
-            for condition, group in sorted(quality_groups.items())
+            for (scope, condition), group in sorted(quality_groups.items())
         ],
         "runs": runs, "requests": requests,
     }

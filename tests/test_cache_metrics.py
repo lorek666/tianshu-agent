@@ -200,3 +200,94 @@ def test_cache_report_preserves_safety_failure_and_primary_efficiency_facts(tmp_
     primary = quality["cases"][0]["run_details"][0]
     assert cache["runs"][0]["elapsed_ms"] == primary["elapsed_ms"]
     assert cache["runs"][0]["unknown_cost_calls"] == primary["unknown_cost_calls"]
+
+
+@pytest.mark.parametrize("conflict", [
+    "baseline-hardlink", "out-hardlink", "workdir", "workdir-parent",
+    "file-as-parent", "out-as-parent", "kept-db", "existing-sidecar",
+])
+def test_cache_output_conflicts_are_rejected_before_constructing_or_running_models(
+    tmp_path, monkeypatch, capsys, conflict,
+):
+    import os
+
+    import tianshu.eval
+
+    root = tmp_path / "eval"
+    primary = tmp_path / "primary.json"
+    side = tmp_path / "cache.json"
+    option = "--out"
+    if conflict.endswith("hardlink"):
+        primary.write_bytes(b"retained")
+        os.link(primary, side)
+        option = "--baseline" if conflict.startswith("baseline") else "--out"
+    elif conflict == "workdir":
+        side = root
+    elif conflict == "workdir-parent":
+        root = side / "eval"
+    elif conflict == "file-as-parent":
+        side.write_bytes(b"retained")
+        side /= "nested.json"
+    elif conflict == "out-as-parent":
+        side = primary / "nested.json"
+    elif conflict == "kept-db":
+        side = root / "N1" / "run0" / "events.db"
+    else:
+        side.write_bytes(b"retained")
+
+    def forbid(*_args, **_kwargs):
+        pytest.fail("冲突必须在模型构造和 suite 调用前拒绝")
+
+    monkeypatch.setattr(tianshu.eval, "run_suite", forbid)
+    monkeypatch.setattr(cli, "_model_from", forbid)
+    assert cli.main([
+        "evaluate", "--model", "openai-compatible", "--repeat", "3", "--keep",
+        "--workdir", str(root), option, str(primary), "--cache-report", str(side),
+    ]) == 2
+    assert "cache-report" in capsys.readouterr().err
+    assert not root.exists()
+    if primary.exists():
+        assert primary.read_bytes() == b"retained"
+
+
+def test_sidecar_refuses_a_file_created_during_evaluation_without_truncating_it(
+    tmp_path, monkeypatch, capsys,
+):
+    import tianshu.cache_metrics
+
+    path = tmp_path / "cache.json"
+    build = tianshu.cache_metrics.build_cache_report
+
+    def build_and_keep_evidence(*args, **kwargs):
+        result = build(*args, **kwargs)
+        path.write_bytes(b"evidence-created-after-preflight")
+        return result
+
+    monkeypatch.setattr(tianshu.cache_metrics, "build_cache_report", build_and_keep_evidence)
+    assert cli.main([
+        "evaluate", "--model", "scripted", "--case", "N1", "--repeat", "3",
+        "--workdir", str(tmp_path / "eval"), "--cache-report", str(path),
+    ]) == 2
+    assert path.read_bytes() == b"evidence-created-after-preflight"
+    capsys.readouterr()
+
+
+def test_cache_quality_groups_separate_scripted_harness_from_the_evaluated_model(tmp_path):
+    cases = select_cases(["N1", "R1"])
+    model = OpenAICompatibleModel("test-model", api_key="fake", transport=FakeTransport(
+        _payload("openai", text="没有交付产物", usage={
+            "prompt_tokens": 100, "completion_tokens": 4,
+            "prompt_tokens_details": {"cached_tokens": 80},
+        }),
+    ))
+    suite = run_suite(cases, model_for=lambda _: model, repeat=3, workdir=tmp_path / "eval")
+    quality = build_report(suite, cases)
+    cache = metrics_module().build_cache_report(suite, quality, policy=model.cache_policy)
+    groups = {group["scope"]: group for group in cache["quality_by_condition"]}
+    assert groups["model"]["success_rate"] == 0
+    assert groups["harness"]["success_rate"] == 1
+    assert groups["model"]["samples"] == groups["harness"]["samples"] == 3
+    assert all(run["scope"] == ("model" if run["case_id"] == "N1" else "harness")
+               for run in cache["runs"])
+    assert all(request["scope"] == ("model" if request["case_id"] == "N1" else "harness")
+               for request in cache["requests"])

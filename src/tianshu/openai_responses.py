@@ -27,7 +27,7 @@ from .model import (
     _HttpModel,
     _native_cache_usage,
 )
-from .prompt_cache import responses_breakpoints, routing_key, stable_tools
+from .prompt_cache import responses_breakpoints, routing_key, stable_system, stable_tools
 from .task_attachments import AttachmentError, text_attachment, validated_attachments
 
 
@@ -165,7 +165,7 @@ class OpenAIResponsesModel(_HttpModel):
             raise ModelError("模型续接作用域或消息不兼容，请创建新 Run", kind="protocol") from None
         body = {
             "model": self.model,
-            "input": items,
+            "input": stable_system(items, self.cache_policy),
             "store": False,
             "include": ["reasoning.encrypted_content"],
             "truncation": "disabled",

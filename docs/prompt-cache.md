@@ -39,7 +39,9 @@ TIANSHU_PROMPT_CACHE_POLICY=prefix-v1 \
 Anthropic 断点位于工具定义末尾、system 末尾、初始用户任务块和动态尾部之前的历史块。
 原始记忆检索结果仍以工具结果追加；不在每轮把它们重新插进 system。时间和流式预览
 也不会新加入稳定区。Responses 隐式策略继续发送完整历史前缀；显式策略只标记
-普通输入文本，完整保留原来的加密续接。
+普通输入文本，完整保留原来的加密续接。显式模式最多选择四处：开头最后一条 system、
+确知的初始任务，以及动态末条消息之前最近两处用户历史文本。相邻轮保留重叠历史断点，
+避免上一轮写入的历史在新请求中失去查找边界；压缩后的最新补充不冒充初始任务。
 
 `/compact`、语义摘要和 Responses 压缩都可能改变历史前缀。这些操作有信息损失，
 缓存策略不会为了命中率而自动关掉摘要、扩大预算或保留无关历史。
@@ -69,13 +71,18 @@ OpenAI 输入总数已经包含缓存读写；Anthropic 总输入是原生输入
 离线冒烟例子：
 
 ```bash
+cache_workdir="$(mktemp -d "${TMPDIR:-/tmp}/tianshu-cache-eval.XXXXXX")"
 uv run --frozen tianshu evaluate \
   --model scripted --case N1 --repeat 3 \
-  --workdir .omc/artifacts/cache-smoke \
-  --cache-report .omc/artifacts/cache-smoke-report.json --json
+  --workdir "$cache_workdir" \
+  --cache-report "${cache_workdir}-report.json" --json
 ```
 
 工作根必须为空；重复执行需换一个新目录。子集只证明冒烟，不是完整评测。
+示例将工作根放在系统临时目录，避开现有 [#204](https://github.com/lorek666/tianshu-agent/issues/204)
+的保留名祖先路径限制；本轮没有修复该限制。报告输出不作为数据库工作根，可另存项目内。
+旁路输出必须是不存在的新文件；与工作根、主报告或基线存在相同文件、硬链接或父子路径
+冲突时，在模型构造前拒绝。写盘使用独占创建，前置检查后出现的文件也不会被截断。
 脚本模型报告标记为 `offline`，缓存命中率为未知，不能据此声称真实缓存改善。
 真实模型仍通过原有 `--model openai-compatible --provider ... --model-name ...`
 选择；只有实际执行这些线上评测才会产生供应商调用和费用。
@@ -84,13 +91,14 @@ uv run --frozen tianshu evaluate \
 
 - 每次请求的 usage、provider/adapter/model、来源 seq/hash、上下文条件；
 - 按 provider 和条件分组的 token 加权命中率与请求命中率，连同可观测/未知分母；
-- 每项任务的 C5 成功、失败、安全失败、无效、未具备能力与耗时/成本原事实；
+- 每项任务的 C5 `scope`、成功、失败、安全失败、无效、未具备能力与耗时/成本原事实；
 - 未配对的 intent、重复 result 和缺少缓存遥测的辅助调用；
 - suite、fixture、主报告 SHA256 与本次主模型策略配置。
 
 仅统计 `model.result`，不再把同一调用的 `run.model_turn` 算一次。
 未知厂商的兼容端点保留原始计数，分母未知；没有回执的调用不算零用量或未命中。
 策略配置不是历史事件中逐请求的策略证明。
+质量分组保持 `scope × 上下文条件`；脚本恢复任务的通过不能计入被评测模型的任务成功率。
 
 上下文分组包括 `memory`、`semantic_summary`、`trimmed`、`compact`、
 `compact_generation`、`responses_compact`，多种变换并存时保留组合标签。

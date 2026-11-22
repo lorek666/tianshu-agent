@@ -54,6 +54,7 @@ from .prompt_cache import (
     anthropic_breakpoints,
     resolve_policy,
     routing_key,
+    stable_system,
     stable_tools,
 )
 from .task_attachments import AttachmentError, plain_messages
@@ -286,12 +287,14 @@ def normalize_usage(raw: dict[str, Any] | None) -> dict[str, int | None]:
     return out
 
 
-def _chat_usage(raw: dict[str, Any] | None) -> dict[str, int | None]:
+def _chat_usage(
+    raw: dict[str, Any] | None, *, inclusive_input: bool = False,
+) -> dict[str, int | None]:
     """Chat 原生缓存读取是 prompt_tokens 的子集，保留缺失/null 与最终快照。"""
     usage = normalize_usage(raw)
-    if not isinstance(raw, dict) or raw.get("prompt_tokens_details") is None:
-        return usage
-    return _native_cache_usage(usage, raw["prompt_tokens_details"])
+    if isinstance(raw, dict) and raw.get("prompt_tokens_details") is not None:
+        return _native_cache_usage(usage, raw["prompt_tokens_details"])
+    return _native_cache_usage(usage, {}) if inclusive_input else usage
 
 
 def _native_cache_usage(
@@ -914,7 +917,7 @@ class OpenAICompatibleModel(_HttpModel):
         tools = stable_tools(tools, self.cache_policy)
         body: dict[str, Any] = {
             "model": self.model,
-            "messages": _provider_text_messages(messages),
+            "messages": stable_system(_provider_text_messages(messages), self.cache_policy),
             "temperature": 0,
         }
         if tools:
@@ -992,7 +995,9 @@ class OpenAICompatibleModel(_HttpModel):
             finish_reason=finish,
             content=content,
             tool_calls=calls,
-            usage=_chat_usage(data.get("usage")),
+            usage=_chat_usage(
+                data.get("usage"), inclusive_input=self.price_identity().vendor == "openai",
+            ),
         )
 
     def stream_complete(

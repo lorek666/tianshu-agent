@@ -419,3 +419,90 @@ def test_json_and_sse_native_cache_write_usage_are_the_same_snapshot(cls):
         "input_tokens": 100, "output_tokens": 4,
         "cache_read_input_tokens": 80, "cache_creation_input_tokens": 15,
     }
+
+
+@pytest.mark.parametrize("cls", [OpenAICompatibleModel, OpenAIResponsesModel])
+@pytest.mark.parametrize("policy", ["prefix-v1", "off"])
+def test_system_wire_order_is_stable_only_when_policy_enabled(cls, policy):
+    messages = copy.deepcopy(MESSAGES)
+    changed = copy.deepcopy(messages)
+    changed[0] = dict(reversed(changed[0].items()))
+    original = copy.deepcopy(changed)
+    model = make(cls, cache_policy=policy)
+    key = "input" if cls is OpenAIResponsesModel else "messages"
+    left = body(model, messages)[key]
+    right = body(model, changed)[key]
+    assert (dump(left) == dump(right)) is (policy != "off")
+    assert changed == original
+
+
+def _explicit_markers(messages):
+    request = body(make(OpenAIResponsesModel, cache_policy="responses-explicit-v1"), messages)
+    markers = []
+    for item in request["input"]:
+        content = item.get("content")
+        if isinstance(content, list):
+            markers.extend(block["text"] for block in content if "prompt_cache_breakpoint" in block)
+    assert len(markers) <= 4
+    return markers
+
+
+def test_explicit_prefix_marks_last_leading_system_and_real_initial_task():
+    assert _explicit_markers([
+        {"role": "system", "content": "policy"},
+        {"role": "system", "content": "domain"},
+        {"role": "user", "content": "task"},
+    ]) == ["domain", "task"]
+
+
+def test_explicit_prefix_without_system_does_not_write_the_dynamic_tail():
+    assert _explicit_markers([
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "answer"},
+        {"role": "user", "content": "volatile"},
+    ]) == ["task"]
+
+
+def test_explicit_prefix_preserves_prior_history_lookup_over_three_appends():
+    messages = [*copy.deepcopy(MESSAGES[:2]), {"role": "assistant", "content": "answer"}]
+    messages.extend({"role": "user", "content": text} for text in ("one", "two", "three"))
+    earlier = set(_explicit_markers(messages))
+    assert earlier == {MESSAGES[0]["content"], MESSAGES[1]["content"], "one", "two"}
+    for history, tail in (("three", "four"), ("four", "five"), ("five", "six")):
+        messages += [{"role": "assistant", "content": "answer"},
+                     {"role": "user", "content": tail}]
+        current = set(_explicit_markers(messages))
+        assert (earlier & current) - {MESSAGES[0]["content"], MESSAGES[1]["content"]}
+        assert history in current and tail not in current
+        earlier = current
+
+
+def test_explicit_compaction_does_not_misidentify_latest_user_as_initial_task():
+    model = make(OpenAIResponsesModel, cache_policy="responses-explicit-v1",
+                 compact_threshold=2000)
+    assistant = _assistant_message(model._parse(response([
+        {"type": "compaction", "id": "cmp_1", "encrypted_content": "opaque"}, message(),
+    ])))
+    request = body(model, [
+        MESSAGES[0], assistant, {"role": "user", "content": "current supplement"},
+    ])
+    assert request["input"][1:3] == assistant["continuation"]["output_items"]
+    assert "prompt_cache_breakpoint" not in dump(request["input"][-1])
+
+
+@pytest.mark.parametrize("official", [True, False])
+def test_flat_cache_usage_respects_known_inclusive_input_only_for_official_chat(official):
+    from tianshu.model import ModelError
+
+    model = make(OpenAICompatibleModel, **(
+        {} if official else {"base_url": "https://example.invalid/v1"}
+    ))
+    payload = _payload("openai", usage={
+        "prompt_tokens": 10, "completion_tokens": 2,
+        "cache_read_input_tokens": 8, "cache_creation_input_tokens": 7,
+    })
+    if official:
+        with pytest.raises(ModelError, check=lambda exc: exc.kind == "protocol"):
+            model._parse(payload)
+    else:
+        assert model._parse(payload).usage["cache_creation_input_tokens"] == 7

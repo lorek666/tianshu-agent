@@ -93,6 +93,33 @@ def _default_eval_workdir() -> Path:
     return Path(".tianshu/eval") / stamp
 
 
+def _cache_report_preflight(
+    cache: Path, workdir: Path, primary: Path | None, baseline: Path | None,
+) -> Path:
+    """在模型构造前拒绝报告别名、父子冲突和评测保留材料中的输出。"""
+    error = "--cache-report 必须是工作根外的独立新文件，不能覆盖评测材料、主报告或基线"
+    try:
+        if cache.exists() or cache.is_symlink():
+            raise TianshuError(error)
+        root = workdir.resolve()
+        paths = [path.resolve() for path in (cache, primary, baseline) if path is not None]
+        for path in paths:
+            if path.is_dir() or any(
+                parent.exists() and not parent.is_dir() for parent in path.parents
+            ):
+                raise TianshuError(error)
+            if path == root or root in path.parents or path in root.parents:
+                raise TianshuError(error)
+        for index, path in enumerate(paths):
+            for other in paths[:index]:
+                if (path == other or path in other.parents or other in path.parents
+                        or (path.exists() and other.exists() and path.samefile(other))):
+                    raise TianshuError(error)
+        return paths[0]
+    except (OSError, RuntimeError) as exc:
+        raise TianshuError(error) from exc
+
+
 def _cmd_evaluate(args: argparse.Namespace) -> int:
     """评测入口。与 replay 的分工写在 `tianshu.eval` 包的 docstring 里。
 
@@ -115,14 +142,10 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
             "子集报告的安全门槛只覆盖选中的几条，拿它当'可比分数'是假证据；"
             "正式评测请跑完整 20 条。"
         )
+    workdir = args.workdir or _default_eval_workdir()
     cache_path = args.cache_report
     if cache_path is not None:
-        if cache_path.is_dir() or any(
-            other is not None and other.resolve() == cache_path.resolve()
-            for other in (args.out, args.baseline)
-        ):
-            raise TianshuError("--cache-report 必须是独立文件，不能覆盖主报告或基线")
-    workdir = args.workdir or _default_eval_workdir()
+        cache_path = _cache_report_preflight(cache_path, workdir, args.out, args.baseline)
     if workdir.exists() and any(workdir.iterdir()):
         raise TianshuError(
             f"评测工作根必须不存在或为空（干净 fixture 是结果可信的前提）：{workdir}"
@@ -188,9 +211,9 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
             ),
         )
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        cache_path.write_text(
-            json.dumps(cache, ensure_ascii=False, indent=2) + "\n", encoding="utf-8",
-        )
+        # 即使目标在前置检查后才被其它步骤创建，也不截断已经出现的证据。
+        with cache_path.open("x", encoding="utf-8") as stream:
+            stream.write(json.dumps(cache, ensure_ascii=False, indent=2) + "\n")
     comparison = None
     if args.baseline is not None:
         baseline = json.loads(args.baseline.read_bytes().decode("utf-8"))

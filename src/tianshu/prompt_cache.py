@@ -49,6 +49,18 @@ def stable_tools(tools: list[dict[str, Any]], policy: str) -> list[dict[str, Any
     return json.loads(json.dumps(ordered, sort_keys=True))
 
 
+def stable_system(messages: list[dict[str, Any]], policy: str) -> list[dict[str, Any]]:
+    """只固定开头普通 system 的对象键，不重排正文、数组或 opaque 项。"""
+    if policy == "off":
+        return messages
+    result = list(messages)
+    for index, message in enumerate(messages):
+        if message.get("role") != "system" or "type" in message:
+            break
+        result[index] = json.loads(json.dumps(message, sort_keys=True))
+    return result
+
+
 def routing_key(
     *, adapter: str, endpoint: str, model: str, policy: str,
     messages: list[dict[str, Any]], tools: list[dict[str, Any]],
@@ -86,14 +98,29 @@ def responses_breakpoints(body: dict[str, Any]) -> None:
     """仅标记普通 input text；opaque output items 和工具往返原值透传。"""
     body["prompt_cache_options"] = {"mode": "explicit", "ttl": "30m"}
     items = body["input"]
-    candidates = [
+    leading = 0
+    while leading < len(items) and (
+        items[leading].get("role") == "system" and "type" not in items[leading]
+    ):
+        leading += 1
+    # 只有紧随初始 system（或位于起点）的 user 才可认作初始任务。
+    # 压缩/opaque 输出之后的第一个 user 是动态补充，不能借此重新认定任务。
+    task = leading if leading < len(items) and (
+        items[leading].get("role") == "user" and "type" not in items[leading]
+    ) else None
+    selected = set()
+    if leading:
+        selected.add(leading - 1)
+    if task is not None:
+        selected.add(task)
+    historical = [
         index for index, item in enumerate(items)
-        if item.get("role") in ("system", "user") and "type" not in item
+        if item.get("role") == "user" and "type" not in item
+        and index < len(items) - 1 and index != task
     ]
-    selected = set(candidates[:2])
-    historical = [index for index in candidates if index < len(items) - 1]
-    if historical:
-        selected.add(historical[-1])
+    # 显式模式只回查来件带标记的位置；保留上一历史点与新增历史点，
+    # 让连续追加时仍能查到上一轮写入，连同 system/任务最多四点。
+    selected.update(historical[-2:])
     for index in sorted(selected):
         item = items[index]
         content = item["content"]
