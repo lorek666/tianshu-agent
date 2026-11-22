@@ -1481,6 +1481,14 @@ class McpClients:
         for server in list(self._servers.values()):
             server.close()
 
+    def close_stopped_runs(self, is_stopped) -> None:
+        """仅扫描本进程持有的专属会话；Run 状态仍以持久存储为准。"""
+        if self._execution_scope is not None and is_stopped(self._execution_scope["run_id"]):
+            self.close_all()
+        for (_, run_id), scoped in tuple(self._scoped_clients.items()):
+            if is_stopped(run_id):
+                scoped.close_all()
+
     # ---- 查询
 
     def server(self, name: str) -> StdioServer | HttpServer | None:

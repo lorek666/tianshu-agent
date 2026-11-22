@@ -147,7 +147,7 @@ def consent_prepare(plane, params):
             raise ControlError("bad_params", "recursive 必须为布尔值")
         directory = Path(params["directory"]).resolve(strict=True)
         if not any(
-            b.can_write() and (
+            b.can_write and (
                 directory == Path(b.root_path).resolve()
                 or Path(b.root_path).resolve() in directory.parents)
             for b in task.workspaces

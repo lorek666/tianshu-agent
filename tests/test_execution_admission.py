@@ -180,6 +180,104 @@ def test_run_sessions_are_dedicated_and_timeout_is_never_retried(tmp_path):
     assert one.reconcile()["process_tree"] in ("exited", "unknown")
 
 
+@pytest.mark.parametrize("action", ["pause", "cancel", "fence"])
+def test_idle_worker_reaps_stopped_run_mcp_without_closing_live_session(tmp_path, action):
+    from tianshu.events import EventLog
+    from tianshu.loop import build_stack
+    from tianshu.model import ScriptedModel
+    from tianshu.worker import Worker
+
+    settings = _settings(tmp_path)
+    fixture = Path(__file__).parent / "fixtures" / "fake_mcp_server.py"
+    clients = McpClients({"fake": McpServerConfig(
+        name="fake", command=(sys.executable, str(fixture)),
+    )})
+    with closing(EventLog(settings["data_root"] / "events.db",
+                          blob_dir=settings["data_root"] / "blobs")) as log:
+        stack = build_stack(log, data_root=settings["data_root"], mcp_clients=clients)
+        stopped_task = stack.tasks.create_task("待停止的任务")
+        live_task = stack.tasks.create_task("仍在等待的任务")
+        stopped = stack.tasks.start_run(stopped_task.task_id)
+        live = stack.tasks.start_run(live_task.task_id)
+        sessions = [
+            clients.for_run(
+                task.task_id, run.run_id,
+                workspace=settings["workspace"], data_root=settings["data_root"],
+                exec_backend=LOCAL_EXEC_BACKEND, automatic=False,
+            )
+            for task, run in ((stopped_task, stopped), (live_task, live))
+        ]
+        worker = Worker(stack, model=ScriptedModel([]), heartbeat_interval_ms=0)
+        try:
+            for session in sessions:
+                session.start_all()
+                assert session.server("fake").is_alive
+            if action == "pause":
+                stack.tasks.request_pause(stopped.run_id)
+            elif action == "cancel":
+                stack.tasks.request_cancel(stopped.run_id)
+            else:
+                stack.tasks.revise_task(stopped_task.task_id, goal="已变更目标")
+            assert worker.run_once() is False
+            assert not sessions[0].server("fake").is_alive
+            assert sessions[1].server("fake").is_alive
+            assert not any(event.type == "model.intent" for event in log.read_run(live.run_id))
+        finally:
+            worker.close()
+            clients.close_all()
+
+
+@pytest.mark.parametrize("action, expected_state", [
+    ("finish", "succeeded"), ("pause", "paused"), ("cancel", "cancelled"),
+])
+def test_loop_safe_point_reaps_its_actual_mcp_session(tmp_path, action, expected_state):
+    from support import engine_for
+
+    from tianshu.events import EventLog
+    from tianshu.loop import build_stack
+    from tianshu.model import ModelResponse, ScriptedModel
+
+    settings = _settings(tmp_path)
+    fixture = Path(__file__).parent / "fixtures" / "fake_mcp_server.py"
+    clients = McpClients({"fake": McpServerConfig(
+        name="fake", command=(sys.executable, str(fixture)),
+    )})
+    with closing(EventLog(settings["data_root"] / "events.db",
+                          blob_dir=settings["data_root"] / "blobs")) as log:
+        stack = build_stack(log, data_root=settings["data_root"], mcp_clients=clients)
+        task = stack.tasks.create_task("在安全点收回本轮进程")
+
+        class ControlledModel(ScriptedModel):
+            server = None
+
+            def complete(self, messages, tools):
+                run_id = stack.tasks.get_task(task.task_id).active_run_id
+                scoped = clients.for_run(
+                    task.task_id, run_id, workspace=settings["workspace"],
+                    data_root=settings["data_root"], exec_backend=LOCAL_EXEC_BACKEND,
+                    automatic=False,
+                )
+                scoped.start_all()
+                self.server = scoped.server("fake")
+                assert self.server.is_alive
+                stack.dispatcher._mcp_source_clients = clients
+                stack.dispatcher._mcp_clients = scoped
+                stack.dispatcher._mcp_scope_run_id = run_id
+                if action == "pause":
+                    stack.tasks.request_pause(run_id)
+                elif action == "cancel":
+                    stack.tasks.request_cancel(run_id)
+                return ModelResponse("end_turn", content="已处理")
+
+        model = ControlledModel([])
+        try:
+            result = engine_for(stack, model).start(task.task_id, out_name="")
+            assert result.state == expected_state
+            assert model.server is not None and not model.server.is_alive
+        finally:
+            clients.close_all()
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX process groups")
 def test_stdio_close_kills_grandchild_even_after_leader_exits(tmp_path):
     from tianshu.execution_admission import PreparedExecution
@@ -453,6 +551,9 @@ def test_native_dispatcher_binds_mcp_run_generation_and_receipt(tmp_path, monkey
             assert verify_receipts(log, result.run_id) == []
             assert any(row.type == "execution.admitted" for row in events)
             scoped_server = stack.dispatcher._mcp_clients.server("native")
+            assert result.state == "succeeded"
+            assert not scoped_server.is_alive, "终态 Run 必须关闭专属 MCP 进程"
+            assert any(row.type == "execution.ended" for row in events)
             # Switching back to a trusted manual task must restore its separate
             # source client, never lend a previous Run's admitted process.
             manual = stack.tasks.create_task(

@@ -245,6 +245,7 @@ class Worker:
 
     def run_once(self) -> bool:
         """认领一个作业并推进它。返回"这次有没有活干"。"""
+        self.stack.dispatcher.close_inactive_mcp()
         self._reconcile_subtask_state()
         claim = self._claims.claim_next(ttl_ms=self.ttl_ms)
         if claim is None:

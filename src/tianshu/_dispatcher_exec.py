@@ -1225,6 +1225,20 @@ class _DispatcherExecMixin:
         if getattr(self, "_mcp_scope_run_id", "") == run_id and self._mcp_clients is not None:
             self._mcp_clients.close_all()
 
+    def close_inactive_mcp(self) -> None:
+        """处理另一连接已就地暂停/终结的等待 Run，不杀仍在飞的调用。"""
+        clients = getattr(self, "_mcp_source_clients", self._mcp_clients)
+        if clients is None:
+            return
+
+        def stopped(run_id: str) -> bool:
+            run = self._tasks.get_run(run_id)
+            return run is None or run.state in (
+                "paused", "succeeded", "failed", "cancelled", "fenced",
+            )
+
+        clients.close_stopped_runs(stopped)
+
     def prepare_model_mcp(self, claim: JobClaim, *, queued_desktop: bool) -> None:
         """Connector discovery is optional; it must not block an existing read or model turn."""
         if (self._mcp_clients is None

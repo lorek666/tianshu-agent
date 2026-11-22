@@ -40,3 +40,31 @@ def test_production_consent_store_rejects_run_without_confirmed_mission_plan(env
     with pytest.raises(ControlError):
         plane.handle("consent.prepare", {"run_id": run.run_id, "kind": "directory_overwrite",
                                          "directory": str(env[2]), "recursive": False})
+
+
+def test_directory_consent_preview_uses_writable_workspace_binding(env, tmp_path):
+    from tianshu.mission import MissionSpecV1, freeze_mission
+
+    stack, task, ws, mission, document, manifest = env
+    plane = ControlPlane(stack, model=ScriptedModel([]))
+    plans = store(env)
+    view = plans.create(task.task_id, mission, document, manifest, request_id="create")
+    plans.confirm(view["plan_id"], expected_revision=1,
+                  document_digest=view["document_digest"], request_id="confirm")
+    run = stack.tasks.start_run(task.task_id)
+    freeze_mission(stack.log, run.run_id, mission=MissionSpecV1.of(mission))
+    plans.change_step(view["plan_id"], "write", "running", run_id=run.run_id,
+                      request_id="execute")
+    params = {"run_id": run.run_id, "kind": "directory_overwrite",
+              "directory": str(ws), "recursive": False}
+    before = stack.log.seq_head()
+    preview = plane.handle("consent.prepare", params)["preview"]
+    assert preview["matcher"]["directory"] == str(ws.resolve())
+    assert preview["matcher"]["recursive"] is False
+    assert preview["action"] == "overwrite"
+    assert preview["tool_binding"]["tool_id"] == "modify_text"
+    assert stack.log.seq_head() == before, "预览不能签发授权"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    with pytest.raises(ControlError):
+        plane.handle("consent.prepare", {**params, "directory": str(outside)})

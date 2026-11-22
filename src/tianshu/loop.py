@@ -876,6 +876,9 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         提交里完成（见 `TaskStore.confirm_control`），所以恢复之后不会把同一条
         请求再执行一遍。
         """
+        run = self._tasks.get_run(run_id)
+        if run is not None and run.control_requested in (CONTROL_PAUSE, CONTROL_CANCEL):
+            self._dispatcher.close_run_mcp(run_id)
         action = self._tasks.confirm_control(run_id, claim=claim)
         if action is not None:
             if action == CONTROL_PAUSE:
