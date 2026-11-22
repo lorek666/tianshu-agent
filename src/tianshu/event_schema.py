@@ -29,6 +29,7 @@ import copy
 import re
 from typing import Any
 
+from .agent_contracts import AGENT_SCHEMAS
 from .continuation import (
     COMPACTION_REF_VERSION,
     COMPACTION_SCHEMA,
@@ -1228,11 +1229,13 @@ def _relax(schema: dict[str, Any], relaxations: dict[str, dict[str, Any]]) -> di
     return schema
 
 
+CURRENT_SCHEMAS.update(AGENT_SCHEMAS)
+
 V1_ONLY_EVENTS = frozenset({
     "goal.created", "goal.round_started", "goal.closed",
     "run.attachments", "run.conversation", "run.guidance_applied", "run.guidance_requested",
     "run.model_route", "run.workflow", "run.workflow_request",
-})
+}) | frozenset(AGENT_SCHEMAS)
 
 
 LEGACY_SCHEMAS: dict[str, dict[str, Any]] = {

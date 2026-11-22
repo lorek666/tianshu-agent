@@ -97,6 +97,9 @@
         "model.error",
         "model.intent",
         "model.result",
+        "plan.confirmed",
+        "plan.created",
+        "plan.step_changed",
         "policy.denied",
         "receipt",
         "recovery.blocked",
@@ -127,7 +130,11 @@
         "tool.not_dispatched",
         "tool.result",
         "undo.completed",
-        "undo.failed"
+        "undo.failed",
+        "verification.decided",
+        "verification.requested",
+        "verification.result",
+        "verification.run_started"
       ],
       "type": "string"
     }
@@ -3333,6 +3340,415 @@
           "request_id",
           "outcome",
           "confirmed_criteria"
+        ]
+      },
+      "verification.run_started": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "format_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "plan_id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "plan_digest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "mission_digest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "step_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "format_version",
+          "plan_id",
+          "revision",
+          "plan_digest",
+          "mission_digest",
+          "step_id",
+          "request_id"
+        ]
+      },
+      "plan.created": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "format_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "plan_id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "mission_id": {
+            "type": "string"
+          },
+          "mission_digest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "document_ref": {
+            "type": "string"
+          },
+          "document_digest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "manifest_ref": {
+            "type": "string"
+          },
+          "mission_ref": {
+            "type": "string"
+          },
+          "previous_digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "changed_step_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "source_run_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "format_version",
+          "plan_id",
+          "revision",
+          "mission_id",
+          "mission_digest",
+          "document_ref",
+          "document_digest",
+          "manifest_ref",
+          "mission_ref",
+          "previous_digest",
+          "changed_step_ids",
+          "source_run_id",
+          "request_id"
+        ]
+      },
+      "plan.confirmed": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "format_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "plan_id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "document_digest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "goal_revision": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "format_version",
+          "plan_id",
+          "revision",
+          "document_digest",
+          "request_id",
+          "goal_revision"
+        ]
+      },
+      "plan.step_changed": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "format_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "plan_id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "step_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "ready",
+              "running",
+              "verifying",
+              "satisfied",
+              "failed",
+              "blocked",
+              "invalidated",
+              "skipped"
+            ]
+          },
+          "attempt": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "execution_run_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reason_code": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "format_version",
+          "plan_id",
+          "revision",
+          "step_id",
+          "state",
+          "attempt",
+          "execution_run_id",
+          "evidence_refs",
+          "reason_code",
+          "request_id"
+        ]
+      },
+      "verification.requested": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "format_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "plan_id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "step_id": {
+            "type": "string"
+          },
+          "check_id": {
+            "type": "string"
+          },
+          "check_digest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "attempt_id": {
+            "type": "string"
+          },
+          "input_fingerprint": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "request_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "format_version",
+          "plan_id",
+          "revision",
+          "step_id",
+          "check_id",
+          "check_digest",
+          "attempt_id",
+          "input_fingerprint",
+          "evidence_refs",
+          "request_id"
+        ]
+      },
+      "verification.result": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "format_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "plan_id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "step_id": {
+            "type": "string"
+          },
+          "check_id": {
+            "type": "string"
+          },
+          "check_digest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "attempt_id": {
+            "type": "string"
+          },
+          "input_fingerprint": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "result": {
+            "type": "string",
+            "enum": [
+              "passed",
+              "failed",
+              "inconclusive",
+              "blocked"
+            ]
+          },
+          "reason_code": {
+            "type": "string"
+          },
+          "verified_event_seq": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "format_version",
+          "plan_id",
+          "revision",
+          "step_id",
+          "check_id",
+          "check_digest",
+          "attempt_id",
+          "input_fingerprint",
+          "evidence_refs",
+          "result",
+          "reason_code",
+          "verified_event_seq"
+        ]
+      },
+      "verification.decided": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "format_version": {
+            "type": "integer",
+            "const": 1
+          },
+          "plan_id": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "step_id": {
+            "type": "string"
+          },
+          "check_id": {
+            "type": "string"
+          },
+          "check_digest": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "attempt_id": {
+            "type": "string"
+          },
+          "input_fingerprint": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "decision": {
+            "type": "string",
+            "enum": [
+              "accept",
+              "reject"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "format_version",
+          "plan_id",
+          "revision",
+          "step_id",
+          "check_id",
+          "check_digest",
+          "attempt_id",
+          "input_fingerprint",
+          "evidence_refs",
+          "request_id",
+          "decision",
+          "reason"
         ]
       }
     },

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from . import event_schema
+from .agent_contracts import AGENT_SCHEMAS
 from .data_admission import check_connection, check_new_file_evidence
 from .errors import EventLogCorrupt, TianshuError
 from .event_schema import PayloadVersionUnavailable
@@ -132,6 +133,7 @@ EVENT_TYPES: frozenset[str] = frozenset(
 
 #: 注册表与逐类型 payload 契约必须一一对应：少一个类型 = 该类型无法写入
 #: （fail-closed）。这里是导入期校验，测试里还会再绑一次（改一处忘一处会红）。
+EVENT_TYPES = EVENT_TYPES | frozenset(AGENT_SCHEMAS)
 event_schema.ensure_registry(EVENT_TYPES)
 
 #: 已定义、但当前**没有任何发射点**的类型。

@@ -433,6 +433,90 @@
       "request_id": "x",
       "outcome": "completed",
       "confirmed_criteria": []
+    },
+    "verification.run_started": {
+      "format_version": 1,
+      "plan_id": "x",
+      "revision": 0,
+      "plan_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "mission_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "step_id": "x",
+      "request_id": "x"
+    },
+    "plan.created": {
+      "format_version": 1,
+      "plan_id": "x",
+      "revision": 0,
+      "mission_id": "x",
+      "mission_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "document_ref": "x",
+      "document_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "manifest_ref": "x",
+      "mission_ref": "x",
+      "previous_digest": "x",
+      "changed_step_ids": [],
+      "source_run_id": "x",
+      "request_id": "x"
+    },
+    "plan.confirmed": {
+      "format_version": 1,
+      "plan_id": "x",
+      "revision": 0,
+      "document_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "request_id": "x",
+      "goal_revision": 0
+    },
+    "plan.step_changed": {
+      "format_version": 1,
+      "plan_id": "x",
+      "revision": 0,
+      "step_id": "x",
+      "state": "pending",
+      "attempt": 0,
+      "execution_run_id": "x",
+      "evidence_refs": [],
+      "reason_code": "x",
+      "request_id": "x"
+    },
+    "verification.requested": {
+      "format_version": 1,
+      "plan_id": "x",
+      "revision": 0,
+      "step_id": "x",
+      "check_id": "x",
+      "check_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "attempt_id": "x",
+      "input_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000",
+      "evidence_refs": [],
+      "request_id": "x"
+    },
+    "verification.result": {
+      "format_version": 1,
+      "plan_id": "x",
+      "revision": 0,
+      "step_id": "x",
+      "check_id": "x",
+      "check_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "attempt_id": "x",
+      "input_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000",
+      "evidence_refs": [],
+      "result": "passed",
+      "reason_code": "x",
+      "verified_event_seq": 0
+    },
+    "verification.decided": {
+      "format_version": 1,
+      "plan_id": "x",
+      "revision": 0,
+      "step_id": "x",
+      "check_id": "x",
+      "check_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "attempt_id": "x",
+      "input_fingerprint": "0000000000000000000000000000000000000000000000000000000000000000",
+      "evidence_refs": [],
+      "request_id": "x",
+      "decision": "accept",
+      "reason": "x"
     }
   },
   "generated_by": "event_schema.minimal_payload"
