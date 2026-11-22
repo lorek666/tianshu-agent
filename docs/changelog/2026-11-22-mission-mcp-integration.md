@@ -48,9 +48,14 @@ pure_only、输入模板变化及 request_id 配置变化。HTTP 夹具统一使
 `events.db` / `blobs` / data_root；旧 `main.db` 配合同级保留材料目录所触发的
 所有者拒绝和异根 legacy-layout 拒绝均留在过程日志，不放宽产品守卫。
 
-本分支验证仅覆盖 Mission、MCP、执行准入、事件、控制面及受影响循环域；
+Goal G1 的 `advance` 同样改为仅在创建事务内保存 pending 输入，实际选中 server
+发现由 claim 驱动；真实 stdio 写事务断言与 HTTP 首轮路由先红后绿，日志分别为
+`red-g1-discovery.log` 与 `green-g1-discovery.log`。MCP isError 恢复夹具也将主库、
+blob 与 data_root 对齐同根，保留 applied 收据与恢复不得重判的原断言。
+
+本分支验证覆盖 Mission、MCP、执行准入、事件、控制面及受影响循环域；
 完整组合候选的本机全量、独立第二读者和 hosted required CI 由整合方重新绑定。
-Goal G1/V2 的入口接缝由整合方统一适配，不把本分支结果当作 Goal 交付证明。
+Goal V2 的创建/阶段入口由整合方统一适配，不把本分支结果当作 Goal V2 交付证明。
 
 ## 未验证与保留限制
 
