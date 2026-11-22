@@ -35,6 +35,9 @@
   parent account concealed accumulated unknown reservations. Keep the token
   limit and acceptance checks unchanged; historical fixture scores are not
   directly comparable. This does not supply real-provider measurements.
+- Ruling: commit Tasks 1 and 2 together after the frozen verification —
+  preserve the user's single final candidate CI and bind implementation and
+  report collection to the same reviewed tree.
 
 ### Task 1: Durable auxiliary usage
 
@@ -46,12 +49,12 @@ test `tests/test_summary_cache_telemetry.py`.
 `finish_call(log, summary_id, *, usage, cost) -> None`,
 `read_calls(log) -> list[dict]`. Wire only at the real summary model boundary.
 
-- [ ] Write tests for persistence, immutable identity, invalid data, rejected bodies, unknown failures and hard exit.
-- [ ] Run the new tests and observe failure for missing persistence.
-- [ ] Implement the two append-only tables and validated versioned payloads.
-- [ ] Wire the real summary boundary without modifying accounting or main events.
-- [ ] Run targeted summary/replay/budget tests.
-- [ ] Commit implementation and tests with a reason.
+- [x] Write tests for persistence, immutable identity, invalid data, rejected bodies, unknown failures and hard exit.
+- [x] Run the new tests and observe failure for missing persistence.
+- [x] Implement the two append-only tables and validated versioned payloads.
+- [x] Wire the real summary boundary without modifying accounting or main events.
+- [x] Run targeted summary/replay/budget tests.
+- [x] Commit implementation and tests with a reason.
 
 ### Task 2: Report and lifecycle evidence
 
@@ -63,19 +66,29 @@ test `tests/test_cache_metrics.py`, `tests/test_summary_cache_telemetry.py`.
 records. Cache sidecar adds auxiliary requests, auxiliary/all usage; existing
 main usage remains main-only.
 
-- [ ] Write failing report tests for auxiliary coverage, unknowns and deduplication.
-- [ ] Collect root/child/followup records before closing the database.
-- [ ] Build separate auxiliary and combined metrics; retain C5 verdicts.
-- [ ] Prove backup roundtrip and GC protection; expose tables in data statistics.
-- [ ] Run affected domains, then commit.
+- [x] Write failing report tests for auxiliary coverage, unknowns and deduplication.
+- [x] Collect root/child/followup records before closing the database.
+- [x] Build separate auxiliary and combined metrics; retain C5 verdicts.
+- [x] Prove backup roundtrip and GC protection; expose tables in data statistics.
+- [x] Run affected domains, then commit.
 
 ### Task 3: Freeze and verify
 
 **Files:** Update `docs/prompt-cache.md`, `docs/KNOWLEDGE.md`;
 create `docs/changelog/2026-11-23-summary-cache-telemetry.md`.
 
-- [ ] Reconcile claims and link paid A/B prerequisites; do not mark it done.
-- [ ] Run lock/Ruff/diff checks and the final full local suite.
-- [ ] Obtain an independent Tier 1 review bound to the code/test tree.
-- [ ] Push the frozen draft, then run one complete candidate CI and verify actual identities.
-- [ ] Report remaining paid experiment inputs precisely; no merge or release.
+- [x] Reconcile claims and link paid A/B prerequisites; do not mark it done.
+- [x] Run lock/Ruff/diff checks and the final full local suite.
+- [x] Obtain an independent Tier 1 review bound to the code/test tree.
+- [x] Document the remaining paid experiment inputs precisely.
+
+Implementation: `ebb47ffc7de5b6e6e65147f67b40c52cdebb0ebc`, tree
+`aa9a5ce399584ef96584dbc7e8fb7777f37938ea`. Verification evidence is recorded in the
+[changelog](../../changelog/2026-11-23-summary-cache-telemetry.md).
+
+Hosted verification follows the completed freeze: push the draft, run one
+complete candidate CI, and verify the actual head/merge/run/artifact identities.
+The exact candidate result is maintained in
+[PR #222](https://github.com/lorek666/tianshu-agent/pull/222), rather than
+predeclaring a future CI result in this plan. No merge or release is part of
+this plan.

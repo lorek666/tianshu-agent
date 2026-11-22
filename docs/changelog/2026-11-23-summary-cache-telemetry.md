@@ -27,8 +27,31 @@
 
 本轮定向红绿覆盖真实摘要调用、拒绝正文、模型异常、发送后硬退出及恢复不重发、
 关库重开、记录不可覆盖与损坏负控、报告去重与分母、C5 安全失败保真、
-备份数据库读回及 GC 保留。精确冻结和全量/独立复审/候选 CI 证据在验证完成后回填；
-不得复用上一冻结 `0b8aa51` 的 CI 绿来宣称本增量已验证。
+备份数据库读回及 GC 保留；原始失败与修后回归日志均保留。
+
+- 实现提交：`ebb47ffc7de5b6e6e65147f67b40c52cdebb0ebc`，
+  tree：`aa9a5ce399584ef96584dbc7e8fb7777f37938ea`。
+  全部非 `.md` Git tree 条目原始 NUL 串的 SHA256 为
+  `08739dd7c853fb3bb6df97969787d271f5476be83760c55984b05684f89f7205`。
+- 本机完整 `uv run --frozen pytest` 于 2026-11-23 01:15:41 至
+  01:30:47（UTC+08:00）执行，退出码 0；执行前后冻结 tree 一致且无未暂存变化。
+  `full-pytest.log` SHA256：
+  `720ed86392729f7303c8f41948ea71016237504aec7aa41219a7bea8ea673e7f`。
+- `uv lock --check`、`uv run --frozen ruff check .`、暂存与未暂存
+  `git diff --check` 均通过；文档回填另核对本地链接及非 Markdown 树零变化。
+- 独立第二读者 `summary_cache_independent_review` 亲自读取增量代码/测试，
+  运行摘要、同库根/子/followup 采集及预算负控，并核对最终提交与冻结代码树。
+  结论为 **已修 2 项、部分修 0 项、未修 0 项**。
+  复审报告 SHA256：
+  `dcddf704278a283f2487793d240a3385d8921b06468b22c771b629d923642030`。
+  审查者核验作者全量日志与绑定，没有重复执行全量。
+
+原始日志、冻结清单、独立探针与提交绑定保存在 ignored
+`.omc/artifacts/summary-cache-20261123/`。后续纯 Markdown 回填须与上述冻结
+非 Markdown 清单逐字节一致，才可复用本机全量与代码复审结论。
+最终候选的托管 CI head/base、合成 merge checkout、run/attempt 和 artifact
+核验结果以 [PR #222](https://github.com/lorek666/tianshu-agent/pull/222)
+正文及检查为准；本机验证不证明托管 CI，上一冻结 `0b8aa51` 的绿也不覆盖本增量。
 
 ## 未完成的真实实验
 
