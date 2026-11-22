@@ -525,6 +525,60 @@ def test_auto_two_steps_are_serial_and_share_one_mission(env):
     assert all(m == missions[0] for m in missions)
 
 
+def test_auto_two_real_file_writes_are_verified_and_complete(env):
+    import copy
+
+    from tianshu.goal_v2 import GoalCoordinator
+    from tianshu.model import ToolCall
+
+    goal = create(env, mode="bounded_auto", completion_policy="verified",
+                  execution_policy=EFFECTS.to_dict())
+    advance(env, goal)
+    document = candidate(GoalCoordinator(env[1]).mission(goal["goal_id"]), steps=2)
+    manifest, plan = document["verification_manifest"], document["plan"]
+    manifest["checks"][0]["inputs"]["relative_path"] = "a.txt"
+    other = copy.deepcopy(manifest["checks"][0])
+    other["check_id"] = "exists_b"
+    other["inputs"]["relative_path"] = "b.txt"
+    manifest["checks"].append(other)
+    plan["steps"][1]["verification_ids"] = ["exists_b"]
+    plan["verification_manifest"] = {
+        "content_ref": "content://sha256:" + jcs_sha256(manifest),
+        "digest": jcs_sha256(manifest),
+    }
+    drive(env[1], json.dumps(document))
+    goal = get(env, goal)
+    stored = PlanStore(env[1]).get(goal["plan_id"])
+    PlanStore(env[1]).confirm(stored["plan_id"], expected_revision=1,
+                            document_digest=stored["document_digest"], request_id="confirm")
+    model = ScriptedModel([
+        response
+        for name in ("a", "b")
+        for response in (
+            ModelResponse("tool_use", tool_calls=[
+                ToolCall("create_" + name, "create_report",
+                         {"name": name + ".txt", "content": name}),
+            ], usage={"input_tokens": 10, "output_tokens": 10}),
+            ModelResponse("end_turn", content="已写入 " + name,
+                          usage={"input_tokens": 10, "output_tokens": 10}),
+        )
+    ])
+    with Worker(env[1], model=model, heartbeat_interval_ms=0) as worker:
+        worker.drain(max_jobs=10)
+        assert not worker.errors
+    completed = get(env, goal)
+    assert completed["status"] == "completed", completed["blocker"]
+    assert completed["round"] == 2
+    assert all((env[3] / (name + ".txt")).read_bytes() == name.encode() for name in ("a", "b"))
+    assert all(s["state"] == "satisfied"
+               for s in PlanStore(env[1]).get(goal["plan_id"])["steps"])
+    for run in env[1].tasks.list_runs(env[2].task_id):
+        intents = env[1].log.read_run(run.run_id, event_types=("tool.intent",))
+        results = env[1].log.read_run(run.run_id, event_types=("tool.result",))
+        assert {e.payload["call_id"] for e in intents} <= {
+            e.payload["call_id"] for e in results}
+
+
 def test_pause_resume_reuses_queued_run_and_cancel_preserves_budget(env):
     goal = create(env)
     first = advance(env, goal)

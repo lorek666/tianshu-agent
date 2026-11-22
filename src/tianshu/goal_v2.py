@@ -471,10 +471,14 @@ class GoalCoordinator:
             if run and (run.effect_state in ("partial", "unknown") or run.state == "reconciling"):
                 return "effect_unknown", seq
             events = self.log.read_run(run_id, event_types=("tool.intent", "tool.result"))
-            intents = {e.payload.get("dispatch_id") for e in events if e.type == "tool.intent"}
-            results = {e.payload.get("dispatch_id") for e in events if e.type == "tool.result"}
-            if intents - results:
-                return "effect_unknown", seq
+            # C2 结果通过 Run 内唯一 call_id 关联 intent，结果没有 dispatch_id。
+            intents = {(e.payload["call_id"], e.payload["tool_id"]): e.seq
+                       for e in events if e.type == "tool.intent"}
+            results = {(e.payload["call_id"], e.payload["tool_id"]): e.seq
+                       for e in events if e.type == "tool.result"}
+            for identity, intent_seq in intents.items():
+                if results.get(identity, 0) <= intent_seq:
+                    return "effect_unknown", intent_seq
         return None
 
     def _lifecycle_block(self, view):
