@@ -592,6 +592,15 @@ Plan/Verification、Goal V2、有限授权及执行对象准入契约。新增�
 工具候选和验收，不授权。历史无 Mission 的 Run 保留原输入，不回填或改写 replay。
 按[实施计划](superpowers/plans/2026-11-22-agent-loop.md)分批落实；未验证对象不宣称交付。
 
+**Mission / MCP 发现接缝增量**：新增仅 payload v1 的 `run.mission_pending`。
+未提供共享 Mission 且显式选择 MCP 的 effects Run 可先保存候选配置、已知工具身份、
+server 范围及首轮输入材料；claim 后在 SQLite 写事务外发现，首游标和首次
+`model.intent` 前固定唯一 `run.mission`。新发现只可补入选中 server、profile 与
+显式工具限制交集中的未知工具，已知身份变化不自动升级，共享 Mission 不扩充。
+Mission 路由使用不含 Session generation 的稳定语义版本，执行侧继续核验具体
+Session 版本。历史无 pending 的 Run 不补写，已有精确快照不放宽；字段约束见
+[主循环规格 §5.3](SPEC-AGENT-LOOP-2026-11-22.md#53-固定恢复与回放)。
+
 ```
 Event {
   seq          uint64       # 单调递增，主键，不可跳号

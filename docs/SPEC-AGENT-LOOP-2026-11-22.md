@@ -139,6 +139,19 @@ prompt = {template_id, version, digest, content_ref}
 
 ### 5.3 固定、恢复与回放
 
+- 未提供共享 Mission、采用 effects 且显式选择 MCP server 的新 Run，可先追加
+  payload v1 的 `run.mission_pending`：保存候选配置、当时已知的精确工具身份、
+  明确选择的 server、显式工具限制，以及模板正文和编译后首轮输入的内容引用与摘要。
+  此事件不是已确认的 Mission，不授予发现或执行权限。取得有效 claim 后，在写事务外
+  完成实际 Session 发现，再固定唯一 `run.mission`；首游标和模型 intent 均在其后。
+  新 pending 路径不把发现前的 `run.start.tools` 当作完整工具集合；最终精确集合保存在
+  `run.mission`。旧 Run 的 `run.start.tools` 仍保持原解释。
+- pending 只允许加入此前未知、来自明确选中 server、符合任务 profile 及显式工具限制
+  的工具；已知工具身份变化不得自动升级。共享 Mission 从不增加候选。
+  pending 配置的 request_id 重试必须逐项一致；历史无 pending 的 Run 不回填。
+- Mission 的 MCP 工具版本绑定 schema、描述和稳定服务身份，不包含每次启动的
+  Session generation；审批、Grant 和实际执行仍绑定独立 Session 的执行版本。
+  已有包含 generation 的 Mission 快照保持原精确身份，不改写或放宽历史记录。
 - 新 Run 首次模型 intent 前追加唯一 `run.mission`，同事务绑定 Mission、
   模板正文、渲染器版本、有效工具清单及编译后起始消息的内容引用和摘要。
   不仅保存一个指向当前代码常量的版本号。
