@@ -394,6 +394,70 @@ def test_budget_refusal_is_structured_and_never_calls_model(env):
     assert facts[-1].payload["category"] == "budget_exhausted"
 
 
+@pytest.mark.parametrize("failure,event_type,rule_id,category", [
+    ("unconfigured", "policy.denied", "c4.exec_not_configured", "policy_denied"),
+    ("policy", "dispatch.rejected", "c4.exec_policy_denied", "policy_denied"),
+    ("isolation", "dispatch.rejected", "c4.exec_unsupported", "isolation_unavailable"),
+])
+def test_goal_classifies_real_dispatch_denial_facts(env, failure, event_type, rule_id, category):
+    from tianshu.execpolicy import ExecPolicy
+    from tianshu.model import ToolCall
+    if failure != "unconfigured":
+        policy = ExecPolicy() if failure == "policy" else ExecPolicy(
+            argv_allowlist=(str(Path(sys.executable).resolve()),), cwd_roots=(env[3],),
+            timeout_ms=2000, max_output_bytes=4096, isolation_requires=("network",))
+        task = env[1].tasks.create_task("核对报告", [str(env[3])], exec_policy=policy)
+        env = env[0], env[1], task, env[3]
+    goal = planned(env, execution_policy=EFFECTS.to_dict())
+    (env[3] / "report.md").write_bytes(b"report")
+    started = advance(env, goal, "execute")
+    model = ScriptedModel([
+        ModelResponse("tool_use", tool_calls=[ToolCall("command", "run_command", {
+            "argv": [str(Path(sys.executable).resolve()), "-c", "print('never executed')"],
+            "cwd": str(env[3]),
+        })], usage={"input_tokens": 1, "output_tokens": 1}),
+        ModelResponse("end_turn", content="报告已完成",
+                      usage={"input_tokens": 1, "output_tokens": 1}),
+    ])
+    with Worker(env[1], model=model, heartbeat_interval_ms=0) as worker:
+        worker.drain(max_jobs=10)
+        assert not worker.errors
+    facts = env[1].log.read_run(started["phase_run_id"], event_types=(event_type,))
+    assert facts[-1].payload["rule_id"] == rule_id
+    assert not env[1].log.read_run(started["phase_run_id"], event_types=("tool.intent",))
+    assert not env[1].approvals.pending(run_id=started["phase_run_id"])
+    result = get(env, goal)
+    assert result["status"] == "blocked"
+    assert result["blocker"]["category"] == category
+    assert result["blocker"]["source_event_seq"] == facts[-1].seq
+
+
+def test_failed_verification_block_is_bound_to_real_result_event(env):
+    goal = planned(env)
+    advance(env, goal, "execute")
+    drive(env[1], "口头完成")
+    advance(env, get(env, goal), "verify")
+    drive(env[1])
+    result = get(env, goal)
+    fact = env[1].log.read_run(
+        result["phase_run_id"], event_types=("verification.result",))[-1]
+    assert fact.payload["result"] == "failed"
+    assert result["blocker"]["category"] == "verification_failed"
+    assert result["blocker"]["source_event_seq"] == fact.seq
+
+
+def test_model_failure_words_do_not_replace_structured_denial_facts(env):
+    goal = planned(env)
+    (env[3] / "report.md").write_bytes(b"report")
+    advance(env, goal, "execute")
+    drive(env[1], "policy_denied isolation_unavailable c4.exec_unsupported")
+    advance(env, get(env, goal), "verify")
+    drive(env[1])
+    result = get(env, goal)
+    assert result["phase"] == "finish"
+    assert result["blocker"] is None
+
+
 def test_worker_honors_frozen_phase_local_turn_limit(env):
     from tianshu.model import ToolCall
     goal = planned(env)

@@ -706,6 +706,32 @@ class GoalCoordinator:
         failpoint("goal-v2-after-tick")
         return result
 
+    def _phase_failure(self, run_id):
+        from .rules import RULE_IDS
+        facts = self.log.read_run(run_id, event_types=(
+            "goal.v2_admission_refused", "policy.denied", "dispatch.rejected",
+            "verification.result",
+        ))
+        refused = [e for e in facts if e.type == "goal.v2_admission_refused"]
+        if refused:
+            return refused[-1].payload["category"], refused[-1].seq
+        isolation_rules = {"c4.exec_unsupported", "c4.mcp_isolation_unproven"}
+        denials = [e for e in facts if e.type in ("policy.denied", "dispatch.rejected")]
+        if denials:
+            fact = denials[-1]
+            category = ("isolation_unavailable" if fact.payload["rule_id"] in isolation_rules
+                        else "policy_denied")
+            return category, fact.seq
+        results = [e for e in facts if e.type == "verification.result"
+                   and e.payload["result"] in ("failed", "blocked", "inconclusive")]
+        if results:
+            fact = results[-1]
+            reason = fact.payload["reason_code"]
+            category = ("isolation_unavailable" if reason in isolation_rules else
+                        "policy_denied" if reason in RULE_IDS else "verification_failed")
+            return category, fact.seq
+        return None
+
     def _tick(self, goal_id, *, requested=False, request_id="", expected_state_revision=None,
               orchestration_epoch=None):
         if request_id:
@@ -776,12 +802,14 @@ class GoalCoordinator:
                     for s in self.tasks.list_subtasks(run.run_id)
                 ):
                     return self._block(view, "recovery_required", request_id=request_id)
-                if run.state != "succeeded":
-                    refused = self.log.read_run(
-                        run.run_id, event_types=("goal.v2_admission_refused",))
-                    category = refused[-1].payload["category"] if refused else "execution_failed"
+                failure = self._phase_failure(run.run_id)
+                if failure:
                     return self._block(
-                        view, category, source=refused[-1].seq if refused else 0,
+                        view, failure[0], source=failure[1],
+                        safe=run.effect_state == "none_applied", request_id=request_id)
+                if run.state != "succeeded":
+                    return self._block(
+                        view, "execution_failed",
                         safe=run.effect_state == "none_applied", request_id=request_id)
                 from .conversation import clarification_question
                 if clarification_question(self.log.read_run(run.run_id)):
