@@ -26,6 +26,22 @@ def handle(plane, action, params):
     }
     if action not in fields or set(params) - fields[action]:
         raise ControlError("bad_params", "Goal V2 参数包含未定义字段")
+    required = {
+        "create": {"task_id", "goal_revision", "criteria", "execution_policy", "request_id"},
+        "get": set(),
+        "advance": {"goal_id", "request_id", "expected_state_revision", "orchestration_epoch"},
+        "pause": {"goal_id", "request_id", "expected_state_revision"},
+        "resume": {"goal_id", "request_id", "expected_state_revision"},
+        "recover": {
+            "goal_id", "request_id", "expected_state_revision", "expected_block_event_seq",
+            "resolution", "evidence_refs",
+        },
+        "close": {"goal_id", "request_id", "expected_state_revision", "outcome"},
+    }
+    if required[action] - set(params):
+        raise ControlError("bad_params", "Goal V2 缺少必填参数")
+    if action == "get" and len(params) != 1:
+        raise ControlError("bad_params", "get 必须且只能指定 task_id 或 goal_id")
     coordinator = GoalCoordinator(plane.stack, model=plane._model, limits=plane._limits)
     try:
         if action == "create":
@@ -41,11 +57,9 @@ def handle(plane, action, params):
             goal = coordinator.tick(
                 _require_str(params, "goal_id"), requested=True,
                 request_id=_require_str(params, "request_id"),
-                expected_state_revision=params.get("expected_state_revision"),
-                orchestration_epoch=params.get("orchestration_epoch"))
+                expected_state_revision=params["expected_state_revision"],
+                orchestration_epoch=params["orchestration_epoch"])
         else:
-            if action == "recover" and "expected_state_revision" not in params:
-                raise ValueError("recover 必须绑定 expected_state_revision")
             goal = coordinator.control(_require_str(params, "goal_id"), action, params)
     except GoalConflict as exc:
         raise ControlError("conflict", str(exc)) from exc

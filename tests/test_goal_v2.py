@@ -53,6 +53,8 @@ def get(env, goal):
 def advance(env, goal, request_id="advance"):
     return env[0].handle("goal.v2.advance", {
         "goal_id": goal["goal_id"], "request_id": request_id,
+        "expected_state_revision": goal["state_revision"],
+        "orchestration_epoch": goal["orchestration_epoch"],
     })["goal"]
 
 
@@ -120,9 +122,10 @@ def test_v2_worker_plan_execute_verify_and_human_finish_are_distinct(env):
     PlanStore(env[1]).confirm(plan["plan_id"], expected_revision=1,
                             document_digest=plan["document_digest"], request_id="confirm")
     (env[3] / "report.md").write_bytes(b"report")
-    advance(env, goal, "execute")
+    advance(env, planned, "execute")
     drive(env[1], "报告存在")
-    advance(env, goal, "verify")
+    execution_finished = get(env, goal)
+    advance(env, execution_finished, "verify")
     drive(env[1])
     result = get(env, goal)
     assert result["status"] == "awaiting_review"
@@ -159,6 +162,100 @@ def test_advance_binds_request_parameters_and_rejects_stale_cas(env):
         with pytest.raises(ControlError):
             env[0].handle("goal.v2.advance", {**params, **changes})
         assert env[1].log.seq_head() == before
+
+
+@pytest.mark.parametrize("action", ["advance", "pause", "resume", "recover", "close"])
+@pytest.mark.parametrize("value", ["missing", None, True, False, -1, 0, 1.5, "1", 2**63])
+def test_mutating_rpc_requires_positive_integer_state_cas(env, action, value):
+    goal = create(env)
+    params = {
+        "goal_id": goal["goal_id"], "request_id": "invalid_cas",
+        "expected_state_revision": goal["state_revision"],
+    }
+    if action == "advance":
+        params["orchestration_epoch"] = goal["orchestration_epoch"]
+    elif action == "recover":
+        params.update(expected_block_event_seq=goal["state_revision"],
+                      resolution="retry", evidence_refs=[])
+    elif action == "close":
+        params["outcome"] = "cancelled"
+    if value == "missing":
+        del params["expected_state_revision"]
+    else:
+        params["expected_state_revision"] = value
+    before = env[1].log.seq_head()
+    with pytest.raises(ControlError) as error:
+        env[0].handle("goal.v2." + action, params)
+    assert error.value.code == "bad_params"
+    assert env[1].log.seq_head() == before
+    assert not env[1].tasks.list_runs(env[2].task_id)
+
+
+@pytest.mark.parametrize("value", ["missing", None, True, False, -1, 0, 1.5, "1", 2**63])
+@pytest.mark.parametrize("action,field", [
+    ("advance", "orchestration_epoch"), ("recover", "expected_block_event_seq"),
+])
+def test_rpc_rejects_invalid_epoch_and_block_cas(env, action, field, value):
+    goal = create(env)
+    params = {
+        "goal_id": goal["goal_id"], "request_id": "invalid_epoch",
+        "expected_state_revision": goal["state_revision"],
+        field: value,
+    }
+    if action == "recover":
+        params.update(resolution="retry", evidence_refs=[])
+    if value == "missing":
+        del params[field]
+    before = env[1].log.seq_head()
+    with pytest.raises(ControlError) as error:
+        env[0].handle("goal.v2." + action, params)
+    assert error.value.code == "bad_params"
+    assert env[1].log.seq_head() == before
+
+
+def test_get_requires_exactly_one_goal_or_task_selector(env):
+    goal = create(env)
+    for params in ({}, {"goal_id": goal["goal_id"], "task_id": env[2].task_id}):
+        before = env[1].log.seq_head()
+        with pytest.raises(ControlError) as error:
+            env[0].handle("goal.v2.get", params)
+        assert error.value.code == "bad_params"
+        assert env[1].log.seq_head() == before
+    assert env[0].handle("goal.v2.get", {"task_id": env[2].task_id})["goal"] == goal
+
+
+def test_stale_control_never_refreshes_cas_and_exact_retry_stays_idempotent(env):
+    goal = create(env)
+    pause_params = {
+        "goal_id": goal["goal_id"], "request_id": "pause",
+        "expected_state_revision": goal["state_revision"],
+    }
+    paused = env[0].handle("goal.v2.pause", pause_params)["goal"]
+    assert env[0].handle("goal.v2.pause", pause_params)["goal"] == paused
+    for action in ("advance", "pause", "resume", "recover", "close"):
+        params = {
+            "goal_id": goal["goal_id"], "request_id": "stale_" + action,
+            "expected_state_revision": goal["state_revision"],
+        }
+        if action == "advance":
+            params["orchestration_epoch"] = goal["orchestration_epoch"]
+        elif action == "recover":
+            params.update(expected_block_event_seq=paused["state_revision"],
+                          resolution="retry", evidence_refs=[])
+        elif action == "close":
+            params["outcome"] = "cancelled"
+        before = env[1].log.seq_head()
+        with pytest.raises(ControlError) as error:
+            env[0].handle("goal.v2." + action, params)
+        assert error.value.code == "conflict"
+        assert env[1].log.seq_head() == before
+    resume_params = {
+        "goal_id": goal["goal_id"], "request_id": "resume",
+        "expected_state_revision": paused["state_revision"],
+    }
+    resumed = env[0].handle("goal.v2.resume", resume_params)["goal"]
+    assert env[0].handle("goal.v2.resume", resume_params)["goal"] == resumed
+    assert resumed["status"] == "ready"
 
 
 def test_invalid_auto_configuration_never_creates_goal_or_run(env):
@@ -208,7 +305,10 @@ def test_each_model_admission_rechecks_goal_monotonic_deadline(env, monkeypatch)
         "execution_policy": PURE_ONLY.to_dict(), "request_id": "clock",
         "deadline_ms": now + 50_000,
     })
-    started = coordinator.tick(goal["goal_id"], requested=True)
+    started = coordinator.tick(
+        goal["goal_id"], requested=True, request_id="clock_start",
+        expected_state_revision=goal["state_revision"],
+        orchestration_epoch=goal["orchestration_epoch"])
     monkeypatch.setattr("tianshu.goal_v2.time.monotonic", lambda: 52.0)
     from tianshu.goal_v2 import GoalAdmissionRefused
     with pytest.raises(GoalAdmissionRefused, match="deadline_exceeded"):
@@ -379,6 +479,7 @@ def test_pause_resume_reuses_queued_run_and_cancel_preserves_budget(env):
     assert resumed["round"] == 1
     cancelled = env[0].handle("goal.v2.close", {
         "goal_id": goal["goal_id"], "request_id": "cancel", "outcome": "cancelled",
+        "expected_state_revision": resumed["state_revision"],
     })["goal"]
     assert cancelled["status"] == "cancelled"
     assert env[1].tasks.get_run(first["phase_run_id"]).state == "cancelled"
@@ -426,9 +527,12 @@ def _advance_process(root, goal_id, barrier, output):
     try:
         stack = stack_for(log, data_root=root)
         plane = ControlPlane(stack, model=ScriptedModel([]))
+        goal = plane.handle("goal.v2.get", {"goal_id": goal_id})["goal"]
         barrier.wait(timeout=30)
         result = plane.handle("goal.v2.advance", {
             "goal_id": goal_id, "request_id": "race",
+            "expected_state_revision": goal["state_revision"],
+            "orchestration_epoch": goal["orchestration_epoch"],
         })["goal"]
         output.put(result["phase_run_id"])
     finally:
@@ -475,10 +579,12 @@ from support import stack_for
 root = Path(sys.argv[1])
 log = EventLog(root / "events.db", blob_dir=root / "blobs")
 ControlPlane(stack_for(log, data_root=root), model=None).handle("goal.v2.advance", {
-    "goal_id": sys.argv[2], "request_id": "crash"})
+    "goal_id": sys.argv[2], "request_id": "crash",
+    "expected_state_revision": int(sys.argv[3]), "orchestration_epoch": int(sys.argv[4])})
 """
     child = subprocess.run(
-        [sys.executable, "-c", script, str(env[1].tasks.data_root), goal["goal_id"]],
+        [sys.executable, "-c", script, str(env[1].tasks.data_root), goal["goal_id"],
+         str(goal["state_revision"]), str(goal["orchestration_epoch"])],
         capture_output=True, text=True, encoding="utf-8", timeout=30,
         env={**os.environ, "TIANSHU_FAILPOINT": point,
              "PYTHONPATH": str(Path(__file__).parent) + os.pathsep

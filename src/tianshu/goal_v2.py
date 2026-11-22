@@ -34,6 +34,12 @@ class GoalAdmissionRefused(BudgetConfigError):
         self.category = category
 
 
+def checked_cas(value, name):
+    if type(value) is not int or not 1 <= value <= 2**63 - 1:
+        raise ValueError(f"{name} 必须为正整数修订编号")
+    return value
+
+
 def phase_for(log, run_id):
     events = log.read_run(run_id, event_types=(PHASE_EVENT,))
     if len(events) > 1:
@@ -687,6 +693,10 @@ class GoalCoordinator:
 
     def tick(self, goal_id, *, requested=False, request_id="", expected_state_revision=None,
              orchestration_epoch=None):
+        if requested:
+            checked_request_id(request_id)
+            checked_cas(expected_state_revision, "expected_state_revision")
+            checked_cas(orchestration_epoch, "orchestration_epoch")
         self._reconcile_lifecycles(goal_id)
         result = self._tick(
             goal_id, requested=requested, request_id=request_id,
@@ -944,6 +954,9 @@ class GoalCoordinator:
 
     def control(self, goal_id, action, params):
         request = checked_request_id(params["request_id"])
+        expected = checked_cas(params.get("expected_state_revision"), "expected_state_revision")
+        if action == "recover":
+            checked_cas(params.get("expected_block_event_seq"), "expected_block_event_seq")
         if action == "recover" or action == "close" and params.get("outcome") == "completed":
             self._reconcile_lifecycles(goal_id)
         with self.log.transaction():
@@ -954,7 +967,6 @@ class GoalCoordinator:
                     if event.payload.get("cause") != "human:" + action + ":" + request_digest:
                         raise GoalConflict("request_id 已用于不同的 Goal 操作")
                     return view
-            expected = params.get("expected_state_revision", view["state_revision"])
             if expected != view["state_revision"]:
                 raise GoalConflict("Goal 状态修订已经改变")
             state = self._state(view)
