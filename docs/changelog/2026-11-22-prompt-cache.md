@@ -38,7 +38,7 @@ PRD §7 的本地策略清单、独立 JSON Schema 和代码枚举共同维护�
 定向覆盖三协议 JSON/SSE 一致、真实 manifest、递归对象键排序、
 输入不可变、稳定 key 与正文变更、最多四断点、opaque 保真、
 原生读写 usage、真实主循环落库/重放/重建、未知分母、质量失败和安全门槛。
-最终本机全量、lock/Ruff、独立第二读者及精确提交绑定见下文。
+各次冻结的本机全量、lock/Ruff、独立第二读者及精确提交绑定见下文。
 不在文档手写易过期测试总数，以原始执行日志为准。
 
 ## 独立复审发现与修复
@@ -76,7 +76,7 @@ Responses 初始任务与动态尾部误识别、相邻轮历史查找断点丢�
 `binary-sidecar-red.log`；改为 `xb` 并显式 UTF-8 编码，保持 LF 与独占创建语义，
 未修改或放宽原守卫。新增 CLI 原始字节断言，修后已重绑独立复审与最终全量。
 
-## 最终代码冻结与验证
+## 首轮代码冻结与验证
 
 代码冻结为 `a6f5fa50c9a3109b50a5aa84e47dd60e8d6a497f`，
 tree 为 `8f68afea48afc3116ea5f40b4e5427185e96dc98`。
@@ -92,11 +92,31 @@ Windows I/O 守卫与缓存报告回归，结论为**已修（fixed）**。原�
 `uv lock --check`、`uv run --frozen ruff check .`、`git diff --check`
 及修改文档的本地链接检查均通过，原件位于上述 ignored 证据目录。
 
-后续只回填 Markdown 证据；逐路径比较 Git tree 中所有非 `.md` 文件，
-相对该冻结零变化。该清单 SHA256 为
+其后回填 Markdown 证据，形成 `656b66a221dc225b191f398f1888fc2d0eb5ea36`；
+逐路径比较 Git tree 中所有非 `.md` 文件，相对该冻结零变化。该清单 SHA256 为
 `0889a069a0cbaad2135388501f9922587a70da9784aac68fbc29f642ba8549ef`。
-因此复用同一代码树的本机全量与代码复审，文档增量另行核对；
-所有代码及证据冻结后统一启动候选完整 CI，不以旧绿或部分重跑替代。
+该次文档回填由同一第二读者独立核对，复用同一代码树的本机全量与代码复审。
+
+## 首轮托管 CI 与测试读取编码修复
+
+首轮完整候选 [CI 45016750084](https://github.com/lorek666/tianshu-agent/actions/runs/45016750084)
+绑定 head `656b66a221dc225b191f398f1888fc2d0eb5ea36`、
+base `7665e8684f5a124fe789f21909ee54325edc556b`，实际合成 merge checkout 为
+`3b19562db6f89da41400d8ebdf5c406a27757a84`。Windows 分片 1 在测试调用阶段失败，
+不是超时；Windows required 汇总正确拒绝，整轮为红。完整日志和两片原始报告保存在
+`first-candidate-656b66a/`，日志归档 SHA256 为
+`139a471e0e0b581552a191daf814c20f2b9f5d9dd2977920c40a5a14d32e2643`。
+其他 job 的通过不能替代该轮完整门禁。
+
+两个失败均是新增测试省略读取编码：CLI 测试读取 UTF-8 旁路报告、策略枚举测试读取
+中文 PRD 时使用了 Windows 默认 CP1252。产品报告写盘仍是已经验证的 UTF-8 字节与 LF。
+本地只在未声明编码的 `Path.read_text` 上注入 CP1252，原用例确定性复现同类
+`UnicodeDecodeError`，见 `windows-cp1252-red.log`。修复仅为测试中的报告、
+schema 和 PRD 读取显式指定 UTF-8；原断言、产品实现及 Windows 守卫不变。
+同一 CP1252 探针下的定向与受影响回归通过，见 `windows-cp1252-green-*.log`。
+
+PR 已恢复 draft；测试树变化后的完整本机门禁、独立增量复审及候选 CI 须重新绑定。
+修复与证据冻结后再统一启动新候选完整矩阵，不对旧失败作业直接重跑。
 
 ## 保留边界
 

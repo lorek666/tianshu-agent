@@ -354,9 +354,10 @@ def test_cache_policy_enum_has_an_exact_machine_readable_mirror():
     from tianshu.prompt_cache import POLICIES
 
     root = Path(__file__).resolve().parents[1]
-    schema = json.loads((root / "schemas/prompt-cache-policy.json").read_text())
+    schema = json.loads((root / "schemas/prompt-cache-policy.json").read_text(encoding="utf-8"))
     assert schema["enum"] == list(POLICIES)
-    section = (root / "docs/PRD-v1.md").read_text().split("### 7.0.1", 1)[1].split("### 7.1", 1)[0]
+    section = (root / "docs/PRD-v1.md").read_text(encoding="utf-8")
+    section = section.split("### 7.0.1", 1)[1].split("### 7.1", 1)[0]
     assert all(f"`{policy}`" in section for policy in POLICIES)
 
 

@@ -94,7 +94,7 @@ def test_cli_cache_sidecar_is_offline_and_does_not_change_primary_report(tmp_pat
         "--workdir", str(tmp_path / "eval"), "--cache-report", str(path), "--json",
     ]) == 0
     payload = json.loads(capsys.readouterr().out)
-    cache = json.loads(path.read_text())
+    cache = json.loads(path.read_text(encoding="utf-8"))
     assert path.read_bytes() == (
         json.dumps(cache, ensure_ascii=False, indent=2) + "\n"
     ).encode("utf-8")
