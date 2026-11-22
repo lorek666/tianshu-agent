@@ -331,6 +331,14 @@
 
 ## 5. 踩坑教训（别再踩）
 
+- **内容寻址落盘还必须接入引用追踪（2026-11-22）**：Mission 将消息与模板正文
+  写进 blob 目录，不等于它们已被备份与 GC 识别。引用索引须从
+  `run.mission` / `run.mission_pending` 的真实保存 payload 推导 `messages_ref`
+  和 `mission.prompt.content_ref`，并校验正文摘要；只保护外置 `payload_ref`
+  会把有效输入当作孤儿删除。历史 `material_storage=inline` 没有 blob 依赖，不能
+  因同名内容引用强制补文件。备份须从保存数据库重推导，不能信任可删改的清单引用组。
+  真实 GC 与备份损坏负控见[修复记录](changelog/2026-11-22-mission-material-references.md)。
+
 - **发现前不能冻结空工具集合（2026-11-22）**：先用旧 registry 写
   `run.start.tools` 和 Mission，再在首个模型步骤发现 MCP，会让真实工具永久被空
   交集过滤。新任务需保存输入后再发现、固定；共享 Mission 则保留已确认身份作为

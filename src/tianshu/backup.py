@@ -1114,6 +1114,73 @@ def _exec_stream_references(
     return refs, problems
 
 
+def _mission_references(
+    data_root: Path,
+    *,
+    source_root: Path,
+    saved: bool = False,
+    source_aliases: Sequence[str] = (),
+    discover_aliases: list[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """从 Mission 事件推导首轮输入引用；inline 记录不要求额外正文文件。"""
+    from .mission import (
+        RUN_MISSION,
+        RUN_MISSION_PENDING,
+        validate_pending_snapshot,
+        validate_snapshot,
+    )
+
+    refs: list[dict[str, Any]] = []
+    problems: list[str] = []
+    db = _checked_file(data_root, "events.db")
+    conn = _connect_saved_readonly(db) if saved else _connect_readonly(db)
+    try:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT seq, type, payload AS payload_inline, payload_ref, payload_hash"
+            " FROM events WHERE type IN (?, ?) ORDER BY seq",
+            (RUN_MISSION, RUN_MISSION_PENDING),
+        ).fetchall()
+    finally:
+        conn.close()
+    for row in rows:
+        seq = int(row["seq"])
+        try:
+            aliases = source_aliases if discover_aliases is None else discover_aliases
+            payload = read_saved_event_payload(
+                data_root, row, source_root=source_root, source_aliases=aliases,
+            )
+            mission = (
+                validate_pending_snapshot(payload) if row["type"] == RUN_MISSION_PENDING
+                else validate_snapshot(payload)
+            )
+            if payload["material_storage"] == "inline":
+                continue
+            for field, raw_ref in (
+                ("messages_ref", payload["messages_ref"]),
+                ("prompt.content_ref", mission.to_dict()["prompt"]["content_ref"]),
+            ):
+                digest = raw_ref.rsplit(":", 1)[-1]
+                matched_rels = [
+                    f"{prefix}/{digest}"
+                    for prefix in ("blobs", "artifacts/blobs")
+                    if (data_root / prefix / digest).exists()
+                    or (data_root / prefix / digest).is_symlink()
+                    or (data_root / prefix / digest).is_junction()
+                ]
+                # 缺失也登记预期引用，让 GC 和备份核验闭锁拒绝；不读取源根补材料。
+                for rel in matched_rels or [f"blobs/{digest}"]:
+                    _checked_file(data_root, rel)
+                    refs.append({
+                        "seq": seq, "mission_material": field,
+                        "path": rel, "sha256": digest,
+                    })
+        except (BackupError, TianshuError, OSError, ValueError, KeyError, TypeError,
+                UnicodeError) as exc:
+            problems.append(f"事件 seq={seq} 的 Mission 材料引用无法核验：{exc}")
+    return refs, problems
+
+
 def _material_references(
     data_root: Path, *, source_root: Path,
     source_aliases: Sequence[str] = (), discover_aliases: list[str] | None = None,
@@ -1121,6 +1188,10 @@ def _material_references(
     db = _checked_file(data_root, "events.db")
     payload, payload_problems = _db_references(
         db, source_root, saved=True, source_aliases=source_aliases,
+        discover_aliases=discover_aliases,
+    )
+    missions, mission_problems = _mission_references(
+        data_root, source_root=source_root, saved=True, source_aliases=source_aliases,
         discover_aliases=discover_aliases,
     )
     exec_streams, exec_problems = _exec_stream_references(
@@ -1139,13 +1210,14 @@ def _material_references(
     contents, memories, projection_problems = _projection_references(db, saved=True)
     return {
         "event_payload_refs": payload,
+        "mission_blobs": missions,
         "exec_stream_blobs": exec_streams,
         "receipt_blobs": receipts,
         "snapshot_blobs": snapshots,
         "undo_journal_blobs": undo,
         "content_blobs": contents,
         "memory_blobs": memories,
-    }, (payload_problems + exec_problems + receipt_problems + snapshot_problems
+    }, (payload_problems + mission_problems + exec_problems + receipt_problems + snapshot_problems
         + undo_problems + projection_problems)
 
 
@@ -1296,6 +1368,8 @@ def _ref_owner(ref: dict[str, Any]) -> str:
         return f"Receipt {ref['receipt_id']}（事件 seq={ref['seq']}）"
     if "stream" in ref:
         return f"事件 seq={ref['seq']} 的 {ref['stream']}"
+    if "mission_material" in ref:
+        return f"事件 seq={ref['seq']} 的 Mission {ref['mission_material']}"
     if "manifest" in ref:
         return f"快照清单 {ref['manifest']}"
     if "journal" in ref:
@@ -1469,6 +1543,7 @@ def _check_reference_groups(
     declared = {f.path for f in manifest.files}
     for key in (
         "event_payload_refs",
+        "mission_blobs",
         "exec_stream_blobs",
         "receipt_blobs",
         "snapshot_blobs",
@@ -1897,6 +1972,9 @@ def collect_references(data_root: Path, *, require_static_db: bool = False) -> R
         payload_refs, payload_problems = _db_references(
             db, data_root, saved=quiescent, discover_aliases=source_aliases
         )
+        mission_refs, mission_problems = _mission_references(
+            data_root, source_root=data_root, saved=quiescent, discover_aliases=source_aliases,
+        )
         exec_refs, exec_problems = _exec_stream_references(
             data_root, source_root=data_root, saved=quiescent, discover_aliases=source_aliases,
         )
@@ -1912,14 +1990,15 @@ def collect_references(data_root: Path, *, require_static_db: bool = False) -> R
         )
     except (sqlite3.Error, OSError, ValueError) as exc:
         raise ReferenceUnknown(f"事件库读不出来，无法判定引用：{exc}") from exc
-    for problem in (payload_problems + exec_problems + receipt_problems + snapshot_problems
+    for problem in (payload_problems + mission_problems + exec_problems
+                    + receipt_problems + snapshot_problems
                     + undo_problems + projection_problems):
         index.unknown.append(problem)
     for ref in snapshot_refs:
         if ref["manifest"] not in index.snapshot_manifests:
             index.snapshot_manifests.append(ref["manifest"])
     all_refs = (
-        payload_refs + exec_refs + snapshot_refs + undo_refs
+        payload_refs + mission_refs + exec_refs + snapshot_refs + undo_refs
         + receipt_refs + content_refs + memory_refs
     )
     for ref in all_refs:
