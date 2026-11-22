@@ -639,6 +639,86 @@ def test_rejected_action_cannot_be_retried_until_exact_human_recovery(env):
     assert env[1].approvals.get(pending[0].approval_id).state == "rejected"
 
 
+def test_child_human_denial_blocks_goal_before_parent_finishes(env, monkeypatch):
+    from support import approve_pending, engine_for
+
+    from tianshu.goal_v2 import GoalCoordinator, action_denied, denied_content_digest
+    from tianshu.model import ToolCall
+    from tianshu.permissions import HumanIdentity
+
+    task = env[1].tasks.create_task("委派修改报告", [str(env[3])], max_subtasks=2)
+    env = env[0], env[1], task, env[3]
+    goal = planned(env, execution_policy=EFFECTS.to_dict(), budget_limits={"requests": 20})
+    (env[3] / "report.md").write_bytes(b"original")
+    started = advance(env, goal, "execute_child")
+    model = ScriptedModel([
+        ModelResponse("tool_use", tool_calls=[ToolCall("spawn_child", "subtask.spawn", {
+            "subtask_id": "writer", "goal": "修改报告", "write": True,
+        })], usage={"input_tokens": 1, "output_tokens": 1}),
+        ModelResponse("end_turn", content="等待子任务", usage={
+            "input_tokens": 1, "output_tokens": 1}),
+    ])
+    engine = engine_for(env[1], model)
+    first = engine.resume_run(started["phase_run_id"])
+    assert first.state == "waiting_approval"
+    assert approve_pending(env[1], first.run_id)
+    engine.resume_run(first.run_id)
+    child = env[1].tasks.list_subtasks(first.run_id)[0]
+    lease_now = env[1].leases._clock()
+    monkeypatch.setattr(env[1].leases, "_clock", lambda: lease_now + 31_000)
+    child_model = ScriptedModel([ModelResponse("tool_use", tool_calls=[
+        ToolCall("child_overwrite", "modify_text", {"path": "report.md", "content": "changed"}),
+    ], usage={"input_tokens": 1, "output_tokens": 1})])
+    result = engine_for(env[1], child_model).resume_run(child.child_run_id)
+    assert result.state == "waiting_approval"
+    pending = env[1].approvals.pending(run_id=child.child_run_id)
+    assert len(pending) == 1
+    env[1].approvals.decide(pending[0].approval_id, decision="rejected",
+                            actor=HumanIdentity.local_cli())
+    rejected = env[1].log.read_run(child.child_run_id, event_types=("approval.decided",))[-1]
+    stored = env[1].dispatcher.get_request(pending[0].request_id)
+    assert action_denied(env[1].log, stored.request)
+    blocked = GoalCoordinator(env[1]).tick(goal["goal_id"])
+    assert blocked["status"] == "blocked"
+    assert blocked["blocker"]["category"] == "approval_denied"
+    assert blocked["blocker"]["source_event_seq"] == rejected.seq
+    assert blocked["blocker"]["denied_content_digest"] == denied_content_digest(
+        env[1].log, stored.request)
+    parent = env[1].tasks.get_run(first.run_id)
+    assert parent.state == "running"
+    assert parent.control_requested == "pause"
+    assert (env[3] / "report.md").read_bytes() == b"original"
+    assert not env[1].log.read_run(child.child_run_id, event_types=("tool.intent",))
+    with pytest.raises(ControlError):
+        advance(env, blocked, "no_retry_after_child_denial")
+    assert GoalCoordinator(env[1]).tick(goal["goal_id"])["state_revision"] == blocked[
+        "state_revision"]
+    digest = blocked["blocker"]["denied_content_digest"]
+    stopping = recover(env, blocked, resolution="change_decision", denied_content_digest=digest)
+    assert stopping["status"] == "blocked"
+    assert env[1].tasks.get_run(first.run_id).control_requested == "cancel"
+    assert env[1].tasks.get_run(child.child_run_id).state == "cancelled"
+    assert action_denied(env[1].log, stored.request)
+    assert not env[1].log.read_types(("goal.v2_recovered",), task_id=task.task_id)
+    assert drive(env[1]).calls == 0
+    stopped = get(env, goal)
+    recovered = recover(env, stopped, resolution="change_decision", denied_content_digest=digest)
+    assert recovered["status"] == "ready"
+    assert env[1].tasks.get_run(first.run_id).state == "cancelled"
+    assert env[1].tasks.get_subtask(first.run_id, child.subtask_id).state == "cancelled"
+    assert not env[1].leases.list_for_run(first.run_id)
+    assert not env[1].leases.list_for_run(child.child_run_id)
+    assert env[1].approvals.get(pending[0].approval_id).state == "rejected"
+    assert not action_denied(env[1].log, stored.request)
+
+    env[0].handle("goal.v2.close", {
+        "goal_id": goal["goal_id"], "request_id": "cancel_recovered_goal",
+        "outcome": "cancelled", "expected_state_revision": recovered["state_revision"],
+    })
+    later = create(env, request_id="new_goal_after_denial")
+    assert advance(env, later, "advance_new_goal")["status"] == "active"
+
+
 def _advance_process(root, goal_id, barrier, output):
     root = Path(root)
     log = EventLog(root / "events.db", blob_dir=root / "blobs")

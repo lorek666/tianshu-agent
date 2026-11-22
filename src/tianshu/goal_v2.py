@@ -569,10 +569,10 @@ class GoalCoordinator:
 
     def _denial(self, view):
         from .permissions import ActionRequest
-        phase_ids = {e.run_id for e in self._phase_events(view)
-                     if e.payload["goal_id"] == view["goal_id"]}
-        for event in self.log.read_types(("approval.decided",), task_id=view["task_id"]):
-            if event.run_id not in phase_ids or event.payload["decision"] != "rejected":
+        for event in self.log.read_types(("approval.decided",)):
+            phase, _ = inherited_phase(self.log, event.run_id)
+            if (not phase or phase["goal_id"] != view["goal_id"]
+                    or event.payload["decision"] != "rejected"):
                 continue
             row = self.log.conn.execute(
                 "SELECT d.payload FROM dispatch_requests d JOIN approvals a"
@@ -1075,8 +1075,8 @@ class GoalCoordinator:
                     raise GoalConflict("执行生命周期尚无已证明的整树退出证据，不能恢复")
                 if block["category"] == "usage_unknown" and self._budget_block(view):
                     raise GoalConflict("未知费用或用量尚未核对")
-                if self._clock_state(view, state) or self._budget_block(view):
-                    raise GoalConflict("剩余期限或预算不足以恢复")
+                if self._clock_state(view, state):
+                    raise GoalConflict("剩余期限不足以恢复")
                 resolution = params["resolution"]
                 if resolution not in RESOLUTIONS:
                     raise ValueError("未知恢复决定")
@@ -1089,7 +1089,6 @@ class GoalCoordinator:
                 if block["category"] == "approval_denied":
                     if resolution != "change_decision" or digest != block["denied_content_digest"]:
                         raise GoalConflict("改变否决必须明确绑定原决定及精确内容摘要")
-                    state["recovered_denial_digests"].append(digest)
                 elif resolution == "change_decision":
                     raise GoalConflict("当前阻断不是人工否决")
                 if (block["category"] == "effect_unknown"
@@ -1098,15 +1097,29 @@ class GoalCoordinator:
                 if block["category"] == "no_progress":
                     if resolution != "new_observation":
                         raise GoalConflict("无进展只能由人建立新观察段")
-                    # 保留历史 assessment；此字段只表示新观察段连续值。
-                    state["no_progress_streak"] = 0
-                if state["phase_run_id"]:
-                    run = self.tasks.get_run(state["phase_run_id"])
+                stopping = False
+                for run_id in self._resource_runs(view):
+                    phase, _ = inherited_phase(self.log, run_id)
+                    if not phase or phase["goal_id"] != goal_id:
+                        continue
+                    run = self.tasks.get_run(run_id)
                     if run and run.state not in (*TERMINAL_STATES, RUN_FENCED):
                         self.tasks.request_cancel(run.run_id)
                         run = self.tasks.get_run(run.run_id)
-                        if run.state not in (*TERMINAL_STATES, RUN_FENCED):
-                            raise GoalConflict("原阶段尚未安全终结，不能建立新的阶段")
+                        stopping |= run.state not in (*TERMINAL_STATES, RUN_FENCED)
+                if stopping:
+                    # 取消请求必须提交，不能用异常回滚后永远等不到安全点。
+                    # 停稳前保留原阻断及否决约束；后续恢复仍需新的明确 CAS。
+                    return self._transition(
+                        view, state, cause="human:" + action + ":" + request_digest,
+                        request_id=request, human=True)
+                if self._budget_block(view):
+                    raise GoalConflict("剩余预算或用量不足以恢复")
+                if block["category"] == "approval_denied":
+                    state["recovered_denial_digests"].append(digest)
+                if block["category"] == "no_progress":
+                    # 保留历史 assessment；此字段只表示新观察段连续值。
+                    state["no_progress_streak"] = 0
                 state.update(status="ready", blocker=None, phase_run_id=None)
                 if state["plan_id"]:
                     plan = PlanStore(self.stack).get(state["plan_id"])
