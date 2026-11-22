@@ -425,6 +425,12 @@ predecessor_goal_id
 无进展，均须由创建页面清晰展示；这是拟定默认，不是当前实现。
 验证命令、单 Run 工具循环及输出继续受各自超时、turn 和字节上限约束。
 
+创建不启动模型、MCP 或命令。显式选用 MCP 的 effects Goal 必须具有真实已发现的
+精确工具身份；当前注册表为空时，可复用同 Task、同目标修订最近 effects Run
+已持久化并核验的 Mission 候选，作为新 Mission 的路由上限。没有这些事实则明确
+拒绝并要求先通过普通 Run 完成受管发现，不能静默创建一个永久缺少 MCP 的 Goal。
+阶段恢复可保留这一离线路由上限，但派发前仍与现场工具身份精确相交，漂移不得升级。
+
 `GoalViewV2.status`：
 `ready|active|awaiting_input|awaiting_review|paused|blocked|completed|cancelled|stale`。
 `phase`：`plan|execute|verify|ask|replan|finish`。
