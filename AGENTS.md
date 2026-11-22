@@ -76,7 +76,7 @@
 
 - **Conventional Commits**，新写提交的 body 写「为什么这么改」；Git 自动生成的同步 merge commit 可保留默认消息。squash 最终正文须保留原因、验证与未决项；不为补格式重写已共享历史。Codex 分支使用 `codex/<scope>`，其他分支规范见 CONTRIBUTING §2。
 - **单会话独占 Worktree 与测试全局隔离**：多会话并发开发时严禁共用同一工作树，必须遵循「一会话一分支一独立 worktree」，合并后即删 worktree 与本地分支；共享仓库严禁使用 `git stash`。测试默认使用临时数据根、隔离维护锁根与独立凭据服务名，严禁抢占宿主机用户级全局锁或读写宿主机真实生产凭据。
-- **公开仓库：密钥 / token / `.env` 永不提交**（推上去等于泄露）。真实模型 key 只从系统钥匙串（macOS Keychain）或环境变量读；用过的中转 key 应自行作废。
+- **公开仓库：密钥 / token / `.env` 永不提交**（推上去等于泄露）。真实模型 key 只从启动进程的环境变量读，非敏感配置用 JSON 文本记录；用过的中转 key 应自行作废。
 - **不提交** `refs/`（762MB 参考仓库）、`playground/`、本地数据 / 日志 / 快照（`.tianshu/`）。
 - **单用户假设（D2）**：不引入多租户 / 多用户设计；租约只防「同用户双实例」。
 - **运行时数据目录按入口区分**：内核 CLI 的 `--db` 默认是**当前工作目录下的 `.tianshu/events.db`**（`cli.DEFAULT_DB`）；`daemon` / `host` 已通过 `ipc.default_data_root()` 使用平台标准目录（macOS `~/Library/Application Support/AgentOS`、Windows `%LOCALAPPDATA%\AgentOS`、Linux `$XDG_DATA_HOME/AgentOS`，缺省 `~/.local/share/AgentOS`），可由 `--data-root` / `TIANSHU_DATA_ROOT` 覆盖。两者都不是可提交的项目源码；测试必须使用临时数据根。
