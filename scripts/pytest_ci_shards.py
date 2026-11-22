@@ -22,6 +22,9 @@ import pytest
 # test_eval_real_tasks retains its real three-run samples and custom runs, but
 # reuses private copies for evidence-only checks; its estimate excludes the
 # removed duplicate executions and adds five seconds for copying/checks.
+# Cache metrics, summary telemetry and evaluation separation use their completed
+# file intervals from RED run 45050478841, rounded up in half-second units.
+# A completed timing interval does not turn that failed run into passing evidence.
 # These are fixed scheduling hints, not acceptance limits or runner guarantees.
 _FILE_WEIGHTS = {
     "tests/test_acceptance.py": 27,
@@ -39,6 +42,7 @@ _FILE_WEIGHTS = {
     "tests/test_budget_ledger.py": 28,
     "tests/test_budget_review.py": 59,
     "tests/test_c1_c2_c5_schemas.py": 12,
+    "tests/test_cache_metrics.py": 92,
     "tests/test_canonical.py": 1,
     "tests/test_capability.py": 18,
     "tests/test_ci_workflow.py": 2,
@@ -68,7 +72,7 @@ _FILE_WEIGHTS = {
     "tests/test_eval_real_tasks.py": 409,
     "tests/test_eval_report.py": 1,
     "tests/test_eval_scoped_checks.py": 100,
-    "tests/test_eval_separation.py": 170,
+    "tests/test_eval_separation.py": 306,
     "tests/test_event_schema.py": 33,
     "tests/test_events.py": 21,
     "tests/test_evidence_keys.py": 71,
@@ -191,6 +195,7 @@ _FILE_WEIGHTS = {
     "tests/test_snapshot.py": 11,
     "tests/test_soak.py": 1,
     "tests/test_summaries.py": 4,
+    "tests/test_summary_cache_telemetry.py": 64,
     "tests/test_summary_context.py": 1,
     "tests/test_summary_loop.py": 41,
     "tests/test_summary_replay.py": 8,

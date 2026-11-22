@@ -358,7 +358,8 @@ def test_pause_resume_keeps_paid_turn_before_dispatch_and_never_reissues_it(
         "input_tokens": 11,
         "output_tokens": 7,
         "cache_read_input_tokens": 9,
-        "cache_creation_input_tokens": 3,
+        # 官方 OpenAI 的读写包含在 11 个输入 token 内；Anthropic 为额外输入。
+        "cache_creation_input_tokens": 2 if vendor == "openai" else 3,
     }
     log, stack, ws = _setup(tmp_path)
     rid = "run_usage_pause"
