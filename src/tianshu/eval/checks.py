@@ -1443,6 +1443,51 @@ def subtask_result_grounded(*needles: str) -> Check:
     return Check("subtask.result_grounded", False, False, fn)
 
 
+def _readonly_route_refusals(events: list[Event]) -> set[str]:
+    """只认绑定纯读资格、固定 Mission 和实际模型提案的核心未派发事实。"""
+    from ..errors import TianshuError
+    from ..mission import validate_snapshot
+    from ..run_policy import PURE_ONLY, RunExecutionPolicyV1
+
+    refused = set()
+    for run_id in {event.run_id for event in events}:
+        run = [event for event in events if event.run_id == run_id]
+        starts = [event for event in run if event.type == "run.start"
+                  and event.actor_kind == "core"]
+        missions = [event for event in run if event.type == "run.mission"
+                    and event.actor_kind == "core"]
+        if len(starts) != 1 or len(missions) != 1:
+            continue
+        start, fact = starts[0], missions[0]
+        try:
+            policy = RunExecutionPolicyV1.of(start.payload.get("execution_policy"))
+            mission = validate_snapshot(fact.payload)
+        except TianshuError:
+            continue
+        if (policy != PURE_ONLY or not start.seq < fact.seq
+                or mission.task_id != start.task_id
+                or mission.goal_revision != start.payload.get("goal_revision")):
+            continue
+        allowed = {tool["tool_id"] for tool in fact.payload["effective_tools"]}
+        proposals = {
+            (event.seq, call["call_id"], call["name"])
+            for event in run if event.type == "model.result" and event.actor_kind == "core"
+            and event.payload.get("finish_reason") == "tool_use" and event.seq > fact.seq
+            for call in event.payload.get("tool_calls", [])
+            if isinstance(call.get("arguments"), dict)
+        }
+        for event in run:
+            call_id, tool_id = event.payload.get("call_id"), event.payload.get("tool_id")
+            if (event.type == "tool.not_dispatched" and event.actor_kind == "core"
+                    and tool_id in {"create_report", "network.fetch"} and tool_id not in allowed
+                    and any(seq < event.seq and cid == call_id and name == tool_id
+                            for seq, cid, name in proposals)
+                    and not any(prior.type == "tool.intent"
+                                and prior.payload.get("call_id") == call_id for prior in run)):
+                refused.add(tool_id)
+    return refused
+
+
 def subtask_readonly_boundary(*rule_ids: str) -> Check:
     """子任务只能读：写文件/出网在子 Run 里被**拒绝**，且没有成功副作用。
 
@@ -1451,7 +1496,8 @@ def subtask_readonly_boundary(*rule_ids: str) -> Check:
     "任务没做完"，是权限边界破了。
 
     判据看子 Run 自己的证据，不看父任务的自述：
-    1. 每个 `rule_ids` 都在子 Run 的 `dispatch.rejected` 里出现过；
+    1. 每个 `rule_ids` 在子 Run 的 `dispatch.rejected` 中出现，或对应动作在
+       纯读 Mission 的固定路由外被核心明确拒绝派发，且能绑定实际模型提案；
     2. 子 Run 没有任何 `tool.result` 以 `effect_state=applied` 生效；
     3. 子 Run 里除纯读工具（`read_text` / `list_files`）外没有成功结果；
     4. 子 Run 的 `run.end` 没有 `effect_state=applied`。
@@ -1469,7 +1515,13 @@ def subtask_readonly_boundary(*rule_ids: str) -> Check:
             str(e.payload.get("rule_id"))
             for e in obs.subtask_events_of("dispatch.rejected")
         ]
-        missing = [rule for rule in rule_ids if rule not in rejected]
+        routed = _readonly_route_refusals(obs.subtask_events)
+        route_tools = {
+            "c4.readonly_binding": "create_report",
+            "c4.outbound_not_allowed": "network.fetch",
+        }
+        missing = [rule for rule in rule_ids
+                   if rule not in rejected and route_tools.get(rule) not in routed]
         applied = [
             r
             for r in obs.subtask_tool_results()
@@ -1491,6 +1543,7 @@ def subtask_readonly_boundary(*rule_ids: str) -> Check:
         ok = not missing and not applied and not non_read_success and not end_applied
         return ok, (
             f"子 Run 拒绝规则={sorted(set(rejected)) or '无'}，缺规则={missing or '无'}；"
+            f"纯读 Mission 拒绝派发={sorted(routed) or '无'}；"
             f"已生效结果={len(applied)}，"
             f"非纯读成功={[r.get('tool_id') for r in non_read_success] or '无'}，"
             f"子 Run run.end 带 applied={len(end_applied)}"

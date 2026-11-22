@@ -17,6 +17,7 @@ from pathlib import Path
 from tianshu.cli import main
 from tianshu.events import EventLog
 from tianshu.replay import replay
+from tianshu.restore_access import default_material_paths
 
 
 def _event_counts(log: EventLog) -> tuple[int, int]:
@@ -60,7 +61,8 @@ def test_evaluate_calls_model_and_replay_does_not(tmp_path, capsys):
 
     # evaluate 真的调用了模型：每次 Run 都有 model.intent
     db = workdir / "N1" / "run0" / "events.db"
-    log = EventLog(db, blob_dir=db.parent / "blobs")
+    root = db.parent / "data"
+    log = EventLog(db, blob_dir=default_material_paths(db, root)[1], data_root=root)
     try:
         run_id = _latest_run_id(log)
         total_before, model_before = _event_counts(log)

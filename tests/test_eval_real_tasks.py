@@ -584,7 +584,11 @@ def test_delegation_child_attempts_are_refused_and_report_says_readonly(real_tas
             str(e.payload.get("rule_id"))
             for e in obs.subtask_events_of("dispatch.rejected")
         }
-        assert {"c4.readonly_binding", "c4.outbound_not_allowed"} <= rejected, rejected
+        undispatched = {
+            e.payload["tool_id"]
+            for e in obs.subtask_events_of("tool.not_dispatched")
+        }
+        assert {"create_report", "network.fetch"} <= undispatched, rejected
         # 拒绝不是"弹审批"：子 Run 没有审批请求，也没有成功副作用
         assert not obs.subtask_events_of("approval.requested")
         assert not [
@@ -601,8 +605,7 @@ def test_delegation_child_attempts_are_refused_and_report_says_readonly(real_tas
         assert "child_output.md" not in obs.files, "子任务不该真的写出文件"
         # 父报告如实呈现只读边界，且把拒绝写进产物（不是写成成功）
         assert "子任务只能读" in obs.artifact_text
-        assert "c4.readonly_binding" in obs.artifact_text
-        assert "c4.outbound_not_allowed" in obs.artifact_text
+        assert "拒绝派发" in obs.artifact_text
         _assert_all_checks_green(obs, task)
 
 
@@ -638,7 +641,7 @@ def test_delegation_failure_is_reported_without_fabrication(tmp_path):
 def test_delegation_readonly_negative_control(real_task_suite):
     """负控：子 Run 若真的写成功一次，只读边界判据必须红。"""
     task, observations = _task_obs(real_task_suite, "RU-D1")
-    obs = observations[0]
+    obs = copy.deepcopy(observations[0])
     check = subtask_readonly_boundary(
         "c4.readonly_binding", "c4.outbound_not_allowed"
     )
@@ -656,6 +659,34 @@ def test_delegation_readonly_negative_control(real_task_suite):
             seq=999,
         )
     )
+    passed, detail = check.fn(obs)
+    assert passed is False, detail
+
+
+@pytest.mark.parametrize("missing_fact", ["mission", "policy", "proposal", "core_actor"])
+def test_delegation_route_refusal_requires_readonly_execution_facts(
+    real_task_suite, missing_fact,
+):
+    """路由拒绝须绑定只读 Mission 和真实提案，不能只相信拒绝文字。"""
+    _, observations = _task_obs(real_task_suite, "RU-D1")
+    obs = copy.deepcopy(observations[0])
+    check = subtask_readonly_boundary(
+        "c4.readonly_binding", "c4.outbound_not_allowed",
+    )
+    assert check.fn(obs)[0] is True
+    children = obs.subtask_events
+    if missing_fact == "mission":
+        obs.subtask_events = [e for e in children if e.type != "run.mission"]
+    elif missing_fact == "policy":
+        start = next(e for e in children if e.type == "run.start")
+        start.payload["execution_policy"]["mode"] = "effects"
+    elif missing_fact == "proposal":
+        obs.subtask_events = [e for e in children if e.type != "model.result"]
+    else:
+        obs.subtask_events = [
+            replace(e, actor_kind="tool") if e.type == "tool.not_dispatched" else e
+            for e in children
+        ]
     passed, detail = check.fn(obs)
     assert passed is False, detail
 
