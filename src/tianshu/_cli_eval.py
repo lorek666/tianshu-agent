@@ -215,8 +215,8 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
         )
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         # 即使目标在前置检查后才被其它步骤创建，也不截断已经出现的证据。
-        with cache_path.open("x", encoding="utf-8") as stream:
-            stream.write(json.dumps(cache, ensure_ascii=False, indent=2) + "\n")
+        with cache_path.open("xb") as stream:
+            stream.write((json.dumps(cache, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
     comparison = None
     if args.baseline is not None:
         baseline = json.loads(args.baseline.read_bytes().decode("utf-8"))

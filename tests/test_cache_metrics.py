@@ -95,6 +95,9 @@ def test_cli_cache_sidecar_is_offline_and_does_not_change_primary_report(tmp_pat
     ]) == 0
     payload = json.loads(capsys.readouterr().out)
     cache = json.loads(path.read_text())
+    assert path.read_bytes() == (
+        json.dumps(cache, ensure_ascii=False, indent=2) + "\n"
+    ).encode("utf-8")
     assert cache["evidence"] == "offline"
     assert cache["configured_primary_policy"] == "off"
     assert cache["usage"]["observed_token_read_fraction"] is None
