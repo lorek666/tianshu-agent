@@ -517,6 +517,61 @@
       "request_id": "x",
       "decision": "accept",
       "reason": "x"
+    },
+    "consent.revoked": {
+      "format_version": 1,
+      "consent_id": "x",
+      "request_id": "x",
+      "reason": "x"
+    },
+    "consent.used": {
+      "format_version": 1,
+      "consent_id": "x",
+      "request_id": "x",
+      "request_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "action_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "attempt_id": 1,
+      "bytes": 0,
+      "remaining_uses": 0
+    },
+    "consent.issued": {
+      "format_version": 1,
+      "consent_id": "x",
+      "task_id": "x",
+      "run_id": "x",
+      "goal_revision": 1,
+      "workspace_binding_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "mission_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "plan_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+      "action": "overwrite",
+      "tool_binding": {
+        "tool_id": "x",
+        "version": "x",
+        "schema_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "description_hash": "0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "matcher": {
+        "kind": "directory_overwrite",
+        "directory": "x",
+        "directory_identity": "x",
+        "recursive": false,
+        "allow_content_changes": true,
+        "max_file_bytes": 1,
+        "max_total_bytes": 1
+      },
+      "max_uses": 1,
+      "expires_at": 1,
+      "runtime_session_id": "x",
+      "issued_by": {
+        "actor": "x",
+        "source": "cli"
+      },
+      "request_id": "x"
+    },
+    "consent.expired": {
+      "format_version": 1,
+      "consent_id": "x",
+      "reason": "deadline"
     }
   },
   "generated_by": "event_schema.minimal_payload"

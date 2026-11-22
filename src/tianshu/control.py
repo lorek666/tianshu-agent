@@ -42,7 +42,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from . import goal_control, memory_control, settings_control, skills
+from . import consent_control, goal_control, memory_control, settings_control, skills
 from .conversation import (
     GUIDANCE_EVENTS,
     GUIDANCE_REQUESTED,
@@ -352,6 +352,9 @@ class ControlPlane:
             "goal.create": lambda p: goal_control.handle(self, "create", p),
             "goal.advance": lambda p: goal_control.handle(self, "advance", p),
             "goal.close": lambda p: goal_control.handle(self, "close", p),
+            "consent.issue": lambda p: consent_control.handle(self, "issue", p),
+            "consent.list": lambda p: consent_control.handle(self, "list", p),
+            "consent.revoke": lambda p: consent_control.handle(self, "revoke", p),
             "run.start": self._run_start,
             "run.follow_up": self._run_follow_up,
             "run.answer_clarification": self._run_answer_clarification,

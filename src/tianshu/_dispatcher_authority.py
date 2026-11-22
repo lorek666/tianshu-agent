@@ -108,6 +108,7 @@ class _DispatcherAuthorityMixin:
     _leases: LeaseStore
     _approvals: ApprovalStore
     _grants: GrantStore
+    _consents: Any
     _claims: JobStore
     _snapshots: SnapshotStore | None
     _data_root: Path | None
@@ -1157,6 +1158,29 @@ class _DispatcherAuthorityMixin:
         issuer = "policy:auto"
 
         if self._requires_approval(request, target, args):
+            if self._approvals.rejected_for(request) is not None:
+                raise DispatchDenied("具体动作已被人否决", "c4.approval_rejected")
+            consent_id = self._consents.selected(request) if self._consents else None
+            if consent_id is not None:
+                decision = self._policy.classify(
+                    request.action, list(request.resources), auth.bindings,
+                    self._policy_preconditions(request, target, args),
+                    task_id=request.task_id, tool_id=request.tool_id,
+                )
+                if decision.is_denied:
+                    raise DispatchDenied(decision.reason, decision.rule_id)
+                self._consents.consume(request, args=args)
+                issuer = f"consent:{consent_id}"
+                lease_expires = self._lease_deadline(auth.lease_paths, request.run_id)
+                grant = self._grants.issue(
+                    subject=f"{request.run_id}#{request.claim_epoch}",
+                    request=request, issuer=issuer, max_expires_at=lease_expires,
+                )
+                self._grants.consume(
+                    grant.grant_id, request_digest=digest,
+                    subject=f"{request.run_id}#{request.claim_epoch}",
+                )
+                return None, grant.grant_id
             approval = (
                 self._approvals.get(stored.approval_id)
                 if stored.approval_id

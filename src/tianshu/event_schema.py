@@ -30,6 +30,7 @@ import re
 from typing import Any
 
 from .agent_contracts import AGENT_SCHEMAS
+from .consent_contract import CONSENT_EVENT_SCHEMAS
 from .continuation import (
     COMPACTION_REF_VERSION,
     COMPACTION_SCHEMA,
@@ -495,6 +496,7 @@ _SUBTASK_USAGE = _obj(
 #: 当前版本（1）的逐类型契约。键必须与 `events.EVENT_TYPES` 完全一致
 #: （`ensure_registry()` 在导入时校验，测试再次绑定）。
 CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
+    **CONSENT_EVENT_SCHEMAS,
     "goal.created": _obj(
         {
             "format_version": {"type": "integer", "const": 1},
@@ -1232,6 +1234,7 @@ def _relax(schema: dict[str, Any], relaxations: dict[str, dict[str, Any]]) -> di
 CURRENT_SCHEMAS.update(AGENT_SCHEMAS)
 
 V1_ONLY_EVENTS = frozenset({
+    *CONSENT_EVENT_SCHEMAS,
     "goal.created", "goal.round_started", "goal.closed",
     "run.attachments", "run.conversation", "run.guidance_applied", "run.guidance_requested",
     "run.model_route", "run.workflow", "run.workflow_request",
@@ -1685,6 +1688,8 @@ _SAMPLE_STRINGS = (
 
 
 def _sample_for(schema: dict[str, Any]) -> Any:
+    if "oneOf" in schema:
+        return _sample_for(schema["oneOf"][0])
     if "const" in schema:
         return schema["const"]
     if "enum" in schema:
@@ -1710,7 +1715,7 @@ def _sample_for(schema: dict[str, Any]) -> Any:
         if candidate == "boolean":
             return False
         if candidate == "array":
-            return []
+            return [_sample_for(schema["items"]) for _ in range(schema.get("minItems", 0))]
         if candidate == "object":
             props = schema.get("properties", {})
             required = schema.get("required", list(props))

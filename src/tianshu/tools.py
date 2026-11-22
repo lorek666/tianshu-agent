@@ -1403,11 +1403,13 @@ class FileExecutor:
         backend: FileBackend | None = None,
         exec_backend: ExecBackend | None = None,
         data_root: Path | None = None,
+        consents: object | None = None,
     ) -> None:
         self._tasks = tasks
         self._leases = leases
         self._grants = grants
         self._approvals = approvals
+        self._consents = consents
         self._claims = claims
         self._lookup = dispatch_lookup
         self._mark = dispatch_mark
@@ -1540,7 +1542,12 @@ class FileExecutor:
             raise ToolNotAllowed("执行许可已过期")
 
         # 6. 审批：覆盖/删除必须有，且必须已"被消费一次"
-        if req.action in APPROVAL_ACTIONS and not admitted.approval_id:
+        consent_grant = grant.issuer.startswith("consent:")
+        if consent_grant:
+            if self._consents is None:
+                raise ToolNotAllowed("执行器没有有限授权核验器")
+            self._consents.verify(req, args=admitted.args, grant=grant)
+        if req.action in APPROVAL_ACTIONS and not admitted.approval_id and not consent_grant:
             raise ToolNotAllowed(f"{req.action} 缺少审批绑定")
         if admitted.approval_id:
             appr = self._approvals.get(admitted.approval_id)

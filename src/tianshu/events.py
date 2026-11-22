@@ -62,6 +62,11 @@ EVENT_TYPES: frozenset[str] = frozenset(
         "approval.consumed",
         "approval.expired",
         "approval.superseded",
+        # 人类控制面签发的有限规则；每次仍派生一次性 Grant。
+        "consent.issued",
+        "consent.used",
+        "consent.revoked",
+        "consent.expired",
         # 派发（C4）
         "dispatch.requested",
         "dispatch.admitted",

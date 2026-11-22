@@ -32,6 +32,7 @@ SCHEMA = Path(__file__).resolve().parents[1] / "schemas" / "c3" / "event.json"
 FAMILIES = frozenset(
     {
         "approval",
+        "consent",
         "dispatch",
         "execution",
         "grant",
