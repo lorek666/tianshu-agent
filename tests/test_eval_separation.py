@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 
 from tianshu.cli import main
+from tianshu.eval import CASES, build_report
 from tianshu.events import EventLog
 from tianshu.replay import replay
 from tianshu.restore_access import default_material_paths
@@ -94,23 +95,17 @@ def test_evaluate_calls_model_and_replay_does_not(tmp_path, capsys):
     assert not any(module.endswith("model") for module in imported), imported
 
 
-def test_cli_compare_accepts_previous_report_as_baseline(tmp_path, capsys):
-    # 完整 20 条才有资格当"可比报告"；子集只用于冒烟（见下一条测试）。
+def test_cli_compare_accepts_previous_report_as_baseline(tmp_path, capsys, scripted_eval_suite):
+    # The baseline is a real full run; the CLI candidate must execute anew.
+    suite = scripted_eval_suite()
+    previous = build_report(suite, CASES, selection={
+        "complete": True, "requested": None, "case_count": len(CASES),
+    })
+    previous["workspace_retained"] = False
     baseline = tmp_path / "a.json"
-    assert (
-        main(
-            [
-                "evaluate",
-                "--repeat",
-                "3",
-                "--workdir",
-                str(tmp_path / "eval-a"),
-                "--out",
-                str(baseline),
-            ]
-        )
-        == 0
-    )
+    baseline_bytes = (json.dumps(previous, ensure_ascii=False) + "\n").encode("utf-8")
+    baseline.write_bytes(baseline_bytes)
+    output = tmp_path / "b.json"
     capsys.readouterr()
 
     code = main(
@@ -122,17 +117,34 @@ def test_cli_compare_accepts_previous_report_as_baseline(tmp_path, capsys):
             str(tmp_path / "eval-b"),
             "--baseline",
             str(baseline),
+            "--out",
+            str(output),
             "--json",
         ]
     )
     captured = capsys.readouterr()
     assert code == 0, captured.err
-    comparison = json.loads(captured.out)["compare"]
+    payload = json.loads(captured.out)
+    candidate, comparison = payload["report"], payload["compare"]
     assert comparison["comparable"] is True
     assert comparison["summary"]["delta"] == 0.0
-    saved = json.loads(baseline.read_text(encoding="utf-8"))
-    assert saved["schema"] == "tianshu.eval.v1"
-    assert saved["selection"]["complete"] is True
+    assert baseline.read_bytes() == baseline_bytes
+    assert json.loads(output.read_bytes().decode("utf-8")) == candidate
+    assert candidate["schema"] == previous["schema"] == "tianshu.eval.v1"
+    assert candidate["selection"] == previous["selection"]
+    assert candidate["model"] == previous["model"] == {
+        "adapter": "scripted", "vendor": None, "model": "",
+    }
+    identities = []
+    for report in (previous, candidate):
+        assert {case["case_id"] for case in report["cases"]} == {case.case_id for case in CASES}
+        run_ids = set()
+        for case in report["cases"]:
+            assert [run["run_index"] for run in case["run_details"]] == [0, 1, 2]
+            run_ids.update(run["run_id"] for run in case["run_details"])
+        assert len(run_ids) == len(CASES) * 3
+        identities.append(run_ids)
+    assert identities[0].isdisjoint(identities[1]), "CLI candidate must execute fresh runs"
 
 
 def test_cli_refuses_repeat_below_three(tmp_path, capsys):

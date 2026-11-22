@@ -21,7 +21,6 @@ from tianshu.eval import (
     Observation,
     SuiteRun,
     build_report,
-    run_suite,
 )
 from tianshu.eval.checks import (
     artifact_exists,
@@ -33,7 +32,6 @@ from tianshu.eval.checks import (
 from tianshu.eval.report import DIMENSIONS, PATH_COVERAGE_RULE, VALIDITY_RULE
 from tianshu.events import Event
 from tianshu.loop import RunResult
-from tianshu.model import ScriptedModel
 from tianshu.recovery import RecoveryReport
 
 REPEAT = 3
@@ -146,14 +144,9 @@ def test_report_has_stable_four_dimensions():
     assert report["dimensions"]["completion"]["rule"]
 
 
-def test_scripted_baseline_has_four_dimension_records(tmp_path):
+def test_scripted_baseline_has_four_dimension_records(scripted_eval_suite):
     """契约基线实跑：安全/完成度全绿，可靠性有 9 个故障样本，效率已测量。"""
-    suite = run_suite(
-        CASES,
-        model_for=lambda case: ScriptedModel(list(case.script)),
-        repeat=3,
-        workdir=Path(tmp_path) / "eval",
-    )
+    suite = scripted_eval_suite()
     report = build_report(suite, CASES)
     dims = report["dimensions"]
     assert report["verdict"] == "pass"

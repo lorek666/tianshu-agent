@@ -121,17 +121,17 @@ def test_expensive_file_is_accounted_for_by_runners_and_verifier(tmp_path):
 
 
 def test_windows_file_weights_balance_observed_cost_in_a_reduced_collection(tmp_path):
-    # Complete-file costs from run 44916124972, except real_tasks: its new
-    # three-run sample reuse projects <=205s from retained work in 44939541307.
+    # Complete-file log windows from run 45058496468, rounded up to seconds.
+    # Earlier observations predate the online-soak/Goal changes and corpus reuse.
     # This is scheduling input, not a claim that the new Windows run passed.
     observed = {
-        "tests/test_eval_harness.py": (19, 75),
-        "tests/test_eval_real_tasks.py": (36, 205),
-        "tests/test_low_disk_execution.py": (96, 101),
+        "tests/test_eval_harness.py": (19, 54),
+        "tests/test_eval_real_tasks.py": (40, 175),
+        "tests/test_low_disk_execution.py": (97, 62),
         "tests/test_m2_acceptance.py": (45, 66),
-        "tests/test_recovery.py": (16, 95),
-        "tests/test_slo_and_soak.py": (5, 58),
-        "tests/test_w15_safe_gc.py": (43, 69),
+        "tests/test_recovery.py": (16, 110),
+        "tests/test_slo_and_soak.py": (9, 85),
+        "tests/test_w15_safe_gc.py": (43, 63),
     }
     files = {file: "".join(f"def test_probe_{index}(): pass\n" for index in range(count))
              for file, (count, _) in observed.items()}
@@ -187,6 +187,36 @@ def test_windows_weights_cover_accumulated_medium_file_estimation_errors(tmp_pat
         "tests/test_network_fetch.py": (24, 29),
         "tests/test_host_memory.py": (18, 23),
         "tests/test_isolation.py": (13, 20),
+    }
+    files = {file: "".join(f"def test_probe_{index}(): pass\n" for index in range(count))
+             for file, (count, _) in observed.items()}
+    evidence, env, results, docs = shards(tmp_path, files)
+    assert [result.returncode for result in results] == [0, 0], [
+        (result.stdout, result.stderr) for result in results]
+    accepted = verify(evidence, env)
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+    costs = [sum(observed[file][1] for file in {node.split("::", 1)[0]
+                                               for node in doc["selected"]}) for doc in docs]
+    assert abs(costs[0] - costs[1]) < 15, costs
+
+
+def test_windows_weights_include_goal_and_online_soak_costs(tmp_path):
+    # Complete file log intervals from run 45058496468. The timeout was cumulative:
+    # old weights balanced their own estimates but missed new Goal/online-soak cost.
+    # These observations exercise scheduling; they are not native CI acceptance.
+    observed = {
+        "tests/test_browser_form_dispatch.py": (12, 17.166),
+        "tests/test_consent.py": (40, 16.329),
+        "tests/test_data_cli.py": (31, 30.715),
+        "tests/test_exec.py": (33, 8.283),
+        "tests/test_goal_v2.py": (98, 81.111),
+        "tests/test_ipc.py": (38, 3.497),
+        "tests/test_isolation.py": (13, 19.515),
+        "tests/test_memory_distill.py": (22, 5.590),
+        "tests/test_migration.py": (14, 6.913),
+        "tests/test_recovery.py": (16, 109.594),
+        "tests/test_round2_inputs_model_mcp.py": (45, 22.557),
+        "tests/test_slo_and_soak.py": (9, 84.437),
     }
     files = {file: "".join(f"def test_probe_{index}(): pass\n" for index in range(count))
              for file, (count, _) in observed.items()}
