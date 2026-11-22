@@ -881,6 +881,7 @@ fail-closed），作用域与 kind 由执行侧判定，见 [F10-memory-design.m
 | `dispatch.claim_lost` | 租约与作业 | 派发过程中 claim 失效（作业被接管或已终结）。 | 作业已被接管；`run status` 看是谁在跑，等它结束或重新排队。 |
 | `dispatch.guard_timeout` | 租约与作业 | 执行守卫在限定时间内没有完成复核。 | 重试一次；反复超时说明别的进程占着工作区，查 `run status`。 |
 | `dispatch.lease_lost` | 租约与作业 | 派发过程中工作区租约丢失。 | 等占用该目录的 Run 结束，再重试。 |
+| `dispatch.consent_unusable` | 有限授权 | 已准备动作绑定的有限授权被撤销、到期、耗尽或绑定失效；不得静默改用另一规则继续执行。 | 核对当前动作和授权状态，由人重新准备并明确授权；原动作不自动重试。 |
 | `dispatch.not_admitted` | 准入 | 工具未通过准入白名单。 | 这个工具不在白名单，换一个允许的工具。 |
 | `dispatch.run_effects_disallowed` | 准入 | pure_only Run 请求真实非 pure 工具，包括子任务取消。 | 显式新开 effects Run，不升级原 Run。 |
 | `dispatch.disk_space_low` | 准入 | 创建 effects Run 或普通非 pure 执行所需的实际位置现测 free 低于 2 GiB，含真实 0。 | 清理对应卷或显式新建 pure_only Run；不自动删除材料。 |
@@ -933,6 +934,7 @@ fail-closed），作用域与 kind 由执行侧判定，见 [F10-memory-design.m
 | `c4.subtask_spawn` | 判定结果（非拒绝） | 判定结果：派生子任务需要人工批准（会创建子任务实体、占用共享预算；**D2 起子 Run 由既有 Worker 执行**，父 Run 在等它时挂起作业）。 | 批准前核对 slug、目标与局部上限；不确定就拒绝。 |
 | `c4.subtask_cancel` | 判定结果（非拒绝） | 判定结果：取消子任务自动放行（只会减少执行，不扩大任何权限）。 | 无需操作：未完成的子任务先落 `cancelling`、由执行侧在安全点确认；已完成的幂等返回。 |
 | `c4.mcp_call` | 判定结果（非拒绝） | 判定结果：调用 MCP 工具需人工审批（`exec` 动作 + `mcp://` 资源）：MCP 工具是不可信外部程序，与执行命令同级。 | 确认服务器与工具名无误后批准；不确定就拒绝。 |
+| `c4.scoped_consent` | 判定结果（非拒绝） | 认证本机人类签发的有限授权匹配；仍须经执行侧复核并原子兑现具体动作的一次性 Grant。 | 在有限范围授权面板核对范围、次数和期限，可随时撤销；不匹配的动作仍按原策略处理。 |
 | `c4.overwrite` | 判定结果（非拒绝） | 判定结果：覆盖已有内容，属删除类操作，需审批。 | 需要人工确认：`approvals list` 后批准。 |
 | `c4.unsupported` | 兜底 | 动作不在支持的动作集合内。 | 换个支持的动作/工具；这多半是工具注册写错了，报 bug。 |
 | `dispatch.refused` | 兜底 | 守卫内复核抛出未分类异常时的兜底拒绝。 | 未知原因被拒；把 `reason` 连同这条日志报 bug。 |
