@@ -42,7 +42,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from . import consent_control, goal_control, memory_control, settings_control, skills
+from . import agent_control, consent_control, goal_control, memory_control, settings_control, skills
 from .conversation import (
     GUIDANCE_EVENTS,
     GUIDANCE_REQUESTED,
@@ -333,6 +333,7 @@ class ControlPlane:
         self._claims = stack.claims
         self._approvals = stack.approvals
         self._log = stack.log
+        agent_control.ensure_consents(stack)
         #: 驱动线程的唤醒队列。为 None 时 `run.resume`/`approvals.decide` 只记视图，
         #: 不承诺"已交给驱动"——单测（没有驱动线程）就是这样用的。
         self.resume_requests = resume_requests
@@ -356,6 +357,14 @@ class ControlPlane:
             "goal.create": lambda p: goal_control.handle(self, "create", p),
             "goal.advance": lambda p: goal_control.handle(self, "advance", p),
             "goal.close": lambda p: goal_control.handle(self, "close", p),
+            "plan.graph.get": lambda p: agent_control.handle(self, "get", p),
+            "plan.graph.confirm": lambda p: agent_control.handle(self, "confirm", p),
+            "plan.graph.replan": lambda p: agent_control.handle(self, "replan", p),
+            "plan.graph.verify": lambda p: agent_control.handle(self, "verify", p),
+            "verification.request": lambda p: agent_control.handle(self, "request", p),
+            "verification.decide": lambda p: agent_control.handle(self, "decide", p),
+            "agent.material": lambda p: agent_control.handle(self, "material", p),
+            "consent.prepare": lambda p: agent_control.consent_prepare(self, p),
             "consent.issue": lambda p: consent_control.handle(self, "issue", p),
             "consent.list": lambda p: consent_control.handle(self, "list", p),
             "consent.revoke": lambda p: consent_control.handle(self, "revoke", p),
