@@ -198,7 +198,14 @@ def step_verified(stack, view, step_id):
         requests = [e for e in events if e.type == "verification.requested"
                     and e.payload["check_id"] == check_id]
         if not requests:
-            return False
+            if view["revision"] <= 1 or step_id in view.get("changed_step_ids", ()):
+                return False
+            from .plans import PlanStore
+            previous = PlanStore(stack).get(view["plan_id"], revision=view["revision"] - 1)
+            if (previous["document_digest"] != view["document"]["previous_digest"]
+                    or not step_verified(stack, previous, step_id)):
+                return False
+            continue
         latest = requests[-1].payload
         results = [e for e in events if e.type == "verification.result"
                    and e.payload["attempt_id"] == latest["attempt_id"]]

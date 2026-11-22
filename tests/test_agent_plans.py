@@ -235,3 +235,35 @@ def test_verification_rejects_cross_step_and_unconfirmed_requests(env):
     assert stack.log.seq_head() == before
     with pytest.raises(ValueError):
         request_check(stack, view, "other", "exists", run_id="", request_id="bad")
+
+
+def test_partial_replan_carries_only_unchanged_fresh_evidence(env):
+    from tianshu.verification import request_check, step_verified
+    stack, task, ws, mission, document, manifest = env
+    document["steps"].append({
+        **copy.deepcopy(document["steps"][0]), "step_id": "follow",
+        "depends_on": ["write"], "expected_artifacts": [],
+    })
+    plans = store(env)
+    view = plans.create(task.task_id, mission, document, manifest, request_id="create")
+    plans.confirm(view["plan_id"], expected_revision=1,
+                  document_digest=view["document_digest"], request_id="confirm")
+    (ws / "report.md").write_bytes(b"report")
+    plans.change_step(view["plan_id"], "write", "running", request_id="running")
+    view = plans.change_step(view["plan_id"], "write", "verifying", request_id="verifying")
+    request_check(stack, view, "write", "exists", run_id="", request_id="check")
+    view = plans.change_step(view["plan_id"], "write", "satisfied", request_id="satisfied")
+    new = copy.deepcopy(document)
+    new.update(revision=2, previous_digest=view["document_digest"])
+    new["steps"][1]["instruction"] = "修改后续步骤"
+    replanned = plans.replan(view["plan_id"], mission, new, manifest,
+                             expected_revision=1, request_id="replan")
+    plans.confirm(view["plan_id"], expected_revision=2,
+                  document_digest=replanned["document_digest"], request_id="confirm2")
+    latest = plans.get(view["plan_id"])
+    assert latest["steps"][0]["state"] == "satisfied"
+    assert step_verified(stack, latest, "write")
+    assert latest["steps"][1]["state"] == "ready"
+    (ws / "report.md").write_bytes(b"changed")
+    assert not step_verified(stack, latest, "write")
+    assert plans.get(view["plan_id"])["steps"][1]["state"] != "ready"

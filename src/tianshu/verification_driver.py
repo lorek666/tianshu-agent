@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -88,7 +89,7 @@ def command_binding(stack, task_id, executable):
         "executable_digest": hashlib.sha256(canonical.read_bytes()).hexdigest(),
         "env_profile_digest": jcs_sha256(filtered_env(policy, dict(os.environ))),
         "isolation_profile_digest": jcs_sha256({
-            "policy": policy.to_dict(), "backend": backend.capabilities.to_dict(),
+            "policy": policy.to_dict(), "backend": asdict(backend.capabilities),
         }),
     }
 

@@ -73,3 +73,63 @@ def test_worker_failed_check_cannot_satisfy_step(env):
     result = stack.log.read_run(run.run_id, event_types=("verification.result",))[0]
     assert result.payload["result"] == "failed"
     assert PlanStore(stack).get(view["plan_id"])["steps"][0]["state"] == "failed"
+
+
+def test_verification_command_waits_for_real_approval_and_checks_exit_code(env):
+    import copy
+    import sys
+    from pathlib import Path
+
+    from support import approve_pending, engine_for
+
+    from tianshu.execpolicy import ExecPolicy
+    from tianshu.verification_driver import command_binding, start_verification
+
+    stack, ws, _ = env
+    executable = str(Path(sys.executable).resolve())
+    task = stack.tasks.create_task("运行已确认检查", [str(ws)], exec_policy=ExecPolicy(
+        argv_allowlist=(executable,), cwd_roots=(ws,), timeout_ms=2000,
+        max_output_bytes=4096,
+    ))
+    mission = {"mission_id": "mission_command", "task_id": task.task_id, "goal_revision": 1,
+               "criteria": [{"criterion_id": "report", "description": "命令退出值正确",
+                             "mode": "machine"}]}
+    _, _, base = env
+    check = copy.deepcopy(base["manifest"]["checks"][0])
+    check.update(kind="command_exit", inputs={
+        **command_binding(stack, task.task_id, executable),
+        "argv": [executable, "-c", "print('check complete')"],
+        "cwd_binding_id": "0", "expected_exit_codes": [0], "timeout_ms": 2000,
+    })
+    manifest = {**base["manifest"], "mission_id": mission["mission_id"],
+                "mission_digest": jcs_sha256(mission), "checks": [check]}
+    document = copy.deepcopy(base["document"])
+    document.update(plan_id="plan_command", mission_id=mission["mission_id"],
+                    mission_digest=jcs_sha256(mission), verification_manifest={
+                        "digest": jcs_sha256(manifest),
+                        "content_ref": "content://sha256:" + jcs_sha256(manifest),
+                    })
+    plans = PlanStore(stack)
+    view = plans.create(task.task_id, mission, document, manifest, request_id="create_command")
+    plans.confirm(view["plan_id"], expected_revision=1,
+                  document_digest=view["document_digest"], request_id="confirm_command")
+    plans.change_step(view["plan_id"], "write", "running", request_id="run_command")
+    view = plans.change_step(view["plan_id"], "write", "verifying", request_id="verify_command")
+    run = start_verification(stack, view, "write", request_id="verify")
+    model = ScriptedModel([])
+    with Worker(stack, model=model, heartbeat_interval_ms=0) as worker:
+        worker.run_once()
+        assert not worker.errors
+    assert stack.tasks.get_run(run.run_id).state == "waiting_approval"
+    assert not stack.log.read_run(run.run_id, event_types=("tool.intent", "model.intent"))
+    assert approve_pending(stack, run.run_id)
+    result = engine_for(stack, model).resume_run(run.run_id)
+    assert result.state == "succeeded"
+    assert plans.get(view["plan_id"])["steps"][0]["state"] == "satisfied"
+    events = stack.log.read_run(run.run_id)
+    assert any(e.type == "tool.intent" for e in events)
+    assert any(e.type == "receipt" for e in events)
+    check_result = next(e for e in events if e.type == "verification.result")
+    assert check_result.payload["result"] == "passed"
+    assert next(e for e in events if e.seq == check_result.payload["verified_event_seq"]).type == (
+        "tool.result")

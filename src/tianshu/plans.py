@@ -176,12 +176,35 @@ class PlanStore:
         states = {s["step_id"]: {"state": "pending", "attempt": 0,
                                  "execution_run_id": None, "evidence_refs": [],
                                  "reason_code": ""} for s in document["steps"]}
+        previous = None
+        if p["revision"] > 1:
+            previous = self.get(plan_id, revision=p["revision"] - 1)
+            if previous["document_digest"] != document["previous_digest"]:
+                raise ValueError("计划修订链损坏")
+            for old in previous["steps"]:
+                if (old["step_id"] in states and old["step_id"] not in p["changed_step_ids"]
+                        and old["state"] == "satisfied"):
+                    states[old["step_id"]] = {k: old[k] for k in states[old["step_id"]]}
         for change in events:
             q = change.payload
             if change.type == "plan.step_changed" and q["revision"] == p["revision"]:
                 states[q["step_id"]] = {k: q[k] for k in (
                     "state", "attempt", "execution_run_id", "evidence_refs", "reason_code")}
         stale = task.goal_revision != mission["goal_revision"]
+        view = {
+            "format_version": 1, "plan_id": plan_id, "task_id": event.task_id,
+            "revision": p["revision"], "state_revision": events[-1].seq,
+            "document_digest": p["document_digest"], "confirmed": confirmed and not stale,
+            "mission": mission, "manifest": manifest, "document": document,
+            "changed_step_ids": p["changed_step_ids"],
+            "steps": [{**s, **states[s["step_id"]]} for s in document["steps"]],
+        }
+        from .verification import step_verified
+        for s in document["steps"]:
+            if states[s["step_id"]]["state"] == "satisfied" and not step_verified(
+                self.stack, view, s["step_id"]
+            ):
+                states[s["step_id"]]["state"] = "invalidated"
         for s in document["steps"]:
             state = states[s["step_id"]]
             if stale:
@@ -190,13 +213,8 @@ class PlanStore:
                 states[d]["state"] == "satisfied" for d in s["depends_on"]
             ):
                 state["state"] = "ready"
-        return {
-            "format_version": 1, "plan_id": plan_id, "task_id": event.task_id,
-            "revision": p["revision"], "state_revision": events[-1].seq,
-            "document_digest": p["document_digest"], "confirmed": confirmed and not stale,
-            "mission": mission, "manifest": manifest, "document": document,
-            "steps": [{**s, **states[s["step_id"]]} for s in document["steps"]],
-        }
+        view["steps"] = [{**s, **states[s["step_id"]]} for s in document["steps"]]
+        return view
 
     def create(self, task_id, mission, document, manifest, *, request_id,
                source_run_id=None):
@@ -218,7 +236,8 @@ class PlanStore:
             self._append(tx, task_id, mission, document, manifest, request_id, source_run_id)
         return self.get(document["plan_id"])
 
-    def _append(self, tx, task_id, mission, document, manifest, request_id, source):
+    def _append(self, tx, task_id, mission, document, manifest, request_id, source,
+                changed_step_ids=None):
         refs = [put_material(self.stack, task_id, value) for value in
                 (document, manifest, mission)]
         tx.append("", "plan.created", {
@@ -228,7 +247,8 @@ class PlanStore:
             "manifest_ref": refs[1], "mission_ref": refs[2],
             "document_digest": jcs_sha256(document),
             "previous_digest": document["previous_digest"],
-            "changed_step_ids": [s["step_id"] for s in document["steps"]],
+            "changed_step_ids": (changed_step_ids if changed_step_ids is not None
+                                 else [s["step_id"] for s in document["steps"]]),
             "source_run_id": source, "request_id": request_id,
         }, task_id=task_id, actor_kind="core")
 
@@ -266,7 +286,23 @@ class PlanStore:
                 raise ValueError("活跃步骤不能热切计划")
             if jcs_sha256(mission) != jcs_sha256(view["mission"]):
                 raise ValueError("重规划不能改变使命")
-            self._append(tx, view["task_id"], mission, document, manifest, request_id, None)
+            old_steps = {s["step_id"]: s for s in view["document"]["steps"]}
+            old_checks = {c["check_id"]: c for c in view["manifest"]["checks"]}
+            new_checks = {c["check_id"]: c for c in manifest["checks"]}
+            changed = {
+                s["step_id"] for s in document["steps"]
+                if old_steps.get(s["step_id"]) != s or any(
+                    old_checks.get(c) != new_checks[c] for c in s["verification_ids"])
+            }
+            # 依赖链受影响的后继也不能借用旧证据。
+            for _ in document["steps"]:
+                descendants = {s["step_id"] for s in document["steps"]
+                               if set(s["depends_on"]) & changed}
+                if descendants <= changed:
+                    break
+                changed |= descendants
+            self._append(tx, view["task_id"], mission, document, manifest, request_id, None,
+                         changed_step_ids=sorted(changed))
         return self.get(plan_id)
 
     def change_step(self, plan_id, step_id, state, *, run_id=None, reason="",
