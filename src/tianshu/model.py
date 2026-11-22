@@ -290,17 +290,20 @@ def normalize_usage(raw: dict[str, Any] | None) -> dict[str, int | None]:
 def _chat_usage(
     raw: dict[str, Any] | None, *, inclusive_input: bool = False,
 ) -> dict[str, int | None]:
-    """Chat 原生缓存读取是 prompt_tokens 的子集，保留缺失/null 与最终快照。"""
+    """只有已知官方 Chat 才断言包含语义；始终校验数值与别名一致性。"""
     usage = normalize_usage(raw)
     if isinstance(raw, dict) and raw.get("prompt_tokens_details") is not None:
-        return _native_cache_usage(usage, raw["prompt_tokens_details"])
+        return _native_cache_usage(
+            usage, raw["prompt_tokens_details"], inclusive_input=inclusive_input,
+        )
     return _native_cache_usage(usage, {}) if inclusive_input else usage
 
 
 def _native_cache_usage(
     usage: dict[str, int | None], details: Any, *, require_total: bool = False,
+    inclusive_input: bool = True,
 ) -> dict[str, int | None]:
-    """OpenAI 原生 read/write 都是总输入的子集；只投影实际出现的字段。"""
+    """只投影实际字段；按已知输入语义校验总量，不猜兼容端点的分母。"""
     if not isinstance(details, dict):
         raise ModelError("usage token details 必须是对象", kind="protocol")
     total = usage["input_tokens"]
@@ -314,7 +317,8 @@ def _native_cache_usage(
         if value is not None and (type(value) is not int or value < 0):
             raise ModelError(f"usage.{source} 必须是非负整数或 null", kind="protocol")
         if value is not None and (
-            (require_total and total is None) or (total is not None and value > total)
+            (require_total and total is None)
+            or (inclusive_input and total is not None and value > total)
         ):
             raise ModelError(f"usage.{source} 超过已知输入", kind="protocol")
         if target in usage and usage[target] != value:
@@ -323,7 +327,7 @@ def _native_cache_usage(
     known_cache = [usage.get(key) for key in (
         "cache_read_input_tokens", "cache_creation_input_tokens",
     )]
-    if total is not None and sum(value or 0 for value in known_cache) > total:
+    if inclusive_input and total is not None and sum(value or 0 for value in known_cache) > total:
         raise ModelError("usage 缓存读写之和超过输入", kind="protocol")
     return usage
 

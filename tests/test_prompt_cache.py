@@ -491,7 +491,12 @@ def test_explicit_compaction_does_not_misidentify_latest_user_as_initial_task():
 
 
 @pytest.mark.parametrize("official", [True, False])
-def test_flat_cache_usage_respects_known_inclusive_input_only_for_official_chat(official):
+@pytest.mark.parametrize("details", [
+    None, {}, {"audio_tokens": 0}, {"cached_tokens": 8, "cache_write_tokens": 7},
+])
+def test_flat_cache_usage_respects_known_inclusive_input_only_for_official_chat(
+    official, details,
+):
     from tianshu.model import ModelError
 
     model = make(OpenAICompatibleModel, **(
@@ -501,8 +506,29 @@ def test_flat_cache_usage_respects_known_inclusive_input_only_for_official_chat(
         "prompt_tokens": 10, "completion_tokens": 2,
         "cache_read_input_tokens": 8, "cache_creation_input_tokens": 7,
     })
+    if details is not None:
+        payload["usage"]["prompt_tokens_details"] = details
     if official:
         with pytest.raises(ModelError, check=lambda exc: exc.kind == "protocol"):
             model._parse(payload)
     else:
-        assert model._parse(payload).usage["cache_creation_input_tokens"] == 7
+        assert model._parse(payload).usage == {
+            "input_tokens": 10, "output_tokens": 2,
+            "cache_read_input_tokens": 8, "cache_creation_input_tokens": 7,
+        }
+
+
+@pytest.mark.parametrize("details", [
+    {"cached_tokens": True}, {"cache_write_tokens": -1},
+    {"cached_tokens": 6}, {"cache_write_tokens": None},
+])
+def test_third_party_native_cache_types_and_alias_conflicts_are_still_rejected(details):
+    from tianshu.model import ModelError
+
+    model = make(OpenAICompatibleModel, base_url="https://example.invalid/v1")
+    with pytest.raises(ModelError, check=lambda exc: exc.kind == "protocol"):
+        model._parse(_payload("openai", usage={
+            "prompt_tokens": 10, "completion_tokens": 2,
+            "cache_read_input_tokens": 8, "cache_creation_input_tokens": 7,
+            "prompt_tokens_details": details,
+        }))

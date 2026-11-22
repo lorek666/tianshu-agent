@@ -272,6 +272,41 @@ def test_sidecar_refuses_a_file_created_during_evaluation_without_truncating_it(
     capsys.readouterr()
 
 
+@pytest.mark.parametrize("first,second", [
+    ("Main", "main"),
+    ("caf\u00e9", "cafe\u0301"),
+])
+@pytest.mark.parametrize("conflict", ["same-output", "output-parent", "workdir-parent"])
+def test_uncreated_output_aliases_and_ancestor_components_are_rejected_before_models(
+    tmp_path, monkeypatch, capsys, first, second, conflict,
+):
+    import tianshu.eval
+    import tianshu.pathkeys
+
+    # 保守路径键也必须在 Linux CI 覆盖 macOS/Windows 的大小写等价策略。
+    monkeypatch.setattr(tianshu.pathkeys, "CASE_INSENSITIVE_FS", True)
+    primary = tmp_path / first
+    side = tmp_path / second
+    root = tmp_path / "eval"
+    if conflict == "output-parent":
+        side /= "cache.json"
+    elif conflict == "workdir-parent":
+        root = primary / "eval"
+        primary = tmp_path / "primary.json"
+
+    def forbid(*_args, **_kwargs):
+        pytest.fail("尚不存在的等价路径必须在模型构造和评测前拒绝")
+
+    monkeypatch.setattr(tianshu.eval, "run_suite", forbid)
+    monkeypatch.setattr(cli, "_model_from", forbid)
+    assert cli.main([
+        "evaluate", "--model", "openai-compatible", "--repeat", "3",
+        "--workdir", str(root), "--out", str(primary), "--cache-report", str(side),
+    ]) == 2
+    assert "cache-report" in capsys.readouterr().err
+    assert not root.exists() and not primary.exists() and not side.exists()
+
+
 def test_cache_quality_groups_separate_scripted_harness_from_the_evaluated_model(tmp_path):
     cases = select_cases(["N1", "R1"])
     model = OpenAICompatibleModel("test-model", api_key="fake", transport=FakeTransport(

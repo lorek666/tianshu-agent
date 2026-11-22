@@ -16,6 +16,7 @@ from pathlib import Path
 from .errors import TianshuError
 from .events import EventLog
 from .model import Model, ScriptedModel
+from .pathkeys import is_ancestor_or_self, overlap_key
 from .replay import replay
 
 
@@ -101,18 +102,20 @@ def _cache_report_preflight(
     try:
         if cache.exists() or cache.is_symlink():
             raise TianshuError(error)
-        root = workdir.resolve()
+        root = overlap_key(str(workdir.resolve()))
         paths = [path.resolve() for path in (cache, primary, baseline) if path is not None]
-        for path in paths:
+        keys = [overlap_key(str(path)) for path in paths]
+        for path, key in zip(paths, keys, strict=True):
             if path.is_dir() or any(
                 parent.exists() and not parent.is_dir() for parent in path.parents
             ):
                 raise TianshuError(error)
-            if path == root or root in path.parents or path in root.parents:
+            if is_ancestor_or_self(root, key) or is_ancestor_or_self(key, root):
                 raise TianshuError(error)
         for index, path in enumerate(paths):
-            for other in paths[:index]:
-                if (path == other or path in other.parents or other in path.parents
+            for other_index, other in enumerate(paths[:index]):
+                if (is_ancestor_or_self(keys[index], keys[other_index])
+                        or is_ancestor_or_self(keys[other_index], keys[index])
                         or (path.exists() and other.exists() and path.samefile(other))):
                     raise TianshuError(error)
         return paths[0]
