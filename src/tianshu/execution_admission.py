@@ -233,9 +233,9 @@ def process_birth_identity(pid: int) -> str | None:
                 return None
             return f"darwin:{info.seconds}:{info.microseconds}"
         if sys.platform.startswith("linux"):
-            raw = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
-            boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
-            return f"linux:{boot}:{raw[19]}"
+            raw = Path(f"/proc/{pid}/stat").read_bytes().rsplit(b")", 1)[1].split()
+            boot = Path("/proc/sys/kernel/random/boot_id").read_bytes().decode("ascii").strip()
+            return f"linux:{boot}:{raw[19].decode('ascii')}"
         if os.name == "nt":
             from .leases import pid_started_at
 
@@ -600,7 +600,7 @@ class PreparedExecution:
             except (ValueError, TypeError):
                 facts = {}
             try:
-                pid = int(pid_file.read_text())
+                pid = int(pid_file.read_bytes())
             except (OSError, ValueError):
                 pass
             if pid is not None:
@@ -621,7 +621,7 @@ class PreparedExecution:
         finally:
             if pid is None:
                 try:
-                    pid = int(pid_file.read_text())
+                    pid = int(pid_file.read_bytes())
                 except (OSError, ValueError):
                     pass
             if pid is not None:

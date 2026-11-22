@@ -151,6 +151,10 @@ class _DispatchEnv:
     snapshots: SnapshotStore
     dispatcher: Dispatcher
 
+    @property
+    def data_root(self) -> Path:
+        return self.data
+
     def new_run(self, *, exec_policy: ExecPolicy):
         task = self.tasks.create_task(
             "执行沙箱命令", [{"root_path": str(self.ws)}], exec_policy=exec_policy

@@ -18,12 +18,18 @@ from tianshu.leases import GuardTimeout, execution_guard
 from tianshu.loop import build_stack
 from tianshu.model import ModelResponse, ScriptedModel, ToolCall
 from tianshu.permissions import ApprovalError, HumanIdentity
+from tianshu.restore_access import default_material_paths
+
+
+def _event_log(root: Path) -> EventLog:
+    db, data = root / "events.db", root / "data"
+    return EventLog(db, blob_dir=default_material_paths(db, data)[1], data_root=data)
 
 
 def _drive(root: Path, kind: str, url: str, point: str, conn) -> None:
     import tianshu.dispatcher as module
 
-    with closing(EventLog(root / "events.db", blob_dir=root / "blobs")) as log:
+    with closing(_event_log(root)) as log:
         clock = [int(time.time() * 1000)]
         stack = build_stack(log, data_root=root / "data", clock=lambda: clock[0])
         workspace = root / "workspace"
@@ -144,7 +150,7 @@ def test_control_wins_after_committed_intent(tmp_path, local_http, kind, control
     url, received = local_http
     process, conn, reached = _start(tmp_path, kind, url)
     try:
-        with closing(EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")) as log:
+        with closing(_event_log(tmp_path)) as log:
             stack = stack_for(log, data_root=tmp_path / "data")
             record = stack.dispatcher.dispatch_record(reached["run_id"], "call")
             assert record.state == "intent"
@@ -192,7 +198,7 @@ def test_subtask_execution_holds_guard_and_revoke_cannot_succeed(tmp_path, local
     url, received = local_http
     process, conn, reached = _start(tmp_path, "subtask", url, "subtask_result")
     try:
-        with closing(EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")) as log:
+        with closing(_event_log(tmp_path)) as log:
             stack = stack_for(log, data_root=tmp_path / "data")
             row, = stack.tasks.list_subtasks(reached["run_id"])
             child = stack.tasks.get_task(row.child_task_id)
@@ -226,7 +232,7 @@ def test_network_execution_wins_revoke_is_rejected(tmp_path, local_http):
     url, received = local_http
     process, conn, reached = _start(tmp_path, "network", url, "network_send")
     try:
-        with closing(EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")) as log:
+        with closing(_event_log(tmp_path)) as log:
             stack = stack_for(log, data_root=tmp_path / "data")
             assert received == []
             with pytest.raises(ApprovalError, match="已经开始执行"):
@@ -256,7 +262,7 @@ def test_consumed_grant_expiry_is_rechecked_before_execution(tmp_path, local_htt
     process, conn, reached = _start(tmp_path, kind, url, "grant_expiry")
     try:
         _finish(process, conn)
-        with closing(EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")) as log:
+        with closing(_event_log(tmp_path)) as log:
             stack = stack_for(log, data_root=tmp_path / "data")
             assert received == []
             assert stack.tasks.list_subtasks(reached["run_id"]) == []
