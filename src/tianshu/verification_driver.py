@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import uuid
 from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
@@ -109,6 +110,49 @@ def _command_preconditions(stack, task, check):
     return str(Path(task.workspaces[index].root_path).resolve(strict=True))
 
 
+def assert_execution_binding(stack, run_id, call_id, args):
+    """执行守卫内及实际 spawn 前调用；普通 Run 不受本阶段路由影响。"""
+    binding = binding_for(stack.log, run_id)
+    if binding is None:
+        return
+    view = PlanStore(stack).get(binding["plan_id"])
+    task = stack.tasks.get_task(view["task_id"])
+    step = next((s for s in view["steps"] if s["step_id"] == binding["step_id"]), None)
+    if (not view["confirmed"] or view["document_digest"] != binding["plan_digest"]
+            or step is None or step["state"] != "verifying"):
+        raise ValueError("验证计划或阶段已改变")
+    check = next((c for c in view["manifest"]["checks"] if
+                  c["check_id"] in step["verification_ids"]
+                  and "verification_" + c["check_id"] == call_id), None)
+    if check is None or check["kind"] != "command_exit":
+        raise ValueError("验证 Run 只能执行已确认的检查命令")
+    cwd = _command_preconditions(stack, task, check)
+    if args != {"argv": check["inputs"]["argv"], "cwd": cwd}:
+        raise ValueError("验证命令参数与已确认检查不符")
+    requests = stack.log.read_run(run_id, event_types=("verification.requested",))
+    request = next((e for e in reversed(requests)
+                    if e.payload["check_id"] == check["check_id"]), None)
+    if (request is None or request.payload["check_digest"] != jcs_sha256(check)
+            or request.payload["input_fingerprint"] != input_fingerprint(stack, task.task_id)):
+        raise ValueError("验收输入或检查已改变")
+    budget = getattr(stack.dispatcher, "_budget", None)
+    cursor, seen = "run:" + run_id, set()
+    while budget is not None:
+        if cursor in seen:
+            raise ValueError("验证预算父链损坏")
+        seen.add(cursor)
+        account = budget.account(cursor)
+        if account is None:
+            break
+        deadline = account["deadline_ms"]
+        if (account["cancelled"] or deadline is not None
+                and budget._clock() + check["inputs"]["timeout_ms"] > deadline):
+            raise ValueError("验证命令超出剩余预算期限")
+        if account["parent_id"] is None:
+            break
+        cursor = account["parent_id"]
+
+
 def _command_result(loop, stack, run_id, claim, progress, task, view, step_id, check, request):
     inputs = check["inputs"]
     call_id = "verification_" + check["check_id"]
@@ -146,6 +190,66 @@ def _command_result(loop, stack, run_id, claim, progress, task, view, step_id, c
         "failed", "verification.command_mismatch", recorded)
 
 
+def _check_order(step, checks):
+    ordered, seen = [], set()
+
+    def visit(check_id):
+        if check_id in seen:
+            return
+        seen.add(check_id)
+        check = checks[check_id]
+        if check["kind"] == "human":
+            for dep in check["inputs"]["required_check_ids"]:
+                if dep in step["verification_ids"]:
+                    visit(dep)
+        ordered.append(check_id)
+    for check_id in step["verification_ids"]:
+        visit(check_id)
+    return ordered
+
+
+def _command_evidence(stack, run_id, task, view, step_id, check, request,
+                      recorded, fingerprint, source_seq):
+    from .agent_documents import EVIDENCE_SCHEMA, validate_document
+    # 完整结果已有 append-only tool.result；大 stdout/stderr 不复制进 256 KiB 文档。
+    material = {
+        "kind": "command_result", "binding": check["inputs"],
+        "input_fingerprint": fingerprint, "result_event_seq": source_seq,
+        "result_digest": None if recorded is None else jcs_sha256(recorded),
+        "status": None if recorded is None else recorded.get("status"),
+        "output": {},
+    }
+    output = {} if recorded is None else recorded.get("output", {})
+    for key in ("exit_code", "signal", "timed_out", "truncated", "stdout_ref", "stderr_ref"):
+        material["output"][key] = output.get(key)
+    refs = []
+    for key in ("stdout", "stderr"):
+        text = output.get(key)
+        if text is None:
+            continue
+        raw = text.encode()
+        from .contents import make_ref
+        from .fsutil import atomic_write_bytes
+        from .restore_access import ensure_material_write_allowed
+        digest = hashlib.sha256(raw).hexdigest()
+        with ensure_material_write_allowed(stack.contents.blob_dir, owner_log=stack.log):
+            atomic_write_bytes(stack.contents.blob_dir / digest, raw)
+            stack.contents.record(digest, raw, task_id=task.task_id, run_id=run_id)
+        material["output"][key + "_snapshot"] = make_ref(digest)
+        refs.append(make_ref(digest))
+    detail = put_material(stack, task.task_id, material, run_id=run_id)
+    evidence = {
+        "format_version": 1, "evidence_id": "evidence_" + uuid.uuid4().hex,
+        "task_id": task.task_id, "mission_id": view["mission"]["mission_id"],
+        "plan_digest": view["document_digest"], "step_id": step_id, "run_id": run_id,
+        "attempt_id": request["attempt_id"], "kind": "command_result",
+        "event_seqs": [source_seq] if source_seq else [], "content_refs": [detail, *refs],
+        "input_fingerprint": fingerprint,
+    }
+    validate_document(EVIDENCE_SCHEMA, evidence, "命令证据")
+    return put_material(stack, task.task_id, evidence, run_id=run_id)
+
+
 def drive(loop, run_id, claim, progress, task):
     """由 AgentLoop 在真实租约、claim 和恢复校验后调用。"""
     binding = binding_for(loop._log, run_id)
@@ -160,15 +264,22 @@ def drive(loop, run_id, claim, progress, task):
     step = next(s for s in view["steps"] if s["step_id"] == step_id)
     checks = {c["check_id"]: c for c in view["manifest"]["checks"]}
     pending_human = False
-    for check_id in step["verification_ids"]:
+    for check_id in _check_order(step, checks):
         if loop._safe_point(run_id, claim, progress) is not None:
             return loop._result(run_id, progress, state=loop._state_of(run_id))
         events = loop._log.read_run(run_id, event_types=("verification.result",))
         if any(e.payload["check_id"] == check_id for e in events):
             continue
         check = checks[check_id]
-        request = request_check(stack, view, step_id, check_id, run_id=run_id,
-                                request_id=f"{run_id}_{check_id}")
+        try:
+            request = request_check(stack, view, step_id, check_id, run_id=run_id,
+                                    request_id=f"{run_id}_{check_id}")
+        except (ValueError, OSError) as exc:
+            plans.change_step(view["plan_id"], step_id, "blocked",
+                              reason="verification.prerequisite_unverifiable",
+                              request_id=f"{run_id}_blocked")
+            return loop._finish(run_id, claim, progress, outcome="failed",
+                                error=f"验收输入或依赖无法确认：{exc}")
         if check["kind"] == "human":
             pending_human = True
             continue
@@ -178,14 +289,16 @@ def drive(loop, run_id, claim, progress, task):
             loop, stack, run_id, claim, progress, task, view, step_id, check, request)
         if result in ("waiting", "reconciling"):
             return loop._result(run_id, progress, state=loop._state_of(run_id))
-        fingerprint = input_fingerprint(stack, task.task_id)
+        try:
+            fingerprint = input_fingerprint(stack, task.task_id)
+        except (ValueError, OSError):
+            fingerprint = request["input_fingerprint"]
+            result, reason = "inconclusive", "verification.input_unverifiable"
         if fingerprint != request["input_fingerprint"]:
             result, reason = "inconclusive", "verification.inputs_changed"
-        ref = put_material(stack, task.task_id, {
-            "kind": "command_result", "binding": check["inputs"],
-            "tool_result": recorded, "input_fingerprint": fingerprint,
-        }, run_id=run_id)
         source_seq = loop._result_seqs.get("verification_" + check_id, 0)
+        ref = _command_evidence(stack, run_id, task, view, step_id, check, request,
+                                recorded, fingerprint, source_seq)
         payload = {k: v for k, v in request.items() if k != "request_id"}
         payload.update(result=result, reason_code=reason, verified_event_seq=source_seq,
                        evidence_refs=[ref])

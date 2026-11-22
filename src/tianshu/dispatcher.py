@@ -336,6 +336,8 @@ class Dispatcher(
             exec_backend=self._exec_backend,
             data_root=self._data_root,
             consents=consents,
+            execution_check=lambda admitted: self._verify_verification_command(
+                admitted.request, admitted.args),
         )
         if consents is not None:
             self.bind_consents(consents)

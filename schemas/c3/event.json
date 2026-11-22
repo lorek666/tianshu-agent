@@ -87,6 +87,8 @@
         "dispatch.rejected",
         "dispatch.requested",
         "dispatch.revoked",
+        "execution.admitted",
+        "execution.ended",
         "execution.started",
         "goal.closed",
         "goal.created",
@@ -139,9 +141,7 @@
         "verification.decided",
         "verification.requested",
         "verification.result",
-        "verification.run_started",
-        "execution.admitted",
-        "execution.ended"
+        "verification.run_started"
       ],
       "type": "string"
     }

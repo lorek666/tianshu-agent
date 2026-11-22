@@ -76,7 +76,10 @@ def test_worker_failed_check_cannot_satisfy_step(env):
     assert PlanStore(stack).get(view["plan_id"])["steps"][0]["state"] == "failed"
 
 
-def test_verification_command_waits_for_real_approval_and_checks_exit_code(env):
+@pytest.mark.parametrize("mutate_before_spawn", [False, True])
+def test_verification_command_waits_for_real_approval_and_checks_exit_code(
+    env, monkeypatch, mutate_before_spawn,
+):
     import copy
     import sys
     from pathlib import Path
@@ -124,13 +127,77 @@ def test_verification_command_waits_for_real_approval_and_checks_exit_code(env):
     assert stack.tasks.get_run(run.run_id).state == "waiting_approval"
     assert not stack.log.read_run(run.run_id, event_types=("tool.intent", "model.intent"))
     assert approve_pending(stack, run.run_id)
+    if mutate_before_spawn:
+        import tianshu.tools as tools
+        original = tools._HANDLERS["run_command"]
+
+        def mutate(workspace, args, context):
+            (ws / "raced.txt").write_text("input changed after approval and execution permit")
+            return original(workspace, args, context)
+        monkeypatch.setitem(tools._HANDLERS, "run_command", mutate)
     result = engine_for(stack, model).resume_run(run.run_id)
     assert result.state == "succeeded"
-    assert plans.get(view["plan_id"])["steps"][0]["state"] == "satisfied"
+    assert plans.get(view["plan_id"])["steps"][0]["state"] == (
+        "failed" if mutate_before_spawn else "satisfied")
     events = stack.log.read_run(run.run_id)
     assert any(e.type == "tool.intent" for e in events)
-    assert any(e.type == "receipt" for e in events)
     check_result = next(e for e in events if e.type == "verification.result")
-    assert check_result.payload["result"] == "passed"
+    if mutate_before_spawn:
+        assert check_result.payload["result"] != "passed"
+        tool_result = next(e for e in events if e.type == "tool.result")
+        assert tool_result.payload["status"] == "rejected"
+        assert "stdout" not in tool_result.payload["output"]
+    else:
+        assert any(e.type == "receipt" for e in events)
+        assert check_result.payload["result"] == "passed"
     assert next(e for e in events if e.seq == check_result.payload["verified_event_seq"]).type == (
         "tool.result")
+    from tianshu.agent_documents import EVIDENCE_SCHEMA, validate_document
+    from tianshu.plans import read_material
+    from tianshu.replay import replay
+    evidence = read_material(stack, task.task_id, check_result.payload["evidence_refs"][0])
+    validate_document(EVIDENCE_SCHEMA, evidence, "命令证据")
+    assert evidence["kind"] == "command_result"
+    assert evidence["event_seqs"] == [check_result.payload["verified_event_seq"]]
+    assert replay(stack.log, run.run_id).ok
+
+
+def test_human_check_after_dependencies_even_when_listed_first(env):
+    import copy
+
+    from tianshu.verification_driver import start_verification
+    stack, ws, base = env
+    task = stack.tasks.create_task("先检查文件再请人审阅", [str(ws)])
+    mission = prepare_mission(stack.tasks, task.task_id, criteria=[
+        {"criterion_id": "report", "description": "报告可读", "mode": "human"},
+    ]).to_dict()
+    document = copy.deepcopy(base["document"])
+    manifest = copy.deepcopy(base["manifest"])
+    human = {
+        "format_version": 1, "check_id": "review", "criterion_ids": ["report"],
+        "required": True, "kind": "human", "inputs": {
+            "question": "请审阅", "required_artifact_ids": [], "required_check_ids": ["exists"],
+        },
+    }
+    manifest["checks"].insert(0, human)
+    manifest.update(mission_id=mission["mission_id"], mission_digest=jcs_sha256(mission))
+    document.update(plan_id="plan_order", mission_id=mission["mission_id"],
+                    mission_digest=jcs_sha256(mission), verification_manifest={
+                        "digest": jcs_sha256(manifest),
+                        "content_ref": "content://sha256:" + jcs_sha256(manifest),
+                    })
+    document["steps"][0]["verification_ids"] = ["review", "exists"]
+    plans = PlanStore(stack)
+    view = plans.create(task.task_id, mission, document, manifest, request_id="order")
+    plans.confirm(view["plan_id"], expected_revision=1,
+                  document_digest=view["document_digest"], request_id="confirm_order")
+    plans.change_step(view["plan_id"], "write", "running", request_id="run_order")
+    view = plans.change_step(view["plan_id"], "write", "verifying", request_id="verify_order")
+    (ws / "report.md").write_text("report")
+    run = start_verification(stack, view, "write", request_id="ordered")
+    with Worker(stack, model=ScriptedModel([]), heartbeat_interval_ms=0) as worker:
+        worker.run_once()
+        assert not worker.errors
+    assert stack.tasks.get_run(run.run_id).state == "succeeded"
+    requests = stack.log.read_run(run.run_id, event_types=("verification.requested",))
+    assert [e.payload["check_id"] for e in requests] == ["exists", "review"]

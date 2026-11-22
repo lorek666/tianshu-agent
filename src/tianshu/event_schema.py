@@ -526,4 +526,1292 @@ for _execution_schema in (
     _execution_schema["required"] = list(_execution_schema["properties"])
 
 CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
+    "execution.admitted": _obj({
+        "subject": _EXECUTION_SUBJECT, "admission": _EXECUTION_ADMISSION,
+        "lifecycle": _EXECUTION_LIFECYCLE,
+        "stage": _enum("prepared", "started", "call_pending", "call_completed"),
+        "call_id": _s(), "request_id": _i(minimum=0),
+        "probe_findings": _arr(_obj({
+            "boundary": _enum(*ISOLATION_BOUNDARIES),
+            "status": _enum("enforced", "not_enforced", "unknown"),
+            "evidence": _s(),
+        }, required=("boundary", "status", "evidence"))),
+    }, required=("subject", "admission", "lifecycle", "stage", "probe_findings")),
+    "execution.ended": _obj({
+        "subject_digest": _SHA256, "lifecycle_id": _s(),
+        "process_tree": _enum("exited", "unknown"),
+        "pid": _opt(_i(minimum=1)), "birth_identity": _opt(_s()),
+    }, required=("subject_digest", "lifecycle_id", "process_tree", "pid", "birth_identity")),
+
+    **CONSENT_EVENT_SCHEMAS,
+    "run.mission": copy.deepcopy(MISSION_EVENT_SCHEMA),
+    "goal.created": _obj(
+        {
+            "format_version": {"type": "integer", "const": 1},
+            "goal_id": _s(), "goal_revision": _i(minimum=1),
+            "request_id": _s(pattern=r"^[A-Za-z0-9_-]{1,128}$"),
+            "criteria": _arr(_s()), "max_rounds": _enum(*range(1, 11)),
+            "execution_policy": _obj(
+                {"format_version": {"type": "integer", "const": 1},
+                 "mode": _enum("effects", "pure_only")},
+                required=("format_version", "mode"),
+            ),
+        },
+        required=("format_version", "goal_id", "goal_revision", "request_id",
+                  "criteria", "max_rounds", "execution_policy"),
+    ),
+    "goal.round_started": _obj(
+        {
+            "format_version": {"type": "integer", "const": 1},
+            "goal_id": _s(), "round": _enum(*range(1, 11)),
+            "request_id": _s(pattern=r"^[A-Za-z0-9_-]{1,128}$"),
+            "source_run_id": _opt(_s()),
+        },
+        required=("format_version", "goal_id", "round", "request_id", "source_run_id"),
+    ),
+    "goal.closed": _obj(
+        {
+            "format_version": {"type": "integer", "const": 1},
+            "goal_id": _s(),
+            "request_id": _s(pattern=r"^[A-Za-z0-9_-]{1,128}$"),
+            "outcome": _enum("completed", "cancelled"),
+            "confirmed_criteria": _arr(_i(minimum=0)),
+        },
+        required=("format_version", "goal_id", "request_id", "outcome",
+                  "confirmed_criteria"),
+    ),
+    "run.workflow": _obj(
+        {
+            "format_version": {"type": "integer", "const": 1},
+            "mode": _enum("plan", "compact", "execute"),
+            "request_id": _s(pattern=r"^[A-Za-z0-9_-]{1,128}$"),
+            "source_run_id": _opt(_s()),
+            "source_text": _s(),
+            "source_seqs": _arr(_i(minimum=1)),
+            "source_digest": _SHA256,
+            "source_goal": _s(),
+        },
+        required=("format_version", "mode", "request_id", "source_run_id",
+                  "source_text", "source_seqs", "source_digest", "source_goal"),
+    ),
+    "run.workflow_request": _obj(
+        {
+            "request_id": _s(pattern=r"^[A-Za-z0-9_-]{1,128}(?![\s\S])"),
+            "requested_source_run_id": _opt(_s(pattern=r"^.+$")),
+        },
+        required=("request_id", "requested_source_run_id"),
+    ),
+    "approval.consumed": _obj(
+        {
+            "approval_id": _s(),
+            "request_digest": _SHA256,
+            "action_digest": _SHA256,
+            "decided_by": _s(),
+        },
+        required=("approval_id", "request_digest", "action_digest", "decided_by"),
+    ),
+    "approval.decided": _obj(
+        {
+            "approval_id": _s(),
+            "request_digest": _SHA256,
+            "decision": _enum("approved", "rejected"),
+            "decided_by": _ACTOR,
+        },
+        required=("approval_id", "request_digest", "decision", "decided_by"),
+    ),
+    "approval.expired": _obj(
+        {"approval_id": _s(), "reason": _s()}, required=("approval_id", "reason")
+    ),
+    "approval.requested": _obj(
+        {
+            "approval_id": _s(),
+            "request_id": _s(),
+            "request_digest": _SHA256,
+            "action_digest": _SHA256,
+            "action_subject": _SHA256,
+            "action": _ACTION,
+            "resources": _arr(_s()),
+            "rule_id": _RULE_ID,
+            "reason": _s(),
+            "expires_at": _i(minimum=1),
+            # 与 dispatch.requested 同一个视图；审批卡片从事件回读它。
+            "isolation": _ISOLATION_VIEW,
+        },
+        required=(
+            "approval_id",
+            "request_id",
+            "request_digest",
+            "action_digest",
+            "action_subject",
+            "action",
+            "resources",
+            "rule_id",
+            "reason",
+            "expires_at",
+        ),
+    ),
+    "approval.revoked": _obj(
+        {
+            "approval_id": _s(),
+            "decided_by": _ACTOR,
+            "reason": _s(),
+            "stage": _APPROVAL_STATE,
+        },
+        required=("approval_id", "decided_by"),
+    ),
+    "approval.superseded": _obj(
+        {"approval_id": _s(), "reason": _s()}, required=("approval_id", "reason")
+    ),
+    "dispatch.admitted": _obj(
+        {
+            "request_id": _s(),
+            "request_digest": _SHA256,
+            "call_id": _s(),
+            "grant_id": _s(),
+            "intent_seq": _i(minimum=1),
+            "approval_id": _opt(_s()),
+        },
+        required=("request_id", "request_digest", "call_id", "grant_id", "intent_seq"),
+    ),
+    "dispatch.rejected": _obj(
+        {
+            "request_id": _s(),
+            "request_digest": _opt(_SHA256),
+            "rule_id": _RULE_ID,
+            "reason": _s(),
+            "action": _ACTION,
+            "resources": _arr(_s()),
+            "call_id": _s(),
+            "dispatch_id": _s(),
+            "phase": _enum("prepare", "guard"),
+        },
+        required=("request_id", "rule_id", "reason"),
+    ),
+    "dispatch.requested": _obj(
+        {
+            "request_id": _s(),
+            "request_digest": _SHA256,
+            "action_digest": _opt(_SHA256),
+            "action": _ACTION,
+            "resources": _arr(_s()),
+            "decision": _enum("auto", "approve"),
+            "rule_id": _RULE_ID,
+            "approval_id": _opt(_s()),
+            "approval_state": _opt(_APPROVAL_STATE),
+            # 可选的隔离视图：exec 动作在**审批前**就带上，UI 审批卡片据此说
+            # 实话（"受信任执行/自述未实测/自述与实测冲突"）。
+            "isolation": _ISOLATION_VIEW,
+        },
+        required=("request_id", "request_digest", "action", "resources", "decision", "rule_id"),
+    ),
+    "dispatch.revoked": _obj(
+        {
+            "approval_id": _s(),
+            "call_id": _s(),
+            "dispatch_id": _s(),
+            "reason": _s(),
+        },
+        required=("approval_id", "call_id", "dispatch_id", "reason"),
+    ),
+    "execution.started": _obj(
+        {
+            "run_id": _s(),
+            "task_id": _s(),
+            "goal_revision": _i(minimum=1),
+            "lease_epoch": _i(minimum=1),
+            "resources": _arr(_s()),
+        },
+        required=("run_id", "task_id", "goal_revision", "lease_epoch", "resources"),
+    ),
+    "grant.consumed": _obj(
+        {
+            "grant_id": _s(),
+            "request_digest": _SHA256,
+            "remaining_uses": _i(minimum=0),
+        },
+        required=("grant_id", "request_digest", "remaining_uses"),
+    ),
+    "grant.issued": _obj(
+        {
+            "grant_id": _s(),
+            "request_digest": _SHA256,
+            "subject": _s(),
+            "action": _ACTION,
+            "issuer": _s(),
+            "expires_at": _i(minimum=1),
+        },
+        required=("grant_id", "request_digest", "subject", "action", "issuer", "expires_at"),
+    ),
+    "job.claimed": _obj(
+        {
+            "run_id": _s(),
+            "job_id": _s(),
+            "claim_epoch": _i(minimum=0),
+            "previous_epoch": _i(minimum=0),
+            "owner_pid": _i(minimum=0),
+            "owner_instance_id": _s(),
+            "deadline_at": _i(minimum=0),
+        },
+        required=(
+            "run_id",
+            "job_id",
+            "claim_epoch",
+            "previous_epoch",
+            "owner_pid",
+            "owner_instance_id",
+            "deadline_at",
+        ),
+    ),
+    "job.enqueued": _obj({"run_id": _s(), "job_id": _s()}, required=("run_id", "job_id")),
+    "job.finished": _obj(
+        {
+            "run_id": _s(),
+            "job_id": _s(),
+            "claim_epoch": _i(minimum=0),
+            "owner_pid": _opt(_i(minimum=0)),
+            "owner_instance_id": _opt(_s()),
+            "outcome": _OUTCOME,
+            "by": _s(),
+            "reason": _s(),
+        },
+        required=("run_id", "job_id", "claim_epoch", "owner_pid", "owner_instance_id", "outcome"),
+    ),
+    "job.parked": _obj(
+        {
+            "run_id": _s(),
+            "job_id": _s(),
+            "claim_epoch": _i(minimum=0),
+            "owner_pid": _i(minimum=0),
+            "owner_instance_id": _s(),
+            "reason": _s(),
+        },
+        required=("run_id", "job_id", "claim_epoch", "owner_pid", "owner_instance_id", "reason"),
+    ),
+    "job.requeued": _obj(
+        {
+            "run_id": _s(),
+            "job_id": _s(),
+            "claim_epoch": _i(minimum=0),
+            # G2 子代理 D2：`JobStore.wake()` 由子任务收尾触发，不是 owner 交还。
+            # 唤醒时 owner 已经被 park 清空，如实写 null；旧事件（owner 交还）
+            # 仍带完整 owner 字段，向后兼容。
+            "owner_pid": _opt(_i(minimum=0)),
+            "owner_instance_id": _opt(_s()),
+            # 谁让它回到队列：`owner`（主动交还）或 `wake`（子任务收尾）。
+            "by": _opt(_s()),
+            "reason": _opt(_s()),
+        },
+        required=("run_id", "job_id", "claim_epoch"),
+    ),
+    "model.error": _obj(
+        {
+            "request_id": _s(),
+            "error": _s(),
+            "attempt": _opt(_i(minimum=0)),
+            "retryable": _opt(_b()),
+        },
+        required=("request_id", "error"),
+    ),
+    "model.intent": _obj(
+        {
+            "request_id": _s(),
+            "attempt": _i(minimum=0),
+            "messages_hash": _SHA256,
+            "context": _MODEL_CONTEXT,
+        },
+        required=("request_id", "attempt", "messages_hash", "context"),
+    ),
+    "model.result": _obj(
+        {
+            "request_id": _s(),
+            "content": _s(),
+            "finish_reason": _FINISH_REASON,
+            "tool_calls": _arr(_TOOL_CALL),
+            "usage": _MODEL_USAGE,
+            "cost": _MODEL_COST,
+        },
+        required=("request_id", "content", "finish_reason", "tool_calls", "usage", "cost"),
+    ),
+    "policy.denied": _obj(
+        {
+            "request_id": _s(),
+            "request_digest": _SHA256,
+            "action": _ACTION,
+            "resources": _arr(_s()),
+            "rule_id": _RULE_ID,
+            "reason": _s(),
+        },
+        required=("request_id", "request_digest", "action", "resources", "rule_id", "reason"),
+    ),
+    "receipt": _obj(
+        {
+            "receipt_id": _s(pattern=r"^rcpt_[0-9a-f]{12}$"),
+            "run_id": _s(),
+            "call_id": _s(),
+            "tool_id": _DYNAMIC_TOOL_ID,
+            "action": _ACTION,
+            "args_hash": _SHA256,
+            "effect_state": _EFFECT_STATE,
+            "backend": _enum("local_fs", "memfs", "memory", "mcp"),
+            "issuer": _s(),
+            "issued_at": _i(minimum=0),
+            "root": _s(),
+            "resource": _s(),
+            "before_state": _s(),
+            "after_state": _s(),
+            "intent_seq": _i(minimum=1),
+            "blob_ref": _opt(_s()),
+            "evidence": _arr(_RECEIPT_EVIDENCE),
+        },
+        required=(
+            "receipt_id",
+            "run_id",
+            "call_id",
+            "tool_id",
+            "action",
+            "args_hash",
+            "effect_state",
+            "backend",
+            "issuer",
+            "issued_at",
+            "root",
+            "resource",
+            "before_state",
+            "after_state",
+            "intent_seq",
+            "blob_ref",
+            "evidence",
+        ),
+    ),
+    "recovery.blocked": _obj(
+        {
+            "workspace": _s(),
+            "call_ids": _arr(_s()),
+            "reason": _s(),
+            "takeover_refused_by": _opt(_s()),
+        },
+        required=("workspace", "call_ids", "reason"),
+    ),
+    "recovery.object_blocked": _obj(
+        {
+            #: 阻断对象：`mcp://<server>/<tool>`（工具级）或 `mcp://<server>`
+            #: （server 级，遮住该 server 的全部工具）。**不是**目录路径——
+            #: 目录阻断走 `recovery.blocked`，两者是不同的对象模型。
+            "object": _s(),
+            "call_ids": _arr(_s()),
+            "reason": _s(),
+        },
+        required=("object", "call_ids", "reason"),
+    ),
+    "recovery.object_unblocked": _obj(
+        {"object": _s(), "reason": _s()}, required=("object", "reason")
+    ),
+    "recovery.unblocked": _obj(
+        {"workspace": _s(), "reason": _s()}, required=("workspace", "reason")
+    ),
+    "run.control": _obj(
+        {
+            "run_id": _s(),
+            "task_id": _s(),
+            "action": _enum("pause", "cancel", "lease_takeover"),
+            "applied_immediately": _opt(_b()),
+            "request_effective": _opt(_b()),
+            "stronger_request": _opt(_s()),
+            "effect_state": _opt(_EFFECT_STATE),
+            # G2 D2：控制请求的发起原因（`subtask_cancel_requested` /
+            # `parent_cancelled` / `parent_fenced`）。旧事件不带这个键。
+            "reason": _opt(_s()),
+            "previous_run": _opt(_s()),
+            "checked": _opt(_TAKEOVER_CHECKED),
+        },
+        required=("run_id", "task_id", "action"),
+    ),
+    "run.cursor": _obj(
+        {
+            "run_id": _s(),
+            "goal_revision": _i(minimum=1),
+            "lease_epoch": _i(minimum=1),
+            "claim_epoch": _i(minimum=0),
+            "completed_call_ids": _i(minimum=0),
+            "pending_proposals": _i(minimum=0),
+            "payload_hash": _SHA256,
+        },
+        required=(
+            "run_id",
+            "goal_revision",
+            "lease_epoch",
+            "claim_epoch",
+            "completed_call_ids",
+            "pending_proposals",
+            "payload_hash",
+        ),
+    ),
+    "run.effect": _obj(
+        {
+            "run_id": _s(),
+            "task_id": _s(),
+            "effect_state": _EFFECT_STATE,
+            "n_applied": _i(minimum=0),
+            "n_unknown": _i(minimum=0),
+        },
+        required=("run_id", "task_id", "effect_state", "n_applied", "n_unknown"),
+    ),
+    "run.end": _obj(
+        {
+            "outcome": _RUN_END_OUTCOME,
+            "effect_state": _EFFECT_STATE,
+            "artifact": _opt(_ARTIFACT),
+            "error": _opt(_s()),
+            "receipt_ids": _arr(_s()),
+            "tokens": _i(minimum=0),
+            "tokens_unknown_calls": _i(minimum=0),
+            "turns": _i(minimum=0),
+            "unbilled_model_intents": _i(minimum=0),
+            "budget_enforced": _b(),
+        },
+        required=(
+            "outcome",
+            "effect_state",
+            "artifact",
+            "error",
+            "receipt_ids",
+            "tokens",
+            "tokens_unknown_calls",
+            "turns",
+            "unbilled_model_intents",
+            "budget_enforced",
+        ),
+    ),
+    "run.fenced": _obj(
+        {"run_id": _s(), "task_id": _s(), "reason": _s()},
+        required=("run_id", "task_id", "reason"),
+    ),
+    "run.finish": _obj(
+        {
+            "run_id": _s(),
+            "task_id": _s(),
+            "outcome": _OUTCOME,
+            "effect_state": _EFFECT_STATE,
+            "reason": _s(),
+        },
+        required=("run_id", "task_id", "outcome", "effect_state"),
+    ),
+    "run.model_route": _obj(
+        {"format_version": _i(const=1), "requested": _arr(_s()), "selected": _s(),
+         "config": _obj(
+             {"mode": _s(enum=["scripted", "openai", "anthropic", "openai-responses"]),
+              "model_name": _s(), "base_url": _s(),
+              "credential_backend": _s(enum=["keychain", "env"]),
+              "allow_image_attachments": _b(), "compact_threshold": _i(minimum=1024)},
+             required=("mode", "model_name", "base_url", "credential_backend"),
+         )}, required=("format_version", "requested", "selected", "config"),
+    ),
+    "run.model_turn": _obj(
+        {
+            "run_id": _s(),
+            "turn_id": _s(),
+            "seq": _i(minimum=1),
+            "claim_epoch": _i(minimum=0),
+            "finish_reason": _opt(_FINISH_REASON),
+            "usage": _opt(_MODEL_USAGE),
+            "payload_hash": _SHA256,
+        },
+        required=(
+            "run_id",
+            "turn_id",
+            "seq",
+            "claim_epoch",
+            "finish_reason",
+            "usage",
+            "payload_hash",
+        ),
+    ),
+    "run.attachments": _obj(
+        {"attachments": _arr(_obj(
+            {"format_version": _i(const=1), "name": _s(),
+             "media_type": _s(enum=list(MEDIA_TYPES)), "data_base64": _s(), "sha256": _SHA256},
+            required=("format_version", "name", "media_type", "data_base64", "sha256"),
+        ))}, required=("attachments",),
+    ),
+    "run.conversation": _obj(
+        {"turns": _arr(_obj(
+            {"source_run_id": _s(), "source_seq": _i(minimum=1),
+             "answer": _s(), "message": _s()},
+            required=("source_run_id", "source_seq", "answer", "message"),
+        ))}, required=("turns",),
+    ),
+    "run.guidance_applied": _obj(
+        {"request_seq": _i(minimum=1)}, required=("request_seq",),
+    ),
+    "run.guidance_requested": _obj(
+        {"text": _s()}, required=("text",),
+    ),
+    "run.start": _obj(
+        {
+            "run_id": _s(),
+            "task_id": _s(),
+            "goal_revision": _i(minimum=1),
+            "lease_epoch": _i(minimum=1),
+            "task": _s(),
+            "out": _s(),
+            "limits": _obj(
+                {"max_turns": _i(minimum=0), "max_total_tokens": _i(minimum=0)}
+            ),
+            "tools": _arr(_s()),
+            # G2 委派 D1：子 Run 的父链（可选；根 Run 不写这两个键）。
+            # 子任务身份必须在 Run 侧留下事件证据，否则投影重建后
+            # "这个 Run 是谁派的"就只能从另一张表猜。
+            "parent_run_id": _s(),
+            "subtask_id": _s(),
+        },
+        required=("run_id", "task_id", "goal_revision", "lease_epoch"),
+    ),
+    "run.state": _obj(
+        {
+            "run_id": _s(),
+            "task_id": _s(),
+            "from": _RUN_STATE,
+            "to": _RUN_STATE,
+            "reason": _s(),
+            "claim_epoch": _opt(_i(minimum=1)),
+            "control_cleared": _opt(_b()),
+        },
+        required=("run_id", "task_id", "from", "to", "reason"),
+    ),
+    "subtask.spawned": _obj(
+        {
+            # 父 Run 侧的委派审计：派了谁、子任务身份是什么、给了多少额度。
+            "subtask_id": _s(),
+            "child_task_id": _s(),
+            "child_run_id": _s(),
+            "job_id": _s(),
+            # 目标正文**不进**父 Run：只留摘要，正文在子 Task 的 goal 里。
+            "goal_digest": _SHA256,
+            "limits": _SUBTASK_LIMITS,
+        },
+        required=(
+            "subtask_id",
+            "child_task_id",
+            "child_run_id",
+            "job_id",
+            "goal_digest",
+            "limits",
+        ),
+    ),
+    "subtask.finished": _obj(
+        {
+            "subtask_id": _s(),
+            # 子任务状态机（不是子 Run 状态机）。
+            "state": _SUBTASK_STATE,
+            "result_ref": _opt(_s()),
+            "error": _opt(_s()),
+            "usage": _SUBTASK_USAGE,
+        },
+        required=("subtask_id", "state"),
+    ),
+    "task.created": _obj(
+        {
+            "task_id": _s(),
+            "goal": _s(),
+            "goal_revision": _i(minimum=1),
+            "lease_epoch": _i(minimum=1),
+            "workspaces": _arr(_WORKSPACE_BINDING),
+            "exec_policy": _opt(_EXEC_POLICY),
+            # 记忆契约 v1.2（PR #78）：控制面标记与作用域声明必须落进事件。
+            "control": _b(),
+            "memory_scopes": _arr(_s()),
+            # G2：任务级外发白名单（源级）。新写入恒写（空列表也写）；
+            # 旧事件没有这个键 → detect_version 落到 v0，不按新版补值。
+            "outbound_allow": _arr(_s()),
+            # G2 MCP 阶段：任务级 server 白名单（能力白名单，与 outbound_allow
+            # 同层）。新写入恒写（空列表也写）；升级前的旧行缺这个键，读取侧
+            # 按空元组处理（`Task.mcp_servers` 默认 ()），不是"按 v0 读"。
+            "mcp_servers": _arr(_s()),
+            # G2 委派 D1：任务级委派能力声明（0–4）。**必填**：
+            # 未声明即无委派能力这条纪律只有在"每个新事件都显式写了"时才成立。
+            # 用 enum 而不是 maximum（本方言没有 maximum，见 SUPPORTED_KEYWORDS）。
+            "max_subtasks": _enum(0, 1, 2, 3, 4),
+            # 父链（可选；根任务不写）。子任务的 depth 恒为 1。
+            "parent_task_id": _s(),
+            "parent_run_id": _s(),
+            "subtask_id": _s(),
+            "depth": _enum(0, 1),
+        },
+        required=(
+            "task_id",
+            "goal",
+            "goal_revision",
+            "lease_epoch",
+            "workspaces",
+            "exec_policy",
+            "control",
+            "memory_scopes",
+            "outbound_allow",
+            "mcp_servers",
+            "max_subtasks",
+        ),
+    ),
+    "task.revised": _obj(
+        {
+            "task_id": _s(),
+            "goal": _s(),
+            "goal_revision": _i(minimum=1),
+            "lease_epoch": _i(minimum=1),
+            "workspaces": _arr(_WORKSPACE_BINDING),
+        },
+        required=("task_id", "goal", "goal_revision", "lease_epoch", "workspaces"),
+    ),
+    "tool.intent": _obj(
+        {
+            "call_id": _s(),
+            "tool_id": _DYNAMIC_TOOL_ID,
+            "args": _obj({}, open=True),
+            "args_hash": _SHA256,
+            "request_id": _s(),
+            "request_digest": _SHA256,
+            "dispatch_id": _s(),
+            "grant_id": _s(),
+            "approval_id": _opt(_s()),
+            "attempt_id": _i(minimum=1),
+            "claim_epoch": _i(minimum=0),
+        },
+        required=(
+            "call_id",
+            "tool_id",
+            "args",
+            "args_hash",
+            "request_id",
+            "request_digest",
+            "dispatch_id",
+            "grant_id",
+            "attempt_id",
+            "claim_epoch",
+        ),
+    ),
+    "tool.not_dispatched": _obj(
+        {"call_id": _s(), "tool_id": _DYNAMIC_TOOL_ID, "reason": _s()},
+        required=("call_id", "tool_id", "reason"),
+    ),
+    "tool.result": _obj(
+        {
+            "call_id": _s(),
+            # 恢复旧日志时，历史 intent 里的工具 id 可能已不在当前白名单
+            # （红线 8：schema 变即新工具）。新 intent 由 dispatcher 用 SPECS
+            # 校验，这里按"工具 id 形状"而不是当前白名单收口。
+            "tool_id": _s(pattern=r"^[a-z][a-z0-9_.]*$"),
+            "status": _TOOL_STATUS,
+            "effect_state": _EFFECT_STATE,
+            # 工具输出由各自的 C2 工具契约决定（7+ 个工具、参数与返回各不同），
+            # C3 只冻结"它是一个对象、与 status/effect_state 同层"，不冒充
+            # 已经冻结了每个工具的输出字段。未冻结项在文档里列明。
+            "output": _obj({}, open=True),
+        },
+        required=("call_id", "tool_id", "status", "effect_state", "output"),
+    ),
+    "undo.completed": _obj(
+        {
+            "run_id": _s(),
+            "control_run": _s(),
+            "restored": _arr(_s()),
+            "deleted": _arr(_s()),
+            "entries": _arr(_UNDO_ENTRY),
+        },
+        required=("run_id", "control_run", "restored", "deleted", "entries"),
+    ),
+    "undo.failed": _obj(
+        {"run_id": _s(), "control_run": _s(), "error": _s()},
+        required=("run_id", "control_run", "error"),
+    ),
+}
+
+
+#: 旧版（0）里出现过、但当前契约不再写的字段。键 → 宽松 schema。
+#: 它们只用于**读取/兼容写入**旧数据，不是新写入允许的字段。
+LEGACY_EXTRA_PROPERTIES: dict[str, dict[str, dict[str, Any]]] = {
+    "run.start": {
+        "workspace": _s(),
+        "a": {"type": ["string", "integer", "boolean"]},
+        "x": {"type": ["string", "integer", "boolean"]},
+    },
+    "run.end": {"x": {"type": ["string", "integer", "boolean"]}},
+    "model.intent": {"ok": _b()},
+}
+
+#: 旧版里出现过、但当前 schema 类型/枚举更紧的字段：按"旧版允许"放宽。
+LEGACY_RELAXATIONS: dict[str, dict[str, dict[str, Any]]] = {
+    # 旧版 run.model_turn 的收尾原因/用量来自旧 adapter，未必满足当前封闭集/形状
+    "run.model_turn": {
+        "finish_reason": {"type": ["string", "null"]},
+        "usage": {"type": ["object", "null"]},
+    },
+    # 旧版 run.start 的 limits 形状不统一（有的只有部分键）
+    "run.start": {"limits": {"type": "object"}},
+    # 旧版/测试夹具里的 tool.intent 可以是"未知工具 + 非规范哈希"
+    "tool.intent": {"tool_id": {"type": "string"}, "args_hash": {"type": "string"}},
+    # 旧版/测试夹具里的 model.intent 哈希字段不一定是 64-hex
+    "model.intent": {"messages_hash": {"type": "string"}},
+    # 旧夹具的 receipt 形状早于当前约束（rcpt_legacy / action 里放旧字段 /
+    # evidence 是合成字符串数组）
+    "receipt": {
+        "receipt_id": {"type": "string"},
+        "action": {"type": "string"},
+        "args_hash": {"type": "string"},
+        "evidence": {"type": "array"},
+    },
+}
+
+
+def _legacy_schema(current: dict[str, Any], extras: dict[str, dict[str, Any]]) -> dict:
+    schema = copy.deepcopy(current)
+    schema["required"] = []
+    for key, sub in extras.items():
+        schema["properties"].setdefault(key, sub)
+    schema["description"] = (
+        "冻结前旧版（payload_version=0）：只放宽并集，不按新版默认补值；"
+        "读取旧事件时按字段“本来就没有”处理。"
+    )
+    return schema
+
+
+def _relax(schema: dict[str, Any], relaxations: dict[str, dict[str, Any]]) -> dict:
+    for key, sub in relaxations.items():
+        schema["properties"][key] = sub
+    return schema
+
+
+CURRENT_SCHEMAS.update(AGENT_SCHEMAS)
+
+V1_ONLY_EVENTS = frozenset({
     "execution.admitted", "execution.ended",
+    *CONSENT_EVENT_SCHEMAS,
+    "run.mission",
+    "goal.created", "goal.round_started", "goal.closed",
+    "run.attachments", "run.conversation", "run.guidance_applied", "run.guidance_requested",
+    "run.model_route", "run.workflow", "run.workflow_request",
+}) | frozenset(AGENT_SCHEMAS)
+
+
+LEGACY_SCHEMAS: dict[str, dict[str, Any]] = {
+    name: _relax(
+        _legacy_schema(schema, LEGACY_EXTRA_PROPERTIES.get(name, {})),
+        LEGACY_RELAXATIONS.get(name, {}),
+    )
+    for name, schema in CURRENT_SCHEMAS.items() if name not in V1_ONLY_EVENTS
+}
+
+# 必须在建立 current v2 之前冻结，不能原地扩张共享 _MODEL_USAGE。
+MODEL_RESULT_V1_SCHEMA = copy.deepcopy(CURRENT_SCHEMAS["model.result"])
+RUN_MODEL_TURN_V1_SCHEMA = copy.deepcopy(CURRENT_SCHEMAS["run.model_turn"])
+for _model_event in ("model.result", "run.model_turn"):
+    CURRENT_SCHEMAS[_model_event] = copy.deepcopy(CURRENT_SCHEMAS[_model_event])
+    _usage_v2 = CURRENT_SCHEMAS[_model_event]["properties"]["usage"]
+    for _cache_key in ("cache_read_input_tokens", "cache_creation_input_tokens"):
+        _usage_v2["properties"][_cache_key] = _opt(_i(minimum=0))
+CURRENT_SCHEMAS["model.result"]["properties"]["continuation"] = copy.deepcopy(
+    CONTINUATION_SCHEMA
+)
+
+MODEL_RESULT_V3_SCHEMA = copy.deepcopy(CURRENT_SCHEMAS["model.result"])
+MODEL_RESULT_V3_SCHEMA["properties"]["continuation"] = copy.deepcopy(COMPACTION_SCHEMA)
+MODEL_RESULT_V3_SCHEMA["required"].append("continuation")
+
+# v0/v1 保持原始解释；这些事件的新写逐类型采用 v2。
+RUN_START_V1_SCHEMA = copy.deepcopy(CURRENT_SCHEMAS["run.start"])
+CURRENT_SCHEMAS["run.start"]["properties"]["execution_policy"] = _obj(
+    {"format_version": {
+        "type": "integer", "const": 1,
+        "description": "项目事件写入另经 RunExecutionPolicyV1 语义校验："
+                       "仅接受整数 1，不接受浮点数 1.0 或布尔值；"
+                       "标准 JSON Schema integer 本身不区分 1 与 1.0。",
+     },
+     "mode": {"type": "string", "enum": ["effects", "pure_only"]}},
+    required=("format_version", "mode"),
+)
+CURRENT_SCHEMAS["run.start"]["required"].append("execution_policy")
+
+RUN_END_V1_SCHEMA = copy.deepcopy(CURRENT_SCHEMAS["run.end"])
+CURRENT_SCHEMAS["run.end"]["properties"]["cost_total_micros"] = _opt(_i(minimum=0))
+CURRENT_SCHEMAS["run.end"]["properties"]["cost_unknown_calls"] = _i(minimum=0)
+CURRENT_SCHEMAS["run.end"]["required"].extend(
+    ["cost_total_micros", "cost_unknown_calls"]
+)
+LEGACY_SCHEMAS["run.end"]["properties"]["cost_total_micros"] = _opt(_i(minimum=0))
+LEGACY_SCHEMAS["run.end"]["properties"]["cost_unknown_calls"] = _i(minimum=0)
+
+# Only network Receipts use v2. Keep both the v1 default and the v0 read schema.
+NETWORK_RECEIPT_V2_SCHEMA = copy.deepcopy(CURRENT_SCHEMAS["receipt"])
+NETWORK_RECEIPT_V2_SCHEMA["properties"]["backend"] = _enum("network")
+NETWORK_RECEIPT_V2_SCHEMA["properties"]["tool_id"] = _enum("browser.submit")
+
+_RECOGNISED_VERSIONS: dict[str, frozenset[int]] = {
+    name: (frozenset({CURRENT_PAYLOAD_VERSION}) if name in V1_ONLY_EVENTS
+           else frozenset({LEGACY_PAYLOAD_VERSION, CURRENT_PAYLOAD_VERSION}))
+    for name in CURRENT_SCHEMAS
+}
+_RECOGNISED_VERSIONS["run.start"] = frozenset({0, 1, 2})
+_RECOGNISED_VERSIONS["run.end"] = frozenset({0, 1, 2})
+_RECOGNISED_VERSIONS["model.result"] = frozenset({0, 1, 2, 3})
+_RECOGNISED_VERSIONS["run.model_turn"] = frozenset({0, 1, 2})
+_RECOGNISED_VERSIONS["receipt"] = frozenset({0, 1, 2})
+
+
+# ---------------------------------------------------------------- 注册时校验
+
+
+def _check_type_decl(node_type: Any, where: str) -> None:
+    if isinstance(node_type, str):
+        if node_type not in JSON_TYPES:
+            raise UnsupportedSchemaKeyword(f"{where}：未知 type={node_type!r}")
+        return
+    if isinstance(node_type, list) and node_type:
+        for item in node_type:
+            if item not in JSON_TYPES:
+                raise UnsupportedSchemaKeyword(f"{where}：未知 type={item!r}")
+        if len(set(node_type)) != len(node_type):
+            raise UnsupportedSchemaKeyword(f"{where}：type 列表有重复值")
+        return
+    raise UnsupportedSchemaKeyword(f"{where}：type 必须是类型名字符串或列表")
+
+
+def _check_schema_node(node: Any, where: str) -> None:
+    if not isinstance(node, dict):
+        raise UnsupportedSchemaKeyword(f"{where}：schema 必须是对象")
+    unknown = set(node) - SUPPORTED_KEYWORDS
+    if unknown:
+        raise UnsupportedSchemaKeyword(
+            f"{where}：不支持的关键字 {sorted(unknown)}（只实现 {sorted(SUPPORTED_KEYWORDS)}）"
+        )
+    if "type" in node:
+        _check_type_decl(node["type"], where)
+    if "properties" in node:
+        props = node["properties"]
+        if not isinstance(props, dict):
+            raise UnsupportedSchemaKeyword(f"{where}：properties 必须是对象")
+        for key, sub in props.items():
+            if not isinstance(key, str):
+                raise UnsupportedSchemaKeyword(f"{where}：properties 的键必须是字符串")
+            _check_schema_node(sub, f"{where}.{key}")
+    if "required" in node:
+        req = node["required"]
+        if not isinstance(req, list) or not all(isinstance(k, str) for k in req):
+            raise UnsupportedSchemaKeyword(f"{where}：required 必须是字符串数组")
+        props = node.get("properties", {})
+        missing = [k for k in req if k not in props]
+        if missing:
+            raise UnsupportedSchemaKeyword(
+                f"{where}：required 指向未声明的字段 {missing}"
+            )
+    if "additionalProperties" in node:
+        ap = node["additionalProperties"]
+        if isinstance(ap, bool):
+            pass
+        elif isinstance(ap, dict):
+            _check_schema_node(ap, f"{where}.additionalProperties")
+        else:
+            raise UnsupportedSchemaKeyword(
+                f"{where}：additionalProperties 必须是布尔或 schema"
+            )
+    if "items" in node:
+        _check_schema_node(node["items"], f"{where}.items")
+    for key in ("prefixItems", "oneOf"):
+        if key in node:
+            branches = node[key]
+            if not isinstance(branches, list) or not branches:
+                raise UnsupportedSchemaKeyword(f"{where}：{key} 必须是非空 schema 数组")
+            for index, branch in enumerate(branches):
+                _check_schema_node(branch, f"{where}.{key}[{index}]")
+    if "minItems" in node and (type(node["minItems"]) is not int or node["minItems"] < 0):
+        raise UnsupportedSchemaKeyword(f"{where}：minItems 必须是非负整数")
+    if "enum" in node:
+        if not isinstance(node["enum"], list) or not node["enum"]:
+            raise UnsupportedSchemaKeyword(f"{where}：enum 必须是非空数组")
+    if "pattern" in node:
+        if not isinstance(node["pattern"], str):
+            raise UnsupportedSchemaKeyword(f"{where}：pattern 必须是字符串")
+        try:
+            re.compile(node["pattern"])
+        except re.error as exc:  # pragma: no cover - 常量写错才会到
+            raise UnsupportedSchemaKeyword(
+                f"{where}：pattern 不是合法正则（{exc}）"
+            ) from exc
+    if "minimum" in node and not isinstance(node["minimum"], int):
+        raise UnsupportedSchemaKeyword(f"{where}：minimum 必须是整数")
+    for key in ("description", "title"):
+        if key in node and not isinstance(node[key], str):
+            raise UnsupportedSchemaKeyword(f"{where}：{key} 必须是字符串")
+
+
+def _check_registry_schema(name: str, schema: dict[str, Any], version: int) -> None:
+    where = f"{name}@v{version}"
+    _check_schema_node(schema, where)
+    if schema.get("type") != "object":
+        raise UnsupportedSchemaKeyword(f"{where}：payload 根必须是 object")
+    if schema.get("additionalProperties") is not False:
+        raise UnsupportedSchemaKeyword(
+            f"{where}：payload 根必须显式 additionalProperties=false"
+        )
+
+
+for _name, _schema in CURRENT_SCHEMAS.items():
+    _check_registry_schema(
+        _name,
+        _schema,
+        2 if _name in ("run.start", "run.end", "model.result", "run.model_turn")
+        else CURRENT_PAYLOAD_VERSION,
+    )
+_check_registry_schema("run.start", RUN_START_V1_SCHEMA, 1)
+_check_registry_schema("run.end", RUN_END_V1_SCHEMA, 1)
+_check_registry_schema("model.result", MODEL_RESULT_V1_SCHEMA, 1)
+_check_registry_schema("model.result", MODEL_RESULT_V3_SCHEMA, 3)
+_check_registry_schema("run.model_turn", RUN_MODEL_TURN_V1_SCHEMA, 1)
+_check_registry_schema("receipt", NETWORK_RECEIPT_V2_SCHEMA, 2)
+for _name, _schema in LEGACY_SCHEMAS.items():
+    _check_registry_schema(_name, _schema, LEGACY_PAYLOAD_VERSION)
+
+
+def require_supported_dialect(dialect: Any) -> None:
+    """契约文档的 `$schema` 必须是本模块实现的 dialect（fail-closed）。"""
+    if dialect != SUPPORTED_DIALECT:
+        raise UnsupportedSchemaKeyword(
+            f"不支持的 JSON Schema dialect：{dialect!r}"
+            f"（只实现 {SUPPORTED_DIALECT}）"
+        )
+
+
+def validate_schema_definition(schema: Any, *, where: str = "<schema>") -> None:
+    """注册时校验一份 schema 定义：关键字白名单 + 结构合法性（fail-closed）。"""
+    _check_schema_node(schema, where)
+
+
+def ensure_registry(event_types: frozenset[str] | set[str]) -> None:
+    """注册表与契约必须一一对应：少一个类型 = 该类型无法写入（fail-closed）。"""
+    declared = set(event_types)
+    missing = declared - set(CURRENT_SCHEMAS)
+    extra = set(CURRENT_SCHEMAS) - declared
+    if missing or extra:
+        raise UnsupportedSchemaKeyword(
+            "payload 契约与 EVENT_TYPES 不一致："
+            f"缺少 schema={sorted(missing)}，多出 schema={sorted(extra)}"
+        )
+
+
+def current_version(event_type: str) -> int:
+    if event_type not in CURRENT_SCHEMAS:
+        return 0
+    return 2 if event_type in (
+        "run.start", "run.end", "model.result", "run.model_turn",
+    ) else CURRENT_PAYLOAD_VERSION
+
+
+def known_versions(event_type: str) -> frozenset[int]:
+    if event_type not in _RECOGNISED_VERSIONS:
+        raise UnknownPayloadVersion(f"未知事件类型，没有 payload 契约：{event_type!r}")
+    return _RECOGNISED_VERSIONS[event_type]
+
+
+def schema_for(event_type: str, version: int) -> dict[str, Any]:
+    if event_type not in CURRENT_SCHEMAS:
+        raise UnknownPayloadVersion(f"未知事件类型，没有 payload 契约：{event_type!r}")
+    if version == current_version(event_type):
+        return CURRENT_SCHEMAS[event_type]
+    if event_type == "run.start" and version == 1:
+        return RUN_START_V1_SCHEMA
+    if event_type == "run.end" and version == 1:
+        return RUN_END_V1_SCHEMA
+    if event_type == "model.result" and version == 1:
+        return MODEL_RESULT_V1_SCHEMA
+    if event_type == "model.result" and version == 3:
+        return MODEL_RESULT_V3_SCHEMA
+    if event_type == "run.model_turn" and version == 1:
+        return RUN_MODEL_TURN_V1_SCHEMA
+    if event_type == "receipt" and version == 2:
+        return NETWORK_RECEIPT_V2_SCHEMA
+    if version == LEGACY_PAYLOAD_VERSION and event_type in LEGACY_SCHEMAS:
+        return LEGACY_SCHEMAS[event_type]
+    raise UnknownPayloadVersion(
+        f"事件类型 {event_type!r} 的 payload 版本 {version} 本程序不认识"
+        f"（已知 {sorted(_RECOGNISED_VERSIONS[event_type])}）"
+    )
+
+
+# ---------------------------------------------------------------- 校验
+
+
+def _json_type(value: Any) -> str:
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    return type(value).__name__  # pragma: no cover - JSON 里不会出现
+
+
+def _type_matches(expected: Any, value: Any) -> bool:
+    actual = _json_type(value)
+    wanted = [expected] if isinstance(expected, str) else expected
+    if actual == "number" and "integer" in wanted:
+        # JSON Schema：integer 不接受 1.5；但 2.0 是合法 integer，Python 里
+        # 解析成 float 2.0 时按值判断。
+        return float(value).is_integer()
+    return actual in wanted
+
+
+def _check_value(
+    schema: dict[str, Any], value: Any, path: str, errors: list[str], event_type: str
+) -> None:
+    if "oneOf" in schema:
+        matches = 0
+        for choice in schema["oneOf"]:
+            branch_errors: list[str] = []
+            _check_value(choice, value, path, branch_errors, event_type)
+            matches += not branch_errors
+        if matches != 1:
+            errors.append(f"{path}：必须且只能匹配一个已登记的版本形状")
+            return
+    if "type" in schema and not _type_matches(schema["type"], value):
+        wanted = schema["type"]
+        errors.append(f"{path}：期望类型 {wanted}，实际 {_json_type(value)}")
+        return
+    if "enum" in schema:
+        if value not in schema["enum"]:
+            errors.append(f"{path}：值 {value!r} 不在封闭集 {schema['enum']} 内")
+            return
+    if "const" in schema and value != schema["const"]:
+        errors.append(f"{path}：值 {value!r} != const {schema['const']!r}")
+        return
+    if isinstance(value, str) and "pattern" in schema:
+        if re.search(schema["pattern"], value) is None:
+            errors.append(f"{path}：字符串 {value!r} 不匹配 {schema['pattern']!r}")
+            return
+    if isinstance(value, int) and not isinstance(value, bool) and "minimum" in schema:
+        if value < schema["minimum"]:
+            errors.append(f"{path}：{value} < minimum {schema['minimum']}")
+            return
+    if isinstance(value, dict):
+        props = schema.get("properties", {})
+        for key in schema.get("required", ()):
+            if key not in value:
+                errors.append(f"{path}：缺少必填字段 {key!r}")
+        additional = schema.get("additionalProperties", True)
+        for key, sub in value.items():
+            child = f"{path}.{key}"
+            if key in props:
+                _check_value(props[key], sub, child, errors, event_type)
+            elif additional is False:
+                errors.append(
+                    f"{child}：不允许的字段 {key!r}（additionalProperties=false）"
+                )
+            elif isinstance(additional, dict):
+                _check_value(additional, sub, child, errors, event_type)
+        return
+    if isinstance(value, list):
+        if len(value) < schema.get("minItems", 0):
+            errors.append(f"{path}：数组缺少必需的项")
+            return
+        prefix = schema.get("prefixItems", ())
+        for index, item in enumerate(value):
+            item_schema = prefix[index] if index < len(prefix) else schema.get("items")
+            if item_schema is not None:
+                _check_value(item_schema, item, f"{path}[{index}]", errors, event_type)
+
+
+def payload_errors(
+    event_type: str, payload: Any, version: int | None = None
+) -> list[str]:
+    """返回该 payload 在指定版本下的全部契约错误（空列表 = 合法）。"""
+    version = current_version(event_type) if version is None else version
+    schema = schema_for(event_type, version)
+    errors: list[str] = []
+    _check_value(schema, payload, "$", errors, event_type)
+    if not errors and event_type == "run.attachments":
+        try:
+            if not validated_attachments(payload["attachments"]):
+                raise AttachmentError("附件事件不能为空")
+        except AttachmentError as exc:
+            errors.append(f"$.attachments：{exc}")
+    if not errors and event_type == "run.model_route":
+        try:
+            ModelRouteV1.of(payload)
+        except ValueError as exc:
+            errors.append(f"$：{exc}")
+    if not errors and event_type == "run.guidance_requested":
+        try:
+            validate_guidance(payload["text"])
+        except ValueError as exc:
+            errors.append(f"$.text：{exc}")
+    if not errors and event_type == "run.conversation":
+        try:
+            validate_turns(payload["turns"])
+        except ValueError as exc:
+            errors.append(f"$.turns：{exc}")
+    if not errors and event_type == "run.mission":
+        from .mission import validate_snapshot
+
+        try:
+            validate_snapshot(payload)
+        except TianshuError as exc:
+            errors.append(f"$：{exc}")
+    if not errors and event_type == "run.start" and version == 2:
+        try:
+            RunExecutionPolicyV1.of(payload["execution_policy"])
+        except TianshuError as exc:
+            errors.append(f"$.execution_policy：{exc}")
+    if not errors and version in (2, 3) and event_type in ("model.result", "run.model_turn"):
+        # 只补充新 cache 字段的语义，不改变旧 schema/其他事件对整数值 float
+        # 的既有校验。JSON Schema 镜像本身也带 minimum。
+        usage = payload.get("usage") or {}
+        for key in ("cache_read_input_tokens", "cache_creation_input_tokens"):
+            value = usage.get(key)
+            if isinstance(value, (int, float)) and value < 0:
+                errors.append(f"$.usage.{key}：缓存用量不能为负")
+        if event_type == "model.result" and "continuation" in payload:
+            try:
+                ContinuationRef.from_payload(payload["continuation"]).validate_projection(payload)
+            except ValueError:
+                errors.append("$.continuation：续接值或规范化投影不满足契约")
+    return errors
+
+
+def validate_payload(
+    event_type: str, payload: Any, version: int | None = None
+) -> None:
+    errors = payload_errors(event_type, payload, version)
+    if errors:
+        raise PayloadContractError(event_type, errors[0].split("：", 1)[0], "；".join(errors[:5]))
+
+
+def detect_version(
+    event_type: str, payload: Any, *, allow_legacy: bool = False
+) -> int:
+    """写入口的版本判定：**默认只接受该类型的当前契约**。
+
+    - `allow_legacy=False`（默认，生产路径）：只按该类型的 current 校验；不合法直接抛
+      `PayloadContractError`。**绝不**自动退回 v0——否则"新写入写漏字段"会被
+      静默记成一条冒充旧版的记录，等于给写入校验开免检通道。
+    - `allow_legacy=True`（仅显式请求）：current 不合法时再按 v0（封闭的历史并集）
+      校验，通过则返回 0；两边都不合法仍拒绝。只给夹具/历史播种/迁移测试用，
+      生产调用点一律不许传。
+
+    逐形状注册的例外是压缩后的 model.result v3 和网络 receipt v2。
+    事件行会用旁表记下实际版本，读取时不会假装它是新版。
+    """
+    if event_type == "model.result" and isinstance(payload, dict):
+        ref = payload.get("continuation")
+        if isinstance(ref, dict) and ref.get("schema_version") == COMPACTION_REF_VERSION:
+            validate_payload(event_type, payload, 3)
+            return 3
+    if (
+        event_type == "receipt"
+        and isinstance(payload, dict)
+        and payload.get("backend") == "network"
+    ):
+        validate_payload(event_type, payload, 2)
+        return 2
+    version = current_version(event_type)
+    if not payload_errors(event_type, payload, version):
+        return version
+    if allow_legacy and event_type in LEGACY_SCHEMAS and not payload_errors(
+        event_type, payload, LEGACY_PAYLOAD_VERSION
+    ):
+        return LEGACY_PAYLOAD_VERSION
+    first = payload_errors(event_type, payload, version)[0]
+    raise PayloadContractError(
+        event_type, first.split("：", 1)[0], first.split("：", 1)[1]
+    )
+
+
+# ---------------------------------------------------------------- 样例
+
+
+_SAMPLE_STRINGS = (
+    "x",
+    "run_x",
+    "c1",
+    "0" * 64,
+    "rcpt_0123456789ab",
+    "c4.auto",
+    "end_turn",
+    "applied",
+    "content://sha256:" + "0" * 64,
+)
+
+
+def _sample_for(schema: dict[str, Any]) -> Any:
+    if "oneOf" in schema:
+        return _sample_for(schema["oneOf"][0])
+    if "const" in schema:
+        return schema["const"]
+    if "enum" in schema:
+        return schema["enum"][0]
+    node_type = schema.get("type")
+    types = [node_type] if isinstance(node_type, str) else list(node_type or ["object"])
+    for candidate in types:
+        if candidate == "null":
+            continue
+        if candidate == "string":
+            pattern = schema.get("pattern")
+            if pattern is None:
+                return _SAMPLE_STRINGS[0]
+            for sample in _SAMPLE_STRINGS:
+                if re.search(pattern, sample) is not None:
+                    return sample
+            raise UnsupportedSchemaKeyword(f"无法为 pattern={pattern!r} 生成样例")
+        if candidate == "integer":
+            minimum = schema.get("minimum", 0)
+            return int(minimum)
+        if candidate == "number":
+            return float(schema.get("minimum", 0))
+        if candidate == "boolean":
+            return False
+        if candidate == "array":
+            return [_sample_for(schema["items"]) for _ in range(schema.get("minItems", 0))]
+        if candidate == "object":
+            props = schema.get("properties", {})
+            required = schema.get("required", list(props))
+            return {key: _sample_for(props[key]) for key in required if key in props}
+    return None
+
+
+def minimal_payload(event_type: str) -> dict[str, Any]:
+    """构造该类型的最小合法 current payload（测试与夹具用，且会被校验兜底）。"""
+    schema = schema_for(event_type, current_version(event_type))
+    payload = _sample_for(schema)
+    if event_type == "run.model_route":
+        payload = ModelRouteV1(("x",), "x", "scripted", "", "", "env").to_payload()
+    if event_type == "run.attachments":
+        payload["attachments"] = normalize_attachments([
+            {"name": "x", "media_type": "text/plain", "data_base64": ""},
+        ])
+    if event_type == "run.mission":
+        from .mission import (
+            SYSTEM_PROMPT,
+            MissionSpecV1,
+            _bytes,
+            _content_ref,
+            _digest,
+            _make_mission,
+        )
+
+        spec = _make_mission(
+            "task_x", 1, "x", registry=None, task_kind="general", criteria=(), tool_ids=[],
+        ).to_dict()
+        mission = MissionSpecV1.of({**spec, "mission_id": "mission_x"})
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": "x"}]
+        payload = {
+            "format_version": 1, "mission": mission.to_dict(), "mission_digest": mission.digest,
+            "renderer_version": "mission-input-v1", "template_content": SYSTEM_PROMPT,
+            "messages": messages, "messages_digest": _digest(_bytes(messages)),
+            "messages_ref": _content_ref(_bytes(messages)), "material_storage": "inline",
+            "effective_tools": [],
+        }
+    validate_payload(event_type, payload)
+    return payload

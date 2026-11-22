@@ -181,6 +181,7 @@ class _DispatcherAuthorityMixin:
         这里调用的是 F2 的同一个 `check_spawn()`，不是第二套策略实现；执行时
         `spawn()` 会再核一次（两边看到的必须是同一个世界）。
         """
+        self._verify_verification_command(request, args)
         task = self._tasks.get_task(request.task_id)
         policy = task.exec_policy if task is not None else None
         if policy is None:
@@ -244,6 +245,23 @@ class _DispatcherAuthorityMixin:
                 f"exec 后端不支持：{exc}", "c4.exec_unsupported"
             ) from exc
         return isolation_view(self._exec_backend, report)
+
+    def _verify_verification_command(self, request, args):
+        if request.tool_id != "run_command":
+            return
+        from types import SimpleNamespace
+
+        from .verification_driver import assert_execution_binding
+        try:
+            assert_execution_binding(
+                SimpleNamespace(log=self._log, tasks=self._tasks, contents=self._contents,
+                                dispatcher=self),
+                request.run_id, request.call_id, args,
+            )
+        except (ValueError, OSError, IndexError) as exc:
+            raise DispatchDenied(
+                f"验证命令前置条件失效：{exc}", "dispatch.stale_precondition",
+            ) from exc
 
     @contextlib.contextmanager
     def _begin_memory_execution(self, request: ActionRequest, claim: JobClaim):

@@ -150,20 +150,26 @@ def _file_bytes(path):
         os.close(fd)
 
 
-def input_fingerprint(stack, task_id):
-    task = stack.tasks.get_task(task_id)
-    if task is None:
-        raise ValueError("任务不存在")
+def _scan_inputs(task):
     entries, total = [], 0
     for index, binding in enumerate(task.workspaces):
         root = Path(binding.root_path).resolve(strict=True)
         entries.append([index, ".", root.stat().st_dev, root.stat().st_ino])
-        for current, dirs, files in os.walk(root, followlinks=False):
+        def unreadable(error):
+            raise ValueError("无法枚举输入目录") from error
+        for current, dirs, files in os.walk(root, followlinks=False, onerror=unreadable):
+            directory = Path(current)
+            identity = directory.lstat()
+            if not stat.S_ISDIR(identity.st_mode):
+                raise ValueError("输入目录身份已经改变")
             # Git 的管理文件不是被测源码，排除项显式进入指纹。
             dirs[:] = sorted(d for d in dirs if d != ".git")
+            files = sorted(f for f in files if f != ".git")
             if any((Path(current) / d).is_symlink() for d in dirs):
                 raise ValueError("无法证明含符号链接目录的输入闭包")
-            for name in sorted(files):
+            entries.append([index, directory.relative_to(root).as_posix() + "/",
+                            identity.st_dev, identity.st_ino, dirs, files])
+            for name in files:
                 path = Path(current) / name
                 if path.is_symlink():
                     raise ValueError("无法证明符号链接文件的输入闭包")
@@ -173,8 +179,23 @@ def input_fingerprint(stack, task_id):
                                 hashlib.sha256(raw).hexdigest()])
                 if len(entries) > MAX_INPUT_FILES or total > MAX_INPUT_BYTES:
                     raise ValueError("输入闭包超过验收限额，需要缩小工作区或人工修订验收")
+            after = directory.lstat()
+            if ((identity.st_dev, identity.st_ino, identity.st_mtime_ns, identity.st_ctime_ns)
+                    != (after.st_dev, after.st_ino, after.st_mtime_ns, after.st_ctime_ns)):
+                raise ValueError("枚举期间输入目录发生变化")
+    return entries
+
+
+def input_fingerprint(stack, task_id):
+    """两次稳定枚举；这是有界工作区观察，不是操作系统原子快照。"""
+    task = stack.tasks.get_task(task_id)
+    if task is None:
+        raise ValueError("任务不存在")
+    first = _scan_inputs(task)
+    if first != _scan_inputs(task):
+        raise ValueError("核对期间输入发生变化")
     return jcs_sha256({"task_id": task_id, "revision": task.goal_revision,
-                       "inputs": entries, "excluded": [".git/"]})
+                       "inputs": first, "excluded": [".git", ".git/"]})
 
 
 def observe_check(stack, task_id, check):
@@ -299,7 +320,8 @@ def request_check(stack, view, step_id, check_id, *, run_id, request_id):
         "task_id": view["task_id"], "mission_id": view["mission"]["mission_id"],
         "plan_digest": view["document_digest"], "step_id": step_id,
         "run_id": run_id, "attempt_id": attempt_id,
-        "kind": observation["evidence"].get("kind", "file_observation"),
+        "kind": {"command_exit": "command_result", "source_reference": "source_snapshot",
+                 "human": "human_decision"}.get(check["kind"], "file_observation"),
         "event_seqs": [], "content_refs": [],
         "input_fingerprint": observation["input_fingerprint"],
     }

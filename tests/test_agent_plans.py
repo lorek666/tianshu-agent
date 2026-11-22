@@ -349,3 +349,18 @@ def test_document_schemas_match_runtime_contracts():
     for name, schema in (("plan", PLAN_SCHEMA), ("verification", MANIFEST_SCHEMA),
                          ("evidence", EVIDENCE_SCHEMA)):
         assert json.loads((root / f"{name}.json").read_text())["$defs"][name] == schema
+
+
+def test_fingerprint_rejects_directory_changes_during_scan(env, monkeypatch):
+    import tianshu.verification as module
+    stack, task, ws, *_ = env
+    (ws / "report.md").write_text("report")
+    real = module._file_bytes
+
+    def changing(path):
+        data = real(path)
+        (ws / "late.txt").write_text("not in the original enumeration")
+        return data
+    monkeypatch.setattr(module, "_file_bytes", changing)
+    with pytest.raises(ValueError, match="输入"):
+        module.input_fingerprint(stack, task.task_id)

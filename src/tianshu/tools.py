@@ -202,6 +202,8 @@ class ToolContext:
     data_root: Path | None = None
     #: 截断输出的内容寻址目录（快照 blob 目录）；None 时只报 truncated。
     blob_dir: Path | None = None
+    #: 已确认验收命令的执行前绑定核验；只减少执行资格，不授予权限。
+    execution_check: Callable[[], None] | None = None
 
     @property
     def io(self) -> FileBackend:
@@ -635,8 +637,12 @@ def _run_command(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
             ) as execution:
                 execution.admit(policy.isolation_requires)
                 isolation_report = execution.report
+                if ctx.execution_check is not None:
+                    ctx.execution_check()
                 result = execution.run(blob_dir=ctx.blob_dir, pty=pty)
         else:
+            if ctx.execution_check is not None:
+                ctx.execution_check()
             result = backend.spawn(
                 argv, cwd=target, env=child_env, policy=policy,
                 blob_dir=ctx.blob_dir, pty=pty,
@@ -1425,12 +1431,14 @@ class FileExecutor:
         exec_backend: ExecBackend | None = None,
         data_root: Path | None = None,
         consents: object | None = None,
+        execution_check: Callable[[AdmittedCall], None] | None = None,
     ) -> None:
         self._tasks = tasks
         self._leases = leases
         self._grants = grants
         self._approvals = approvals
         self._consents = consents
+        self._execution_check = execution_check
         self._claims = claims
         self._lookup = dispatch_lookup
         self._mark = dispatch_mark
@@ -1661,6 +1669,8 @@ class FileExecutor:
             exec_backend=self._exec_backend,
             data_root=self._data_root,
             blob_dir=self._snapshots.blob_dir if self._snapshots is not None else None,
+            execution_check=(None if self._execution_check is None else
+                             lambda: self._execution_check(admitted)),
         )
 
         # 复审 中-1：贴着落盘的最后一次阻断核验。派发 phase-1 查过一遍，但查完
