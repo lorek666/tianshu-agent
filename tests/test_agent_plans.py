@@ -114,6 +114,52 @@ def test_file_hash_observes_raw_bytes_and_rechecks_freshness(env):
     assert first["input_fingerprint"] != second["input_fingerprint"]
 
 
+@pytest.mark.parametrize("scope", ["workspace", "file_exists", "file_hash"])
+@pytest.mark.parametrize("component", ["st_dev", "st_ino"])
+def test_fingerprints_preserve_large_filesystem_identity(env, monkeypatch, scope, component):
+    from pathlib import Path
+
+    from tianshu.verification import check_input_fingerprint, input_fingerprint
+
+    stack, task, ws, _, _, manifest = env
+    raw = "原始证据\r\n".encode()
+    (ws / "report.md").write_bytes(raw)
+    identity = [2**64 - 2]
+
+    class LargeIdentity:
+        def __init__(self, info):
+            self.info = info
+
+        def __getattr__(self, name):
+            return identity[0] if name == component else getattr(self.info, name)
+
+    def substitute(original):
+        def wrapped(path, *args, **kwargs):
+            info = original(path, *args, **kwargs)
+            return LargeIdentity(info) if path == ws or ws in path.parents else info
+        return wrapped
+
+    for method in ("stat", "lstat"):
+        monkeypatch.setattr(Path, method, substitute(getattr(Path, method)))
+
+    check = copy.deepcopy(manifest["checks"][0])
+    if scope == "file_hash":
+        check["kind"] = scope
+        check["inputs"].update(algorithm="sha256", expected_digest=hashlib.sha256(raw).hexdigest())
+
+    def fingerprint():
+        if scope == "workspace":
+            return input_fingerprint(stack, task.task_id)
+        return check_input_fingerprint(stack, task.task_id, check)
+
+    first = fingerprint()
+    assert first == fingerprint()
+    identity[0] += 1
+    assert first != fingerprint(), "相邻的大文件身份不能因截断或浮点舍入合并"
+    identity[0] -= 1
+    assert first == fingerprint()
+
+
 def test_file_check_rejects_symlink_outside_workspace(env, tmp_path):
     from tianshu.verification import observe_check
     stack, task, ws, _, _, manifest = env
@@ -198,7 +244,7 @@ def human_plan(env):
         "content_ref": "content://sha256:" + jcs_sha256(manifest),
         "digest": jcs_sha256(manifest),
     }
-    (ws / "report.md").write_text("待人审阅的报告")
+    (ws / "report.md").write_bytes("待人审阅的报告".encode())
     plans = store(env)
     view = plans.create(task.task_id, mission, document, manifest, request_id="create")
     plans.confirm(view["plan_id"], expected_revision=1,
@@ -237,7 +283,7 @@ def test_human_acceptance_rejects_changed_inputs(env):
     from tianshu.permissions import HumanIdentity
     from tianshu.verification import decide_check
     view, request = human_plan(env)
-    (env[2] / "report.md").write_text("后来被改写")
+    (env[2] / "report.md").write_bytes("后来被改写".encode())
     params = {
         **{k: request[k] for k in (
             "plan_id", "revision", "step_id", "check_id", "check_digest",

@@ -996,12 +996,36 @@ def run_soak(
 
             with ipc.Client(data_root, timeout=10.0) as client:
                 # B1: 在线订阅者（接收 W4 流式增量与事件）+ 正常断连
-                sub = ipc.Client(data_root, timeout=5.0)
-                sub.connect()
-                stream_seen = 0
+                head_seq = int(client.call("state", {})["event_seq_head"])
+                online_stop = threading.Event()
+                online_ready = threading.Event()
+                stream_seen = threading.Event()
+                online_errors: list[str] = []
+
+                def consume_online(cursor, ready, stopped, seen, errors) -> None:
+                    # 连接由读线程独占，不能等 effects 完成后才读；Windows
+                    # 有界管道可能早在此之前因发送超期而正常断开慢订阅者。
+                    try:
+                        with ipc.Client(data_root, timeout=5.0) as sub:
+                            sub.subscribe(cursor + 1, include_model_stream=True)
+                            ready.set()
+                            while not stopped.is_set():
+                                message = sub.next_event(timeout=0.05)
+                                if message is not None and message.get("push") == "model_stream":
+                                    seen.set()
+                    except Exception as exc:  # noqa: BLE001 - 必须使诊断失败
+                        errors.append(f"{type(exc).__name__}: {exc}")
+                    finally:
+                        ready.set()
+
+                online_reader = threading.Thread(
+                    target=consume_online, name="soak-online-subscriber", daemon=True,
+                    args=(head_seq, online_ready, online_stop, stream_seen, online_errors),
+                )
+                online_reader.start()
                 try:
-                    head_seq = int(client.call("state", {})["event_seq_head"])
-                    sub.subscribe(head_seq + 1, include_model_stream=True)
+                    if not online_ready.wait(5) or online_errors:
+                        raise RuntimeError(f"online_subscriber_not_ready:{online_errors}")
 
                     # B2: Effects 任务（文件写入 + 记忆提案 + W4 流式）+ F11 Undo
                     eff_task = client.call(
@@ -1038,19 +1062,19 @@ def run_soak(
                     else:
                         workloads["effects_runs"] += 1
 
-                    # 读取流式帧核验 W4，确认收到后立即继续
-                    deadline_s = time.monotonic() + 0.25
-                    while time.monotonic() < deadline_s:
-                        ev_msg = sub.next_event(timeout=0.02)
-                        if ev_msg is None:
-                            break
-                        if ev_msg.get("push") == "model_stream":
-                            stream_seen += 1
-                            break
-                    if stream_seen > 0:
+                    if stream_seen.wait(0.25):
                         workloads["streamed_turns"] += 1
+                    else:
+                        runtime_failures.append(f"cycle_{cycle}_online_subscriber_missing_stream")
                 finally:
-                    sub.close()
+                    online_stop.set()
+                    online_reader.join(5)
+                    if online_reader.is_alive():
+                        raise RuntimeError(f"cycle_{cycle}_online_subscriber_not_stopped")
+                    runtime_failures.extend(
+                        f"cycle_{cycle}_online_subscriber_failed:{error}"
+                        for error in online_errors
+                    )
                     workloads["subscriber_disconnects"] += 1
 
                 # 执行 F11 撤销，保持工作区干净并验证快照链闭环

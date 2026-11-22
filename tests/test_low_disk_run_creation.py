@@ -27,7 +27,7 @@ def test_run_start_v2_only(tmp_path):
         for t in EVENT_TYPES - {"run.start", "run.end", "model.result", "run.model_turn"}
     )
     assert event_schema.known_versions("run.start") == frozenset({0, 1, 2})
-    history = json.loads((Path(__file__).parent / "fixtures/events/minimal_v1.json").read_text())
+    history = json.loads((Path(__file__).parent / "fixtures/events/minimal_v1.json").read_bytes())
     # 历史 schema 仍不认识新增字段；新写不能假装 v1。
     schema = event_schema.schema_for("run.start", 1)
     assert "execution_policy" not in schema["properties"]

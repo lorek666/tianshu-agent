@@ -16,6 +16,7 @@ import hashlib
 import json
 import subprocess
 import sys
+import threading
 from itertools import pairwise
 from pathlib import Path
 
@@ -32,6 +33,49 @@ import soak_observation as obs  # noqa: E402
 
 SCHEMA_PATH = REPO_ROOT / "schemas" / "slo" / "slo-v1.json"
 THRESHOLDS_PATH = REPO_ROOT / "schemas" / "slo" / "slo-thresholds-v1.json"
+
+
+@pytest.mark.parametrize("fault", [None, "disconnect", "missing_stream"])
+def test_soak_online_subscriber_consumes_before_run_completion(tmp_path, monkeypatch, fault):
+    """真实 Host/Daemon 的模型流必须在 effects 轮次完成之前被消费。"""
+    first_stream = threading.Event()
+    original_call = soak_mod.ipc.Client.call
+    original_next_event = soak_mod.ipc.Client.next_event
+    first_run = True
+
+    def call(client, method, params=None, **kwargs):
+        nonlocal first_run
+        response = original_call(client, method, params, **kwargs)
+        if method == "run.start" and first_run:
+            first_run = False
+            assert first_stream.wait(5), "在线订阅者在等待 Run 完成时没有消费真实模型流"
+        return response
+
+    def next_event(client, **kwargs):
+        message = original_next_event(client, **kwargs)
+        if message is not None and message.get("push") == "model_stream":
+            first_stream.set()
+            if fault == "disconnect":
+                client.close()
+                return original_next_event(client, **kwargs)
+            if fault == "missing_stream":
+                return None
+        return message
+
+    monkeypatch.setattr(soak_mod.ipc.Client, "call", call)
+    monkeypatch.setattr(soak_mod.ipc.Client, "next_event", next_event)
+    report, code = soak_mod.run_soak(
+        duration_s=0.01, sample_interval_s=1.0, output_dir=tmp_path / "observation",
+    )
+    assert first_stream.is_set()
+    assert report["orphan_pids"] == []
+    if fault is None:
+        assert code == 0 and report["failures"] == []
+        assert report["workloads"]["streamed_turns"] > 0
+        assert report["workloads"]["cursor_reconnects"] > 0
+    else:
+        assert code == 1 and report["verdict"] == "FAIL"
+        assert any("online_subscriber" in failure for failure in report["failures"])
 
 
 def _dummy_valid_slo_report(thresholds: dict, sha: str) -> dict:

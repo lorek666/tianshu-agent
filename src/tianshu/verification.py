@@ -9,7 +9,7 @@ import stat
 import uuid
 from pathlib import Path
 
-from .canonical import jcs_bytes, jcs_sha256
+from .canonical import MAX_SAFE_INT, jcs_bytes, jcs_sha256
 from .contents import parse_ref
 from .errors import TianshuError
 from .permissions import HumanIdentity
@@ -150,11 +150,17 @@ def _file_bytes(path):
         os.close(fd)
 
 
+def _stat_identity(info: os.stat_result) -> list[int | str]:
+    # NTFS 身份可能超过 JSON 安全整数；保留全部位，也保留既有安全值的指纹字节。
+    return [value if abs(value) <= MAX_SAFE_INT else str(value)
+            for value in (info.st_dev, info.st_ino)]
+
+
 def _scan_inputs(task):
     entries, total = [], 0
     for index, binding in enumerate(task.workspaces):
         root = Path(binding.root_path).resolve(strict=True)
-        entries.append([index, ".", root.stat().st_dev, root.stat().st_ino])
+        entries.append([index, ".", *_stat_identity(root.stat())])
         def unreadable(error):
             raise ValueError("无法枚举输入目录") from error
         for current, dirs, files in os.walk(root, followlinks=False, onerror=unreadable):
@@ -168,7 +174,7 @@ def _scan_inputs(task):
             if any((Path(current) / d).is_symlink() for d in dirs):
                 raise ValueError("无法证明含符号链接目录的输入闭包")
             entries.append([index, directory.relative_to(root).as_posix() + "/",
-                            identity.st_dev, identity.st_ino, dirs, files])
+                            *_stat_identity(identity), dirs, files])
             for name in files:
                 path = Path(current) / name
                 if path.is_symlink():
@@ -215,7 +221,7 @@ def check_input_fingerprint(stack, task_id, check):
         identity = root.lstat()
         if not stat.S_ISDIR(identity.st_mode):
             raise ValueError("输入工作区身份改变")
-        rows = [[".", identity.st_dev, identity.st_ino]]
+        rows = [[".", *_stat_identity(identity)]]
         target = root
         parts = Path(inputs["relative_path"]).parts
         for index, part in enumerate(parts):
@@ -229,8 +235,7 @@ def check_input_fingerprint(stack, task_id, check):
                 raise ValueError("文件观察不能包含符号链接")
             if index < len(parts) - 1 and not stat.S_ISDIR(identity.st_mode):
                 raise ValueError("输入路径祖先不是目录")
-            rows.append([target.relative_to(root).as_posix(),
-                         identity.st_dev, identity.st_ino])
+            rows.append([target.relative_to(root).as_posix(), *_stat_identity(identity)])
         path = Workspace(root).resolve(inputs["relative_path"])
         rows.append(["sha256", hashlib.sha256(_file_bytes(path)).hexdigest()])
         return rows
