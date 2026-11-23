@@ -1,4 +1,4 @@
-"""Windows CI shards: preserve file order and verify complete pytest evidence.
+"""CI shards: preserve file order and verify complete pytest evidence.
 
 This is development-only CI evidence, not a product contract.
 The upstream job result also matters: the stack wrapper can fail after pytest exits.
@@ -351,7 +351,7 @@ class Shard:
 
 
 def verify(args):
-    require(args.needs_result == "success", "Windows shard jobs did not all succeed")
+    require(args.needs_result == "success", "CI shard jobs did not all succeed")
     require(args.count in (2, 4) and args.indices == list(range(args.count)),
             "expected every index of count 2 or 4")
     # Keep each runner's original artifact separate. A valid report from the
@@ -389,7 +389,7 @@ def verify(args):
             expected_phases = ({"setup", "teardown"} if node_phases.get("setup") == "skipped"
                                else {"setup", "call", "teardown"})
             require(set(node_phases) == expected_phases, "missing or unexpected phase report")
-    print(f"Verified {len(full)} collected nodes across {args.count} Windows shards")
+    print(f"Verified {len(full)} collected nodes across {args.count} CI shards")
 
 
 def main():

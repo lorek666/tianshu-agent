@@ -90,7 +90,18 @@ uv run --frozen ruff check .
 以上是最终候选项提交前检查。开发迭代先跑能真实区分坏实现与正确实现的定向红/绿测试；
 全量 pytest 只在代码冻结后运行一次。修复失败后代码树发生变化，属于新候选，必须重跑受影响
 范围及最终全量；同一代码树不因无关文档整理重复跑全量。CI 使用同一锁文件和测试套件，并
-附加日志参数：Ubuntu/macOS 使用 `uv run --frozen pytest -o addopts="" -q -rs`；Windows
+附加日志参数：Ubuntu 使用 `uv run --frozen pytest -o addopts="" -q -rs`；macOS
+在两个独立原生 runner 上直接运行同样 pytest 日志参数，并加载严格 count2 分片插件：
+
+```bash
+PYTHONPATH=scripts PYTEST_ADDOPTS="" uv run --frozen pytest -o addopts="" -q -rs -p pytest_ci_shards --ci-shard-index=INDEX --ci-shard-count=2 --ci-shard-report=REPORT --basetemp=RUNTIME -o cache_dir=CACHE
+```
+
+`INDEX` 为0或1，其余为各 runner 临时目录内独立的绝对路径；报告上传只包含
+`shard.json`，不包含缓存或测试数据。两个具名 artifact 分别下载到汇总目录的
+`0/`、`1/` 后，以原严格 verifier 核对 count2 全集和上游 job 成功。
+保留直接 pytest 及原生 fatal handler，不新增 macOS watchdog 线程。
+Windows
 在两个独立 `windows-latest` runner 上使用原包装器，每台启动两个独立 pytest worker，
 执行以下命令（`INDEX` 为 0 或 1，`REPORT_ROOT` 为 runner 临时目录下的新绝对目录）。完整命令以
 `.github/workflows/ci.yml` 为准，不声称本地与 CI 命令逐字相同。
@@ -117,7 +128,8 @@ Windows required 检查由 Ubuntu 汇总 job 承担：job 级 `always()` 保证�
 原语义接受通过或跳过（含 teardown skip/xfail），任一失败、漏报、重复或错归属均拒绝。
 报告中的 pytest session exit 为 0 不能覆盖包装器迟发诊断失败、上传失败或取消。两台 runner
 及汇总均保持25分钟上限，四个 required 名称不变；CI 开发报告不是产品 C1–C5 契约。
-核验器仅接受 count2/count4；历史 count2 报告路径及严格核验保留，新 workflow 固定 count4。
+核验器仅接受 count2/count4；count2 报告路径及严格核验保留，
+macOS 使用 count2，Windows 使用 count4。
 
 后续完整 run [45058496468](https://github.com/lorek666/tianshu-agent/actions/runs/45058496468)
 因 Windows 分片累计超时失败，旧绿不覆盖该候选。新的权重使用该轮完整文件日志区间，
@@ -169,10 +181,14 @@ cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
 ```
 
-macOS 的完整 Python 门禁与 Rust fmt/test/clippy 分别在两个 `macos-latest` 原生 job
-执行，各保持25分钟上限；Ubuntu 汇总保留原 macOS required 名，使用 `always()` 并严格要求
-两上游均为 `success`（失败、取消、跳过均拒绝）。两原生 job 绑定同一 `github.sha`，与其他
-runner 使用相同 draft/ready/main-push 门禁；拆分职责不减少测试，也不保证 Python 必在时限内完成。
+macOS 的完整 Python 门禁在两个独立 `macos-latest` 原生 job 分片执行，
+Rust fmt/test/clippy 另占一个原生 job，各保持25分钟上限。
+Ubuntu 汇总保留原 macOS required 名，使用 `always()` 下载原始报告并严格验证
+SHA、run/attempt、完整有序 collection、互斥覆盖、测试阶段及完成节点，
+同时要求 Python 矩阵与 Rust 上游均为 `success`（失败、取消、跳过均拒绝）。
+各原生 job 绑定同一 `github.sha`，与其他 runner 使用相同 draft/ready/main-push 门禁；
+不减少测试，也不保证后续 runner 必在时限内完成。run `45160677871` 的完整单片
+Python 已触及25分钟上限，旧失败保留；本候选的原生吞吐须由新完整 CI 单独证明。
 Windows 原生 Rust 检查仍作为独立 job，由现有 Windows required 汇总 job 绑定其
 `success`。不新增 required check 名称。
 
@@ -191,7 +207,7 @@ Windows 原生 Rust 检查仍作为独立 job，由现有 Windows required 汇�
 | 必过检查（GitHub 名称须逐字匹配） | 覆盖范围 |
 |---|---|
 | `test (ubuntu-latest) · py3.12` | Linux Python 套件、锁文件与 lint |
-| `test (macos-latest) · py3.12` | Ubuntu 严格汇总两个原生 macOS job：完整 Python 套件、锁文件/lint/SBOM；R1 桌面壳 Rust fmt/test/clippy，两者必须 success |
+| `test (macos-latest) · py3.12` | Ubuntu 严格汇总原生 macOS 门禁：两个独立 runner 的完整 Python 分片及原始报告、锁文件/lint/SBOM；另绑定 R1 桌面壳 Rust fmt/test/clippy，所有上游必须 success |
 | `test (windows-latest) · py3.12` | 两个独立 Windows runner 的完整 Python 套件分片、各自锁文件与 lint；Ubuntu 汇总核对上游成功及报告身份、完整覆盖；另绑定原生 Windows 的 Rust fmt/test/clippy |
 | `ui · typecheck / test / build` | UI 类型、测试、构建与已提交产物一致性 |
 

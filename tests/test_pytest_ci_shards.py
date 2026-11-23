@@ -383,15 +383,25 @@ def test_actual_checkout_must_match_ci_sha(tmp_path):
     assert docs == [None, None]
 
 
-@pytest.fixture(scope="module", params=(2, 4))
-def complete_evidence(tmp_path_factory, request):
+@pytest.fixture(scope="module")
+def _complete_evidence_cache():
+    return {}
+
+
+@pytest.fixture(params=(2, 4))
+def complete_evidence(tmp_path_factory, request, _complete_evidence_cache):
+    # Module-scoped parametrization makes pytest regroup collection by count.
+    # Keep function-scoped parameters compatible with the strict CI order guard,
+    # while caching each real subprocess cohort once per module and worker.
     count = request.param
-    files = {**FILES, "tests/test_d.py": "def test_d(): pass\n"}
-    evidence, env, results, docs = shards(
-        tmp_path_factory.mktemp("complete-shards"), files, count=count)
-    assert [r.returncode for r in results] == [0] * count
-    assert verify(evidence, env, count=count).returncode == 0
-    return env, docs
+    if count not in _complete_evidence_cache:
+        files = {**FILES, "tests/test_d.py": "def test_d(): pass\n"}
+        evidence, env, results, docs = shards(
+            tmp_path_factory.mktemp("complete-shards"), files, count=count)
+        assert [r.returncode for r in results] == [0] * count
+        assert verify(evidence, env, count=count).returncode == 0
+        _complete_evidence_cache[count] = env, docs
+    return _complete_evidence_cache[count]
 
 
 @pytest.mark.parametrize("mutation", [

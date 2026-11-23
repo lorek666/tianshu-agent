@@ -52,6 +52,29 @@ CRLF 后复现失败；测试现显式覆盖 LF/CRLF 两种文本输出。v6 全
 本机模拟两种换行不是 Windows 原生验证。提交时新 hosted CI 待验，
 墙钟、OS 行为及最终同 head/base/merge 的验收由 PR #228 与原始报告单独证明。
 
+v7 提交 `416fd45` 的新完整运行
+[45160677871](https://github.com/lorek666/tianshu-agent/actions/runs/45160677871)
+在两台 Windows runner 的 collection 阶段失败：新增模块级 count2/count4
+参数化 fixture 触发 pytest 内建重排，严格顺序守卫正确拒绝。两份原始 ZIP 的
+GitHub digest 已核对，四份报告均为 session exit3、选集及执行阶段为空。
+该轮不是通过，也不作为 worker 吞吐证据。
+
+后续 v8 仅修测试组织：参数化改为函数级，模块级只保存空缓存，按 count 各复用
+一组真实子进程证据。收集守卫、supervisor、诊断、产品源码和覆盖范围不变。
+新增回归读取真实 `test_pytest_ci_shards.py`，通过原 wrapper 对复现同一 collection
+错误；修复后四 worker 均完成收集。探针刻意不执行用例，原始报告仍被严格核验器
+以缺少完成节点拒绝，不能当作执行通过。v8 新冻结的裸全量、lock/Ruff/diff
+及限定独立复核均已通过，非文档清单 SHA256 为
+`a4e482f6305d4ebd5d4e6682bcdba995608c8586cc5bffa5454a31a74dc86b23`，
+全量日志 SHA256 为
+`972cda40c19ec7e653fc8e4f0bb226386c06baa9fd2d335d0fc769a2fbf77a7a`。
+独立复核确认原断言未变，count2/count4 各仅生成一组真实执行 cohort。
+完整 hosted CI 尚未验收，不能沿用 v7 本机的绿。
+
+同一 v7 完整 run 的 macOS Python 也实际触及25分钟 job 上限而取消，
+macOS required 因此失败；不是 runner 排队导致的执行超时。PR 已转回 draft。
+此独立问题的后续修复见[macOS CI 分片](2026-11-23-macos-ci-shards.md)。
+
 本机并发屏障不证明 hosted Windows 的墙钟。启动失败或可捕获中断仅清理尚受管的
 worker 根；父进程被强杀无法保证执行收尾，任意后代仍由 runner 负责。
 Windows 原生沙箱、通用进程树监管和远程 MCP 隔离未交付，#224 保持开放。

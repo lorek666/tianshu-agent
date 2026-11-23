@@ -27,6 +27,54 @@ def pair_args(index, root):
     ]
 
 
+def test_original_pairs_collect_real_ci_evidence_fixture_without_reordering(tmp_path):
+    # Collect the actual CI test module, including its evidence fixture scopes.
+    # Stop before runtest execution: this probe proves collection compatibility,
+    # and its deliberately incomplete reports must still fail strict verification.
+    files = {
+        **FILES,
+        "tests/test_pytest_ci_shards.py": (
+            ROOT / "tests/test_pytest_ci_shards.py").read_text(encoding="utf-8"),
+        "conftest.py": (
+            "import pytest\n@pytest.hookimpl(tryfirst=True)\n"
+            "def pytest_runtestloop(session): return True\n"
+        ),
+    }
+    reports = tmp_path / "downloaded"
+    documents = []
+    for pair_index in (0, 1):
+        checkout = tmp_path / f"checkout-{pair_index}"
+        env = project(checkout, files)
+        root = tmp_path / f"pair-{pair_index}"
+        result = subprocess.run(
+            pair_args(pair_index, root), cwd=checkout, env=env, capture_output=True,
+            text=True, encoding="utf-8", timeout=30,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        for index in range(pair_index * 2, pair_index * 2 + 2):
+            original = root / str(index) / "shard.json"
+            documents.append(json.loads(original.read_text(encoding="utf-8")))
+            target = reports / str(pair_index) / str(index) / "shard.json"
+            target.parent.mkdir(parents=True)
+            shutil.copyfile(original, target)
+    assert all(doc["full_collection"] == documents[0]["full_collection"]
+               for doc in documents)
+    assert any(node.startswith("tests/test_pytest_ci_shards.py::")
+               for node, _ in documents[0]["full_collection"])
+    assert all(doc["selected"] and not doc["reports"] and not doc["finished"]
+               for doc in documents)
+    rejected = subprocess.run(
+        [sys.executable, str(VERIFIER), "verify", "--reports-root", str(reports),
+         "--sha", env["GITHUB_SHA"], "--run-id", RUN_ID,
+         "--run-attempt", ATTEMPT, "--count", "4", "--indices", "0", "1", "2", "3",
+         "--needs-result", "success"],
+        cwd=checkout, env=env, capture_output=True, text=True,
+        encoding="utf-8", timeout=15,
+    )
+    assert rejected.returncode == 1
+    assert "selected or finished nodes differ" in rejected.stdout + rejected.stderr
+
+
 def test_original_wrapper_pairs_preserve_four_complete_raw_reports(tmp_path):
     reports = tmp_path / "downloaded"
     envs = []

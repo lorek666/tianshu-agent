@@ -122,3 +122,56 @@ The v7 local and independent-review receipts bind non-document manifest SHA256
 `d1922a038d823360ac90fe182fe01db6ea81349cc35100f5ee41030793eb3bd8`.
 The fresh bare full suite exited 0; v6's interrupted exit2 remains rejected.
 Hosted acceptance is separate and must bind the repair commit.
+
+The v7 repair commit `416fd45` reached a new complete run `45160677871`,
+but both Windows pairs failed during collection: pytest regrouped the new
+module-scoped count2/count4 fixture parameters. All four original reports
+record exit3 with empty selections. Keep the failure; throughput remains unproven.
+
+## Task 4: Preserve native collection order in CI evidence fixtures
+
+- [x] Reproduce the hosted collection failure through the original wrapper pairs
+  while reading the actual CI test module, not a handwritten fixture substitute.
+- [x] Keep count2/count4 parameters at function scope and cache real evidence
+  cohorts in an unparameterized module fixture; preserve the strict order guard.
+- [x] Verify the probe collects all four workers but its intentionally unexecuted
+  reports remain rejected for missing finished nodes.
+- [x] Verify the complete project collection, mutation negative and affected domain.
+- [x] Freeze the test-only delta; run fresh bare full pytest/lock/Ruff/diff and
+  bind a limited independent second-reader review before committing.
+- [ ] Push draft, drain synchronize, ready and accept a new complete hosted run.
+
+The v8 local and independent incremental receipts passed for non-document SHA256
+`a4e482f6305d4ebd5d4e6682bcdba995608c8586cc5bffa5454a31a74dc86b23`.
+The complete v7 run also timed out macOS Python at the unchanged 25-minute job
+limit; macOS required therefore failed. This is separate from fixture collection.
+PR #228 is draft again. Keep v8 local evidence within its scope.
+
+## Task 5: Keep complete macOS Python coverage within separate native shards
+
+**Design:** [macOS CI 分片](../specs/2026-11-23-macos-ci-shards-design.md).
+Reuse count2 on two independent native runners; direct pytest, no new supervisor.
+
+**Files:** `.github/workflows/ci.yml`, `tests/test_ci_workflow.py`,
+new `tests/test_macos_ci_shards.py`, generic verifier wording and relevant docs.
+
+- [x] First write workflow tests requiring two exact-SHA count2 shards, private
+  runtime/report paths, always uploads/downloads and strict required verification;
+  run against the old workflow and retain RED.
+- [x] Add the two-runner matrix and use the existing plugin directly with
+  `-o addopts="" -q -rs`; keep Windows count4 and diagnostic semantics unchanged.
+- [x] Execute commands extracted from the actual workflow against independent
+  real Git checkouts; retain original reports and reject missing/extra/corrupt
+  identity, incomplete execution, failure and cancellation.
+- [x] Run the affected CI domain and mutation negatives; freeze, run bare full
+  pytest/lock/Ruff/diff and obtain a limited independent incremental review.
+- [ ] Publish one repair batch as draft, drain synchronize, ready and accept the
+  final exact head/base/merge run with both macOS and Windows original evidence.
+
+The v9 local and bounded independent-review receipts passed for non-document
+SHA256 `1e6aefab77348d1abef038418ca9048e2edbfed566c7793478e3916667f11240`.
+Its own bare full-suite log SHA256 is
+`079319f9dd9b3945b80c0e05a87c703e16333f8767e72b2c72c13f2cbe6778df`.
+Independent original-report negatives and the unchanged Windows workflow were
+replayed by the controller. Hosted throughput and final acceptance remain a
+separate gate; neither the local suite nor draft skips can close that item.
