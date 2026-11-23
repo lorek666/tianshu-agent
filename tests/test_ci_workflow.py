@@ -216,3 +216,48 @@ def test_pr_template_records_the_candidate_freeze_contract():
         "required CI 记录 head/base 和 event merge SHA",
     ):
         assert required in template
+
+
+def _assert_windows_worker_pairs(workflow):
+    workers = _job_block(workflow, "windows_shards")
+    summary = _job_block(workflow, "windows_summary")
+    assert "runs-on: windows-latest" in workers
+    assert "shard: [0, 1]" in workers
+    assert "timeout-minutes: 25" in workers
+    assert "fail-fast: false" in workers
+    assert "ref: ${{ github.sha }}" in workers
+    assert "continue-on-error" not in workers + summary
+    assert "CI_PAIR_ROOT: ${{ runner.temp }}/windows-ci/reports" in workers
+    assert (
+        "uv run --frozen python scripts/pytest_with_stacks.py\n"
+        "          --ci-pair-index=${{ matrix.shard }} --ci-pair-root=\"$CI_PAIR_ROOT\""
+    ) in workers
+    assert '--stack-timeout=60' in workers
+    assert "path: ${{ runner.temp }}/windows-ci/reports\n" in workers
+    assert "if-no-files-found: error" in workers
+    assert "needs: [windows_shards, desktop_windows]" in summary
+    assert "--count 4 --indices 0 1 2 3" in summary
+    for index in range(2):
+        assert (
+            "name: windows-pytest-${{ github.run_id }}-${{ github.run_attempt }}-"
+            f"{index}\n          path: "
+            "${{ runner.temp }}/windows-ci-shards/" + str(index)
+        ) in summary
+
+
+def test_windows_pairs_preserve_runner_identity_and_required_gates():
+    _assert_windows_worker_pairs(_workflow())
+
+
+@pytest.mark.parametrize("old,new", [
+    ("--count 4 --indices 0 1 2 3", "--count 2 --indices 0 1"),
+    ("windows-ci-shards/1", "windows-ci-shards/0"),
+    ("shard: [0, 1]", "shard: [0, 1, 2, 3]"),
+    ("timeout-minutes: 25", "timeout-minutes: 30"),
+    ("--stack-timeout=60", "--stack-timeout=0"),
+])
+def test_windows_pair_guard_rejects_weakened_workflow(old, new):
+    workflow = _workflow()
+    assert old in workflow
+    with pytest.raises(AssertionError):
+        _assert_windows_worker_pairs(workflow.replace(old, new))

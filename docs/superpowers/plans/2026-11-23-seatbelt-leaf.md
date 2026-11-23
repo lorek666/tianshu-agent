@@ -75,7 +75,50 @@ Only fixed scheduling estimates change; product source and schemas do not.
   or promise future runner timing.
 - [x] Run the new regression, the complete sharding/workflow/stack-wrapper domain,
   and a real mutation restoring old weights; verify byte-identical restoration.
-- [ ] Freeze the new non-document tree; run bare full pytest, lock/Ruff/diff and
+- [x] Freeze the new non-document tree; run bare full pytest, lock/Ruff/diff and
   obtain an independent incremental review, retaining the existing product review scope.
 - [ ] Submit one repair commit, freeze the draft PR, mark ready, and accept a new
   complete hosted run plus its original Windows reports. Preserve the cancelled run.
+
+Repair commit `3eeb577` was submitted and locally verified, but its complete
+run `45142192772` cancelled both Windows jobs at 25 minutes. This last item
+therefore remains incomplete; Task 3 changes execution capacity without weakening gates.
+
+## Task 3: Execute isolated worker pairs within the two Windows runners
+
+**Design:** [Windows worker 对](../specs/2026-11-23-windows-ci-worker-pairs-design.md).
+Run `45142192772` cancelled both Windows jobs; keep its incomplete/missing reports
+as failures. No product or authority change; no test removal or timeout increase.
+
+**Files:** `scripts/pytest_with_stacks.py`, new `scripts/pytest_ci_pair.py`,
+`scripts/pytest_ci_shards.py`, CI workflow and their tests/documentation.
+
+**Interfaces:** Explicit `--ci-pair-index=0/1 --ci-pair-root=<absolute-path>`
+on the original wrapper; two independent child wrappers each use count4 and a
+private basetemp/report. The verifier retains strict count2 and adds strict count4.
+
+- [x] Obtain bounded independent design review; resolve direct blockers.
+- [x] Add actual wrapper-pair success and count4 coverage tests; observe RED.
+- [x] Add the explicit supervisor branch and count4 closed-set support.
+- [x] Exercise two parent processes/four workers with a real TCP barrier and
+  verify private runtime roots plus exact original reports.
+- [x] Prove launch/worker failure and interruption cannot return green; verify
+  owned worker roots are reaped and previous diagnostic negatives still bite.
+- [x] Update workflow downloads/upload paths and exact strict verification;
+  prove missing/extra/corrupt reports and failed/cancelled jobs reject for count4.
+- [x] Reproduce the v5 independent review's first-root cleanup error with real
+  pipe readers; make each root independent, preserve the first error, bound all
+  cleanup waits, and explicitly report unconfirmed cleanup. Reaped roots receive
+  no signals; mutations must detect swallowed errors and unbounded kill waits.
+- [x] Force both LF and CRLF through real pipe readers; observe the LF-only
+  handshake fail for CRLF, then accept the two exact ready frames. The interrupted
+  v6 full is retained as exit2; test-only v7 requires its own frozen full suite.
+- [x] Freeze, run affected regressions and bare full pytest/lock/Ruff/diff, bind
+  independent incremental review, then commit one repair batch.
+- [ ] Push draft, wait for the synchronize run to complete before ready, and
+  accept a new complete run with exact head/base/merge and four original reports.
+
+The v7 local and independent-review receipts bind non-document manifest SHA256
+`d1922a038d823360ac90fe182fe01db6ea81349cc35100f5ee41030793eb3bd8`.
+The fresh bare full suite exited 0; v6's interrupted exit2 remains rejected.
+Hosted acceptance is separate and must bind the repair commit.

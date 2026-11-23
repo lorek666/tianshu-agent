@@ -154,7 +154,7 @@ jobs:
           test "$DESKTOP_RESULT" = success
 
   # Windows 保留完整覆盖（含 issue #21/#50 回归），分到两个独立 runner。
-  # 节点数和固定的实测文件权重只用于分组，不改变25分钟上限或验收。
+  # 每台并行两个隔离 worker；四个整文件分片不改变25分钟上限或验收。
   windows_shards:
     name: windows shard ${{ matrix.shard }} · py3.12
     runs-on: windows-latest
@@ -189,20 +189,20 @@ jobs:
       - name: Pytest Windows 分片
         env:
           PYTEST_ADDOPTS: ""
-          CI_SHARD_REPORT: ${{ runner.temp }}/windows-ci/shard.json
+          CI_PAIR_ROOT: ${{ runner.temp }}/windows-ci/reports
         # 保留原 wrapper/fatal handler/60秒 Python 线程栈；C 扩展长期持有 GIL
         # 时仍不能保证采样。此 step 唯一直接命令保留 wrapper 最终退出码。
         run: >-
-          uv run --frozen python scripts/pytest_with_stacks.py -p pytest_ci_shards
-          --ci-shard-index=${{ matrix.shard }} --ci-shard-count=2
-          --ci-shard-report="$CI_SHARD_REPORT" -o addopts="" -vv -rs --tb=short
+          uv run --frozen python scripts/pytest_with_stacks.py
+          --ci-pair-index=${{ matrix.shard }} --ci-pair-root="$CI_PAIR_ROOT"
+          -o addopts="" -vv -rs --tb=short
           --durations=20 --stack-timeout=60
       - name: 上传本分片原始报告
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: windows-pytest-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
-          path: ${{ runner.temp }}/windows-ci/shard.json
+          path: ${{ runner.temp }}/windows-ci/reports
           if-no-files-found: error
       - name: 上传恢复 T1 Windows 原生证据
         if: always() && matrix.shard == 0
@@ -272,7 +272,7 @@ jobs:
         run: >-
           uv run --frozen python scripts/pytest_ci_shards.py verify
           --reports-root "$SHARD_REPORTS" --sha "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID"
-          --run-attempt "$GITHUB_RUN_ATTEMPT" --count 2 --indices 0 1
+          --run-attempt "$GITHUB_RUN_ATTEMPT" --count 4 --indices 0 1 2 3
           --needs-result "$UPSTREAM_RESULT"
       - name: 验证 Windows 桌面壳门禁
         if: always()

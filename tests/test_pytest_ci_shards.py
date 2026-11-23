@@ -62,11 +62,15 @@ def project(root, files):
     return env
 
 
-def shards(tmp_path, files=None, extra=(), extra_env=None):
+def report_path(root, index, count):
+    return (root / str(index // 2) if count == 4 else root) / str(index) / "shard.json"
+
+
+def shards(tmp_path, files=None, extra=(), extra_env=None, count=2):
     files = FILES if files is None else files
     evidence = tmp_path / "reports"
     results, documents = [], []
-    for index in range(2):
+    for index in range(count):
         root = tmp_path / f"checkout-{index}"
         env = project(root, files)
         # Both runners check out exactly the same Git object, including commit metadata.
@@ -75,9 +79,9 @@ def shards(tmp_path, files=None, extra=(), extra_env=None):
         else:
             assert env["GITHUB_SHA"] == first_env["GITHUB_SHA"]
         env.update(extra_env or {})
-        report = evidence / str(index) / "shard.json"
+        report = report_path(evidence, index, count)
         args = [sys.executable, str(WRAPPER), "-p", "pytest_ci_shards",
-                f"--ci-shard-index={index}", "--ci-shard-count=2",
+                f"--ci-shard-index={index}", f"--ci-shard-count={count}",
                 f"--ci-shard-report={report}", "-o", "addopts=", "-q",
                 "--stack-timeout=60", *extra]
         results.append(run(args, root, env))
@@ -85,10 +89,11 @@ def shards(tmp_path, files=None, extra=(), extra_env=None):
     return evidence, first_env, results, documents
 
 
-def verify(evidence, env, *, needs="success", extra=()):
+def verify(evidence, env, *, needs="success", extra=(), count=2):
     return run([sys.executable, str(VERIFIER), "verify", "--reports-root", str(evidence),
                 "--sha", env["GITHUB_SHA"], "--run-id", RUN_ID, "--run-attempt", ATTEMPT,
-                "--count", "2", "--indices", "0", "1", "--needs-result", needs, *extra],
+                "--count", str(count), "--indices", *map(str, range(count)),
+                "--needs-result", needs, *extra],
                evidence.parent, env)
 
 
@@ -378,11 +383,14 @@ def test_actual_checkout_must_match_ci_sha(tmp_path):
     assert docs == [None, None]
 
 
-@pytest.fixture(scope="module")
-def complete_evidence(tmp_path_factory):
-    evidence, env, results, docs = shards(tmp_path_factory.mktemp("complete-shards"))
-    assert [r.returncode for r in results] == [0, 0]
-    assert verify(evidence, env).returncode == 0
+@pytest.fixture(scope="module", params=(2, 4))
+def complete_evidence(tmp_path_factory, request):
+    count = request.param
+    files = {**FILES, "tests/test_d.py": "def test_d(): pass\n"}
+    evidence, env, results, docs = shards(
+        tmp_path_factory.mktemp("complete-shards"), files, count=count)
+    assert [r.returncode for r in results] == [0] * count
+    assert verify(evidence, env, count=count).returncode == 0
     return env, docs
 
 
@@ -399,6 +407,7 @@ def test_verifier_rejects_incomplete_or_mismatched_real_evidence(
 ):
     env, original = complete_evidence
     docs = deepcopy(original)
+    count = len(docs)
     doc = docs[0]
     if mutation in ("version", "shard_index", "shard_count", "pytest_session_exit"):
         doc[mutation] += 1
@@ -439,16 +448,16 @@ def test_verifier_rejects_incomplete_or_mismatched_real_evidence(
         doc["reports"][0]["outcome"] = "skipped"
     evidence = tmp_path / "reports"
     for index, content in enumerate(docs):
-        directory = evidence / str(index)
-        directory.mkdir(parents=True)
-        (directory / "shard.json").write_text(json.dumps(content), encoding="utf-8")
+        path = report_path(evidence, index, count)
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(content), encoding="utf-8")
     if mutation == "missing-artifact":
-        (evidence / "1" / "shard.json").unlink()
+        report_path(evidence, 1, count).unlink()
     elif mutation == "extra-artifact":
         (evidence / "unexpected.json").write_text("{}", encoding="utf-8")
     elif mutation == "bad-json":
-        (evidence / "0" / "shard.json").write_text("{", encoding="utf-8")
-    result = verify(evidence, env)
+        report_path(evidence, 0, count).write_text("{", encoding="utf-8")
+    result = verify(evidence, env, count=count)
     assert result.returncode == 1, result.stdout + result.stderr
 
 
@@ -458,10 +467,37 @@ def test_green_json_never_overrides_failed_cancelled_or_skipped_upstream(
 ):
     env, docs = complete_evidence
     for index, doc in enumerate(docs):
-        directory = tmp_path / str(index)
-        directory.mkdir()
-        (directory / "shard.json").write_text(json.dumps(doc), encoding="utf-8")
-    assert verify(tmp_path, env, needs=needs).returncode == 1
+        path = report_path(tmp_path, index, len(docs))
+        path.parent.mkdir(parents=True)
+        path.write_text(json.dumps(doc), encoding="utf-8")
+    assert verify(tmp_path, env, needs=needs, count=len(docs)).returncode == 1
+
+
+def test_four_valid_reports_moved_between_runner_artifacts_are_rejected(
+    complete_evidence, tmp_path,
+):
+    env, docs = complete_evidence
+    if len(docs) != 4:
+        return  # The two-shard historical format has no pair artifacts.
+    for index, doc in enumerate(docs):
+        path = report_path(tmp_path, index, 4)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(doc), encoding="utf-8")
+    assert verify(tmp_path, env, count=4).returncode == 0
+    misplaced = tmp_path / "1" / "0" / "shard.json"
+    misplaced.parent.mkdir()
+    report_path(tmp_path, 0, 4).rename(misplaced)
+    assert verify(tmp_path, env, count=4).returncode == 1
+
+
+@pytest.mark.parametrize("count", [0, 1, 3, 5, True, 2.0])
+def test_partition_count_remains_a_closed_set(count):
+    spec = importlib.util.spec_from_file_location("ci_shards_closed_set", VERIFIER)
+    plugin = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(plugin)
+    with pytest.raises(ValueError, match="two or four"):
+        plugin.partition([[f"tests/test_{i}.py::test_a", f"tests/test_{i}.py"]
+                          for i in range(8)], count)
 
 
 def test_late_real_watchdog_close_failure_keeps_session_zero_but_wrapper_and_gate_red(tmp_path):

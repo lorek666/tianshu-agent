@@ -1,4 +1,4 @@
-"""Two Windows CI shards: preserve file order and verify complete pytest evidence.
+"""Windows CI shards: preserve file order and verify complete pytest evidence.
 
 This is development-only CI evidence, not a product contract.
 The upstream job result also matters: the stack wrapper can fail after pytest exits.
@@ -236,7 +236,7 @@ def require(condition, message):
 
 def partition(full, count):
     """Balance estimated work by whole file; retain original collection order."""
-    require(type(count) is int and count == 2, "exactly two shards are required")
+    require(type(count) is int and count in (2, 4), "exactly two or four shards are required")
     require(isinstance(full, list) and full, "empty or invalid full collection")
     for pair in full:
         require(isinstance(pair, list) and len(pair) == 2
@@ -272,8 +272,9 @@ def pytest_configure(config):
     if index is None and count is None and report is None:
         return
     try:
-        require(count == 2 and index in (0, 1) and report is not None and report.is_absolute(),
-                "use index 0/1, count 2 and an absolute report path")
+        require(count in (2, 4) and index in range(count)
+                and report is not None and report.is_absolute(),
+                "use count 2/4, a valid index and an absolute report path")
         selectors = ("keyword", "markexpr", "ignore", "ignore_glob", "deselect", "lf",
                      "failedfirst", "newfirst", "stepwise", "stepwise_skip", "stepwise_reset",
                      "maxfail", "collectonly", "pyargs")
@@ -351,8 +352,13 @@ class Shard:
 
 def verify(args):
     require(args.needs_result == "success", "Windows shard jobs did not all succeed")
-    require(args.count == 2 and args.indices == [0, 1], "expected shard indices 0 and 1")
-    paths = [args.reports_root / str(index) / "shard.json" for index in args.indices]
+    require(args.count in (2, 4) and args.indices == list(range(args.count)),
+            "expected every index of count 2 or 4")
+    # Keep each runner's original artifact separate. A valid report from the
+    # wrong runner must not be laundered by merging the two ZIPs together.
+    paths = [(args.reports_root / str(index // 2) if args.count == 4
+              else args.reports_root) / str(index) / "shard.json"
+             for index in args.indices]
     require({p for p in args.reports_root.rglob("*") if p.is_file()} == set(paths),
             "missing or extra shard artifacts")
     documents = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
@@ -383,7 +389,7 @@ def verify(args):
             expected_phases = ({"setup", "teardown"} if node_phases.get("setup") == "skipped"
                                else {"setup", "call", "teardown"})
             require(set(node_phases) == expected_phases, "missing or unexpected phase report")
-    print(f"Verified {len(full)} collected nodes across two Windows shards")
+    print(f"Verified {len(full)} collected nodes across {args.count} Windows shards")
 
 
 def main():
