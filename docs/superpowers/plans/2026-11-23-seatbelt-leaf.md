@@ -175,3 +175,52 @@ Its own bare full-suite log SHA256 is
 Independent original-report negatives and the unchanged Windows workflow were
 replayed by the controller. Hosted throughput and final acceptance remain a
 separate gate; neither the local suite nor draft skips can close that item.
+
+The v9 commit `a4e48a0` reached complete hosted run `45170896526`, which
+failed assertions in two Windows workers and macOS shard 1. All selections
+finished; this was not collection failure or timeout. Keep all original reports
+and logs. PR #228 is draft again; do not finalize v9 or rerun it for a green.
+
+## Task 6: Correct CI observation assumptions without weakening acceptance
+
+**Files:** `scripts/measure_slo.py`, `scripts/run_soak.py`,
+`tests/test_pytest_ci_pairs.py`, `tests/test_slo_process_identity.py`,
+`tests/test_slo_state_pressure.py`, `tests/test_net_resilience.py`, boundary docs.
+
+**Interfaces:** Keep product `src`, schemas, strict count2/count4 verification,
+timeouts, original diagnostic sample predicates and zero-orphan threshold.
+This increment fixes development measurement and test evidence only.
+
+- [x] Reproduce the invalid PPID assumption with a real intermediate launcher;
+  bind four simultaneous workers to actual checkouts, plugin indices and exact
+  private roots. Reject a coordinated swap of whole pair indices and directories.
+- [x] Reproduce false orphan attribution using a real live process and a different
+  recorded birth identity. Preserve every observed identity for a reused PID;
+  missing initial/final identity remains conservative.
+- [x] Reproduce the missed pressure window by waiting for the same subscriber's
+  real watchdog drop before the extra large write. Diagnostic state calls use the
+  already replaying backlog; ordinary SLO workload and sample rejection remain.
+- [x] Reproduce the unconditional retry assertion with a real failed connection
+  and an injected exhausted clock; assert exactly two or one attempts according
+  to the remaining shared deadline. Do not claim the hosted connection duration
+  or actual PID reuse was proved.
+- [x] Run mutation negatives, affected regressions and complete project collection;
+  freeze the new tree and run bare full pytest/lock/Ruff/diff.
+- [x] Bind bounded independent incremental probes, verify the original artifacts,
+  and replay them in a fresh private copy; keep the final read-back document-only.
+- [ ] Push draft, drain synchronize, then ready; accept its new complete hosted
+  run with exact head/base/merge, original ZIP digests and all six strict reports.
+
+The v10b local gates and bounded independent review bind non-document SHA256
+`667dd6561a44065091e1cded195428891d2a0ec8d6b38c80c76953b351645902`.
+Its own bare full-suite log SHA256 is
+`c1b23b5feb998f6c6d6dcf281b48111fd07a4ff84ecb33ff5ba90277c537728f`. The earlier v10 full exit0/index-diff exit2
+remains rejected; v10b removes only the extra final LF and has its own full gates.
+Final document-only read-back must preserve this non-document tree. The final PR
+records the subsequent repair commit and exact hosted head/base/merge acceptance;
+this local checklist does not claim that gate passed.
+
+v9 local and independent PASS remain bound to v9.
+Windows native sandbox, general descendant supervision and remote MCP isolation
+remain unimplemented under open #224. Do not merge, release, alter #225/#227 or
+start another major item.

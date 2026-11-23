@@ -507,7 +507,7 @@ class _HostCluster:
         data_root: Path,
         ui_dir: Path,
         env: dict[str, str],
-        tracked_pids: set[int],
+        tracked_pids: slo_mod.TrackedPids,
     ) -> None:
         self.data_root = data_root
         self.ui_dir = ui_dir
@@ -537,7 +537,7 @@ class _HostCluster:
                 env=self.env,
             )
         self.proc = proc
-        self.tracked_pids.add(proc.pid)
+        slo_mod._record_pid(proc.pid, self.tracked_pids)  # noqa: SLF001
 
         def _ready() -> host.HostInfo | None:
             if proc.poll() is not None:
@@ -805,7 +805,7 @@ def run_soak(
         authority_root=auth_root,
         lock_root=lock_root,
     )
-    tracked_pids: set[int] = set()
+    tracked_pids: slo_mod.TrackedPids = {}
     tracker = ProcessResourceTracker()
     samples: list[dict[str, Any]] = []
     sample_lock = threading.Lock()

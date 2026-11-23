@@ -24,6 +24,7 @@ from __future__ import annotations
 import socket
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 from httpserver import NetFixture, closed_port
@@ -133,8 +134,11 @@ def test_retry_recovers_on_connect_failure(
         fixture.stop()
 
 
-def test_retry_exhausts_and_reports(tmp_path) -> None:
-    """closed_port：两次尝试都拒 → net.connect，且连接恰好发起 2 次。"""
+@pytest.mark.parametrize("deadline_exhausted", [False, True])
+def test_retry_exhausts_and_reports(monkeypatch, deadline_exhausted) -> None:
+    """真实连接失败：有剩余期限才重试，总期限耗尽时保留原分类。"""
+    clock = _FakeClock()
+    monkeypatch.setattr(net_mod, "time", SimpleNamespace(monotonic=clock))
     port, sock = closed_port()
     try:
         target = canonical_target(f"network://http/127.0.0.1:{port}/a")
@@ -144,16 +148,26 @@ def test_retry_exhausts_and_reports(tmp_path) -> None:
 
         def counting(target_obj, timeout_s):  # noqa: ANN001 - 与 _connect 同签名
             calls["n"] += 1
-            return real_connect(target_obj, timeout_s)
+            conn = real_connect(target_obj, timeout_s)
+            connect = conn.connect
 
-        net_mod._connect = counting
-        try:
-            with pytest.raises(NetError) as excinfo:
-                fetch(target, limits=NetLimits(min_interval_s=0))
-            assert excinfo.value.reason in {"net.connect", "net.connect_timeout"}
-            assert calls["n"] == NET_CONNECT_ATTEMPTS == 2
-        finally:
-            net_mod._connect = real_connect
+            def connect_and_advance():
+                try:
+                    return connect()
+                finally:
+                    # Keep the actual socket failure and error mapping. Control
+                    # only whether it consumes the shared deadline, not OS timing.
+                    clock.now += timeout_s if deadline_exhausted else 0.01
+
+            conn.connect = connect_and_advance
+            return conn
+
+        monkeypatch.setattr(net_mod, "_connect", counting)
+        with pytest.raises(NetError) as excinfo:
+            fetch(target, limits=NetLimits(min_interval_s=0))
+        assert excinfo.value.reason in {"net.connect", "net.connect_timeout"}
+        assert NET_CONNECT_ATTEMPTS == 2
+        assert calls["n"] == (1 if deadline_exhausted else NET_CONNECT_ATTEMPTS)
     finally:
         sock.close()
 

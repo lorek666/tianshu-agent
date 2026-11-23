@@ -60,6 +60,7 @@ from tianshu.budget import BudgetLedger  # noqa: E402
 from tianshu.capability import CapabilityProfile  # noqa: E402
 from tianshu.diagnostics_export import redact_diagnostic_text  # noqa: E402
 from tianshu.events import EventLog  # noqa: E402
+from tianshu.execution_admission import process_birth_identity  # noqa: E402
 from tianshu.leases import pid_alive  # noqa: E402
 from tianshu.loop import AgentLoop, Limits, build_stack  # noqa: E402
 from tianshu.model import (  # noqa: E402
@@ -128,6 +129,7 @@ IN_FLIGHT_HOLD_MS = 40.0
 SUMMARY_CONSTRAINT = "硬约束：报告只用中文。"
 SUMMARY_BUDGET_BYTES = 3000
 SUMMARY_ROUNDS = 6
+type TrackedPids = dict[int, set[str | None]]
 
 
 class SloConfigError(Exception):
@@ -466,25 +468,39 @@ def _http_request(
     return status, parsed
 
 
-def _record_lock_pids(data_root: Path, tracked_pids: set[int]) -> None:
+def _record_pid(pid: int, tracked_pids: TrackedPids) -> None:
+    # Keep every observed instance if the OS recycles a PID during this run.
+    tracked_pids.setdefault(pid, set()).add(process_birth_identity(pid))
+
+
+def _record_lock_pids(data_root: Path, tracked_pids: TrackedPids) -> None:
     for lock_name in ("host.lock", "daemon.lock"):
         p = ipc.run_dir(data_root) / lock_name
         try:
             obj = json.loads(p.read_bytes().decode("utf-8"))
             pid = obj.get("pid")
             if isinstance(pid, int) and pid > 0:
-                tracked_pids.add(pid)
+                _record_pid(pid, tracked_pids)
         except (OSError, ValueError, UnicodeDecodeError):
             continue
 
 
-def _find_orphan_pids(tracked_pids: set[int], marker_root: Path) -> list[int]:
+def _find_orphan_pids(tracked_pids: TrackedPids, marker_root: Path) -> list[int]:
     me = os.getpid()
+    identities = {pid: set(births) for pid, births in tracked_pids.items()}
+
+    def still_alive(pid: int) -> bool:
+        if not pid_alive(pid):
+            return False
+        current = process_birth_identity(pid)
+        # An unreadable identity cannot prove the recorded process has exited.
+        return current is None or None in identities[pid] or current in identities[pid]
+
     alive: set[int] = set()
     for pid in sorted(tracked_pids):
         if pid <= 0 or pid == me:
             continue
-        if pid_alive(pid) is True:
+        if still_alive(pid):
             alive.add(pid)
     if os.name != "nt":
         marker = str(marker_root)
@@ -505,6 +521,7 @@ def _find_orphan_pids(tracked_pids: set[int], marker_root: Path) -> list[int]:
                     if pid_part.isdigit():
                         found_pid = int(pid_part)
                         if found_pid != me and pid_alive(found_pid) is True:
+                            _record_pid(found_pid, identities)
                             alive.add(found_pid)
         except OSError:
             pass
@@ -513,7 +530,7 @@ def _find_orphan_pids(tracked_pids: set[int], marker_root: Path) -> list[int]:
     # 给刚退出的子进程至多 250ms 内核回收窗口（避免僵尸进程尚未 reap 的瞬态假阳）
     deadline = time.monotonic() + 0.25
     while time.monotonic() < deadline and alive:
-        alive = {pid for pid in alive if pid_alive(pid) is True}
+        alive = {pid for pid in alive if still_alive(pid)}
         if alive:
             time.sleep(0.03)
     return sorted(alive)
@@ -1297,7 +1314,7 @@ def _measure_one_host_startup(
     authority_root: Path,
     lock_root: Path,
     expect_warm_events: int,
-    tracked_pids: set[int],
+    tracked_pids: TrackedPids,
 ) -> tuple[float, float | None]:
     env = _isolated_env(
         data_root=data_root,
@@ -1325,7 +1342,7 @@ def _measure_one_host_startup(
         stderr=subprocess.PIPE,
         env=env,
     )
-    tracked_pids.add(proc.pid)
+    _record_pid(proc.pid, tracked_pids)
     try:
         deadline = time.monotonic() + 30.0
         info: host.HostInfo | None = None
@@ -1404,7 +1421,7 @@ def run_suite1_startup(
     warm_events_min: int,
     authority_root: Path,
     lock_root: Path,
-    tracked_pids: set[int],
+    tracked_pids: TrackedPids,
 ) -> tuple[list[float], list[float], dict[str, Any]]:
     ui_dir = REAL_UI_DIST if (REAL_UI_DIST / "index.html").is_file() else base_dir / "empty_ui"
     ui_dir.mkdir(parents=True, exist_ok=True)
@@ -1652,7 +1669,7 @@ def run_suite2_cancel_and_approval(
     event_bytes_min: int,
     authority_root: Path,
     lock_root: Path,
-    tracked_pids: set[int],
+    tracked_pids: TrackedPids,
     state_trials: list[dict[str, Any]] | None = None,
 ) -> tuple[list[float], list[float], list[float], dict[str, Any], dict[str, Any]]:
     s2_root = base_dir / "s2"
@@ -1685,7 +1702,7 @@ def run_suite2_cancel_and_approval(
         stderr=subprocess.PIPE,
         env=env,
     )
-    tracked_pids.add(proc.pid)
+    _record_pid(proc.pid, tracked_pids)
 
     slow_ipc_clients: list[ipc.Client] = []
     slow_sse_socks: list[socket.socket] = []
@@ -1754,14 +1771,16 @@ def run_suite2_cancel_and_approval(
             sub.connect()
             sub.subscribe(0, include_model_stream=True)
             slow_ipc_clients.append(sub)
-            # 推入一条大事件填满该新订阅者的 socket 缓冲
-            ctrl_ipc.call(
-                "task.create",
-                {"goal": ("P" * BIG_EVENT_CHARS) + f":{tag}"},
-                timeout=10.0,
-            )
             if state_trials is not None:
+                # subscribe(0) already replays the seeded large history. Measure
+                # that actual send before another large write consumes its window.
                 state_timings[tag] = _measure_state_rpc(ctrl_ipc, pressure_dir, tag)
+            else:
+                ctrl_ipc.call(
+                    "task.create",
+                    {"goal": ("P" * BIG_EVENT_CHARS) + f":{tag}"},
+                    timeout=10.0,
+                )
 
         slow_model_count = max(1, (repeats + 1) // 2)
         slow_tool_count = max(1, repeats - slow_model_count)
@@ -2109,7 +2128,7 @@ def run_state_pressure_diagnostic(*, repeats: int = 2) -> tuple[dict[str, Any], 
     temp_base = _short_temp_dir("tsst-")
     authority_root = temp_base / "auth"
     lock_root = temp_base / "locks"
-    tracked_pids: set[int] = set()
+    tracked_pids: TrackedPids = {}
     trials: list[dict[str, Any]] = []
     try:
         authority_root.mkdir()
@@ -2176,7 +2195,7 @@ def run_suite3_crash_recovery(
     repeats: int,
     authority_root: Path,
     lock_root: Path,
-    tracked_pids: set[int],
+    tracked_pids: TrackedPids,
 ) -> tuple[list[float], dict[str, Any]]:
     total_runs = max(repeats, len(CRASH_SCENARIOS))
     recovery_samples: list[float] = []
@@ -2258,7 +2277,7 @@ def run_suite3_crash_recovery(
             stderr=subprocess.PIPE,
             env=env,
         )
-        tracked_pids.add(rec_proc.pid)
+        _record_pid(rec_proc.pid, tracked_pids)
         target_states = (
             {"reconciling"}
             if scenario == "unknown_effect_reconciling_blocked"
@@ -2669,7 +2688,7 @@ def run_all_benchmarks(
     lock_root = temp_base / "locks"
     authority_root.mkdir(parents=True, exist_ok=True)
     lock_root.mkdir(parents=True, exist_ok=True)
-    tracked_pids: set[int] = set()
+    tracked_pids: TrackedPids = {}
 
     ds_profile = thresholds["dataset_profile"]
     warm_tasks = (

@@ -116,7 +116,8 @@ def test_original_wrapper_pairs_preserve_four_complete_raw_reports(tmp_path):
     assert verified.returncode == 0, verified.stdout + verified.stderr
 
 
-def test_four_real_workers_overlap_and_inherit_private_runtime_roots(tmp_path):
+@pytest.mark.parametrize("launch_layer", [False, True])
+def test_four_real_workers_overlap_and_inherit_private_runtime_roots(tmp_path, launch_layer):
     # The actual project fixtures and startup hook, rather than a hand-written
     # fixture substitute, must isolate locks/authority/registry and descendants.
     source = '''
@@ -130,6 +131,8 @@ def test_barrier(tmp_path, pytestconfig):
         "print(json.dumps([str(maintenance._lock_root()), str(restore_registry._user_home())]))"],
         capture_output=True, text=True, check=True)
     data = dict(pid=os.getpid(), parent=os.getppid(),
+        shard=pytestconfig.getoption("--ci-shard-index"),
+        checkout=str(pytestconfig.rootpath),
         basetemp=str(pytestconfig._tmp_path_factory.getbasetemp()),
         cache=str(pytestconfig.cache._cachedir),
         lock=str(maintenance._lock_root()), registry=str(restore_registry._user_home()),
@@ -157,7 +160,14 @@ def test_barrier(tmp_path, pytestconfig):
                             ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
             env["PAIR_TEST_PORT"] = str(server.getsockname()[1])
             output = stack.enter_context((tmp_path / f"output-{index}").open("w+"))
-            parent = subprocess.Popen(pair_args(index, tmp_path / f"reports-{index}"),
+            command = pair_args(index, tmp_path / f"reports-{index}")
+            if launch_layer:
+                command = [
+                    sys.executable, "-c",
+                    "import subprocess,sys; raise SystemExit(subprocess.call(sys.argv[1:]))",
+                    *command,
+                ]
+            parent = subprocess.Popen(command,
                                       cwd=checkout, env=env, stdout=output,
                                       stderr=subprocess.STDOUT)
             parents.append((parent, output))
@@ -170,24 +180,31 @@ def test_barrier(tmp_path, pytestconfig):
             with connection.makefile("rb") as reader:
                 observations.append(json.loads(reader.readline()))
             connections.append(connection)
-        assert len({item["pid"] for item in observations}) == 4
-        assert {item["parent"] for item in observations} == {p.pid for p, _ in parents}
-        assert all(p.poll() is None for p, _ in parents)
-        for field in ("basetemp", "cache", "lock", "registry", "authority"):
-            paths = [Path(item[field]).resolve() for item in observations]
-            assert len(set(paths)) == 4, (field, paths)
-            assert all(path.is_relative_to(tmp_path) for path in paths), (field, paths)
-        for item in observations:
-            assert item["child"] == [item["lock"], item["registry"]]
-            pair_index = int(item["parent"] == parents[1][0].pid)
-            assert Path(item["cache"]).is_relative_to(
-                tmp_path / f"reports-{pair_index}-runtime")
+        parents_running = all(p.poll() is None for p, _ in parents)
         for connection in connections:
             connection.sendall(b"G")
         for parent, output in parents:
             code = parent.wait(timeout=20)
             output.seek(0)
             assert code == 0, output.read()
+
+        assert len({item["pid"] for item in observations}) == 4
+        assert {item["shard"] for item in observations} == {0, 1, 2, 3}
+        assert parents_running
+        for field in ("basetemp", "cache", "lock", "registry", "authority"):
+            paths = [Path(item[field]).resolve() for item in observations]
+            assert len(set(paths)) == 4, (field, paths)
+            assert all(path.is_relative_to(tmp_path) for path in paths), (field, paths)
+        for item in observations:
+            assert item["child"] == [item["lock"], item["registry"]]
+            # A Windows venv executable can add a launcher process at either
+            # boundary. Bind ownership to the real plugin index and exact roots,
+            # while the four workers are simultaneously held at the barrier.
+            pair = item["shard"] // 2
+            assert Path(item["checkout"]).resolve() == (tmp_path / f"checkout-{pair}").resolve()
+            runtime = tmp_path / f"reports-{pair}-runtime"
+            assert Path(item["basetemp"]).resolve() == (runtime / str(item["shard"])).resolve()
+            assert Path(item["cache"]).resolve() == (runtime / f"cache-{item['shard']}").resolve()
 
 
 def reap(process):

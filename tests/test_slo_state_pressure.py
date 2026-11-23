@@ -77,6 +77,26 @@ def test_state_after_same_sender_watchdog_drop_is_not_a_sample(monkeypatch) -> N
     assert summary["p95_ms"] == summary["max_ms"] == max(qualified)
 
 
+def test_state_measurement_uses_existing_backlog_before_another_large_write(monkeypatch) -> None:
+    call = slo._LabelledSuite2Client.call
+
+    def delayed_write(client, method, params=None, **kwargs):
+        goal = (params or {}).get("goal", "")
+        if method == "task.create" and goal.startswith("P" * slo.BIG_EVENT_CHARS):
+            # The subscription already replays large history. A separately
+            # delayed write must not sit between that pressure and its state RPC.
+            tag = goal.rsplit(":", 1)[-1]
+            pressure_dir = client.data_root / slo._STATE_PRESSURE_DIR
+            slo._wait_condition((pressure_dir / f"{tag}.json").is_file, timeout=5.0)
+        return call(client, method, params, **kwargs)
+
+    monkeypatch.setattr(slo._LabelledSuite2Client, "call", delayed_write)
+    report, code = slo.run_state_pressure_diagnostic(repeats=2)
+    assert code == 0, report
+    assert {trial["trial"] for trial in report["trials"]} == {"sm0", "st0", "ov0"}
+    assert all(trial["invalid_reason"] is None for trial in report["trials"])
+
+
 @pytest.mark.parametrize("lock_root_set", [False, True])
 def test_state_diagnostic_refuses_without_effective_test_lock(lock_root_set, monkeypatch, tmp_path):
     if lock_root_set:
