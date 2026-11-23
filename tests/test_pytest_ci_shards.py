@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -228,6 +229,26 @@ def test_windows_weights_include_goal_and_online_soak_costs(tmp_path):
     costs = [sum(observed[file][1] for file in {node.split("::", 1)[0]
                                                for node in doc["selected"]}) for doc in docs]
     assert abs(costs[0] - costs[1]) < 15, costs
+
+
+def test_windows_weights_balance_complete_leaf_candidate_observations():
+    # This fixture records complete-file windows from a cancelled native run.
+    # Its report exit 0 did not make that job pass. Replay checks scheduling
+    # estimates only; the repaired candidate still needs its own full CI.
+    observations = json.loads(
+        (Path(__file__).parent / "fixtures" / "windows_ci_45134199845_costs.json")
+        .read_text(encoding="utf-8")
+    )["files"]
+    spec = importlib.util.spec_from_file_location("observed_ci_shards", VERIFIER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    full = [[f"{file}::test_observed_{index}", file]
+            for file, count, _ in observations for index in range(count)]
+    groups = module.partition(full, 2)
+    seconds = {file: cost for file, _, cost in observations}
+    costs = [sum(seconds[file] for file in {node.split("::", 1)[0] for node in group})
+             for group in groups]
+    assert abs(costs[0] - costs[1]) < 60, costs
 
 
 def phase_source(phase, action, *, mark=""):

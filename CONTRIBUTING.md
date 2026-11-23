@@ -109,6 +109,13 @@ Windows required 检查由 Ubuntu 汇总 job 承担：job 级 `always()` 保证�
 缓存只在函数级隔离生效后生成，每片首个消费者仍需实跑，CLI 对比保留一次全新完整执行。
 这种局部复用及固定权重只是成本估计，完整原生 CI 仍须在最终冻结上验证。
 
+受限 macOS 后端候选的 run
+[45134199845](https://github.com/lorek666/tianshu-agent/actions/runs/45134199845)
+中，两片 pytest 报告虽均为 session exit 0，分片 0 仍触及25分钟 job 上限，
+Windows required 汇总正确失败。该候选的后续调度估计对每个完整文件取此前估计与
+新实测向上舍入值的较高者，避免一次较快或已缓存的运行抹掉较慢路径成本。
+完整新观测与历史成本场景均保留回归；回算不替代修复候选自身的完整 CI。
+
 Windows 包装器用 Python 线程输出超过60秒的用例（含 setup/call/teardown）的线程栈，避免 CPython 3.12 原生定时转储的 frame 遍历竞态；原生 fatal handler 仍启用。栈只含文件/行号/函数，不打印源码或 locals，且有输出上限。诊断线程等待/采样/写出异常或2秒内不能收尾时不得报绿；原 pytest 失败/中断退出码保留。`--stack-timeout=0` 可在本地明确禁用定时诊断；阈值必须有限且介于0和平台`threading.TIMEOUT_MAX`之间，同时设置 `faulthandler_timeout` 或禁用内建 fatal 插件也会报配置错误。**边界**：C 扩展长期独占 GIL 时，Python 线程无法保证在60秒出栈；fatal handler 与仍为25分钟的 job 上限不是这个诊断缺口的等价替代。相关原生风险的 Windows 实验、故障负控和未验证范围见 [DEBUG-IO](docs/DEBUG-IO-2026-11-13.md)。
 
 候选冻结按以下顺序执行，避免“改一处、提交一次、跑整套、再改一处”：

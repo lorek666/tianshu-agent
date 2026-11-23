@@ -50,3 +50,32 @@ The checklist records the pre-commit local freeze. The final PR records the
 subsequent commit, publication and hosted CI result.
 
 Windows and general descendant-supporting execution remain open under #224.
+
+## Task 2: Repair the candidate's Windows scheduling imbalance
+
+The first complete hosted run `45134199845` was cancelled at the unchanged
+25-minute Windows shard limit. Both pytest reports contain session exit 0,
+but shard 0's cancelled job and the failed required summary remain RED.
+Keep every original log and report; do not rerun the same candidate for a green.
+
+**Files:** `scripts/pytest_ci_shards.py`, `tests/test_pytest_ci_shards.py`,
+`tests/fixtures/windows_ci_45134199845_costs.json`, CI boundary documentation.
+
+**Interfaces:** Preserve `partition(full, 2)`, whole-file ownership, original
+collection order, both independent runners and the strict verifier.
+Only fixed scheduling estimates change; product source and schemas do not.
+
+- [x] Store complete-file Windows observations with raw-log hashes and per-file collection sizes.
+- [x] Add `test_windows_weights_balance_complete_leaf_candidate_observations`;
+  actual measured file costs must differ by less than 60 seconds after scheduling.
+- [x] Observe that test fail with the previous weights.
+- [x] For every complete file, retain the higher of its prior estimate and new
+  observation rounded up in half-second units. Latest-only replacement failed two
+  historical cohorts; keep those assertions. Do not use truncated lower bounds
+  or promise future runner timing.
+- [x] Run the new regression, the complete sharding/workflow/stack-wrapper domain,
+  and a real mutation restoring old weights; verify byte-identical restoration.
+- [ ] Freeze the new non-document tree; run bare full pytest, lock/Ruff/diff and
+  obtain an independent incremental review, retaining the existing product review scope.
+- [ ] Submit one repair commit, freeze the draft PR, mark ready, and accept a new
+  complete hosted run plus its original Windows reports. Preserve the cancelled run.
