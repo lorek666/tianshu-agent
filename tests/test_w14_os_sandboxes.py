@@ -1,7 +1,7 @@
 """W14 双系统进程级沙箱验收测试（macOS `SeatbeltExecBackend` + Linux `LandlockExecBackend`）。
 
 覆盖范围：
-1. `isolation.PROBE_VERSION == "v2"` 与 `_probe_process_tree` 工作区内临时目录自清理；
+1. 当前探针版本与 `_probe_process_tree` 工作区内临时目录自清理；
 2. 注册表路由：`DEFAULT_EXEC_BACKEND == "local"`、`TIANSHU_EXEC_BACKEND=auto` /
    `preferred_exec_backend()` 及跨平台不可用时零静默回落（`PolicyUnsupported` /
    `c4.exec_unsupported`）；
@@ -222,15 +222,15 @@ def _make_dispatch_env(tmp_path: Path, *, backend) -> _DispatchEnv:
     )
 
 
-# ---------------------------------------------------------------- 1. PROBE_VERSION v2 与注册表路由
+# ---------------------------------------------------------------- 1. 探针版本与注册表路由
 
 
-def test_probe_version_is_v2_and_process_tree_cleans_workspace_tempdir(tmp_path):
-    assert PROBE_VERSION == "v2"
+def test_probe_version_is_v3_and_process_tree_cleans_workspace_tempdir(tmp_path):
+    assert PROBE_VERSION == "v3"
     ws = tmp_path / "ws"
     dr = tmp_path / "data"
     report = probe_backend(LOCAL_EXEC_BACKEND, workspace=ws, data_root=dr)
-    assert report.probe_version == "v2"
+    assert report.probe_version == "v3"
     # 探针收尾后 workspace 内不得残留 `.tianshu-tree-probe-*` 临时目录
     assert list(ws.iterdir()) == []
 
@@ -658,7 +658,7 @@ def test_macos_seatbelt_live_four_boundaries_all_enforced(tmp_path):
     report = probe_backend(SEATBELT_EXEC_BACKEND, workspace=ws, data_root=dr)
 
     assert report.backend == "seatbelt"
-    assert report.probe_version == "v2"
+    assert report.probe_version == "v3"
     for boundary in ISOLATION_BOUNDARIES:
         finding = report.finding(boundary)
         assert finding.status == BOUNDARY_ENFORCED, (
@@ -957,7 +957,7 @@ def test_linux_landlock_live_probe_and_dispatcher_end_to_end(tmp_path):
     report = probe_backend(backend, workspace=ws, data_root=dr)
 
     assert report.backend == "landlock"
-    assert report.probe_version == "v2"
+    assert report.probe_version == "v3"
     for boundary in ("files_authority", "credentials", "process_tree"):
         assert report.finding(boundary).status == BOUNDARY_ENFORCED, (
             report.finding(boundary).evidence

@@ -99,10 +99,10 @@
 - **已实现的功能面**（PRD §7 编号 → 落地模块，模块说明取自代码）：
   - **F1 执行原语** → `exec.py`（argv 模式，非 shell；超时/截断/进程组）
   - **F2 执行策略与沙箱接缝** → `execpolicy.py`（声明式、默认全拒、deny 优先）、
-    `exec_backends.py`（默认 `local`，支持 `TIANSHU_EXEC_BACKEND=seatbelt|landlock|auto` 与 `preferred_exec_backend()`；目标后端或平台不可用一律 `PolicyUnsupported`，绝不静默回落 `local`）、
+    `exec_backends.py`（默认 `local`，支持 `TIANSHU_EXEC_BACKEND=seatbelt|seatbelt_leaf|landlock|auto` 与 `preferred_exec_backend()`；`seatbelt_leaf` 是显式选用的禁止派生增量，不改变 `auto`；目标后端或平台不可用一律 `PolicyUnsupported`，绝不静默回落 `local`）、
     `exec_seatbelt.py`（W14 macOS Darwin SBPL 进程级沙箱；历史 W14 探针结论不覆盖脱组后代，新 subject 探针暴露 `process_tree` 未满足，见 §7）、
     `exec_landlock.py`（W14 Linux `x86_64`/`aarch64` 纯标准库 `ctypes` Landlock 沙箱：ABI >= 4 含 TCP 阻断声明 `app_container`，ABI 1..3 如实声明 `process_tree`，preexec 失败 `exit 126` fail-closed）、
-    `exec.py`（本地后端、进程树与后端级敏感环境变量清洗 `scrub_sandbox_env`）、`isolation.py`（`PROBE_VERSION = "v2"` 四边界实测探针 + 门 +
+    `exec.py`（本地后端、进程树与后端级敏感环境变量清洗 `scrub_sandbox_env`）、`isolation.py`（`PROBE_VERSION = "v3"` 四边界实测探针 + 门 +
     `isolation_view`）。「受信任执行」与非 `none` 沙箱后端的实测隔离等级在**审批前**可见（`ApprovalView.isolation`），
     执行结果/事件带 `output.isolation`；口径见
     [F2-sandbox-policy.md](F2-sandbox-policy.md)
@@ -355,6 +355,12 @@
 
 ## 5. 踩坑教训（别再踩）
 
+- **内部隔离探针不能信任被测目录的 Python 模块（2026-11-23）**：
+  在工作区用 `python -c` 会导入同名项目模块，准入证据和批准前副作用都可能受影响。
+  普通、detached 根及探针后代统一使用 `-I -S`，排除工作区、`PYTHONPATH`
+  和 site 启动钩子；真实业务 argv 保持原样。红绿及四入口负控见
+  [受限隔离记录](changelog/2026-11-23-seatbelt-leaf.md)。
+
 - **平台文件身份不能假定为 JSON 安全整数（2026-11-23）**：NTFS 的
   `st_dev/st_ino` 可超出 JCS 数字范围。指纹输入须无损保留全部位；安全整数保留
   原表示，越界值编码为十进制字符串，不能截断、浮点化或放宽 canonical。
@@ -593,7 +599,10 @@
   完整冻结的门禁状态见[实施记录](changelog/2026-11-23-agent-loop-implementation.md)。
   P0-E 的 Windows 原生隔离和完整跨平台对象验收尚未交付，
   由[工单 #224](https://github.com/lorek666/tianshu-agent/issues/224)跟踪；
-  macOS 脱组后代负控使自动四边界准入确定性拒绝。完全访问仍禁用，
+  原 macOS `seatbelt` 的脱组后代负控仍使自动四边界准入确定性拒绝。
+  新增显式 `seatbelt_leaf` 以固定禁止派生的范围尝试开放命令及 stdio MCP；
+  需要子进程的程序也被拒绝，不是通用进程树隔离。精确候选验证见
+  [受限后端记录](changelog/2026-11-23-seatbelt-leaf.md)。完全访问仍禁用，
   不以“本地功能已实现”替代最终 CI、真实付费模型或用户设备验收。
 
 - **Goal G1 不是自动执行模式（2026-11-22，本地候选）**：每轮手动继续、人工逐项
