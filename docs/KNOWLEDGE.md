@@ -299,6 +299,23 @@
   不再依赖缺失父预算掩盖未知预占；旧任务分母不可直接比较。
   本轮冻结与门禁见[记录](changelog/2026-11-23-summary-cache-telemetry.md)。
 
+### MCP 入站正文 content-ref（2026-11-24）
+
+- **完整结果与事件面分离**：`mcp_results.py` 用 canonical JSON 将客户端已观测的有序
+  content blocks、文本/unsupported、structured 与调用元数据编码为
+  `tianshu.mcp-result.v1`；size/sha256/after_state 绑定 canonical bytes。派发先原子写
+  blob，再在同一 `EventLog.transaction()` 登记内容对象/授权、`tool.result` 与 applied
+  Receipt，外部 MCP 调用不进入事务。失败保持 unknown，允许孤儿 blob，不产生悬空事件。
+- **ref-only 持久面不等于模型看不到正文**：事件/cursor 只存白名单 metadata 与
+  schema/ref/size/hash/after_state/持久相对定位；live、resume/cursor rebuild、replay 与
+  context 编译前水合临时副本，三路径消息等价。旧 inline 不迁移；缺 blob、损坏、
+  schema/size/hash/metadata 不符显式失败。Receipt 实际读 blob 并重算摘要/after_state，
+  不只比较事件哈希。
+- **引用保护来自 append-only 事实**：memory erase 从 `tool.result` 投影同 digest MCP
+  引用，引用仍在或投影不可用都保留 blob；不新增表或事件 schema。canonical result 与
+  structured 分别有有限存储上限，超限 fail closed、不重发。设计、验证与未验范围见
+  [本轮记录](changelog/2026-11-24-mcp-result-content-ref.md)。
+
 ## 5. 踩坑教训（别再踩）
 
 - **接管夹具须匹配产品的原子发布（2026-11-22）**：[#213 候选](https://github.com/lorek666/tianshu-agent/actions/runs/44944526018) 的 macOS Rust 用例在接管写入期间读到非法 Host 元数据。产品 Python Host 已经通过同目录临时文件原子替换发布，测试却直接截断写目标文件。仅将 Rust `cfg(test)` 内的接管夹具改为原子发布，并用真实子进程在半写屏障处调用真实读取器：旧发布方式确定性失败，原子发布保留完整旧记录，放行后读取完整新记录。原接管拒绝、Daemon 锁字节保留与未停机断言不变；不得为夹具竞态吞掉损坏元数据错误。产品 Rust 前缀及 Python 发布实现未改。
@@ -501,6 +518,8 @@
 
 - **受限网页表单候选（2026-11-21）**：支持同一次运行中已保存的同源静态表单，经逐次批准执行一次无凭据 HTTPS POST。确认收到完整响应时落网络 Receipt；传输不明不自动重发。没有脚本执行、登录态或文件上传，见[本轮记录](changelog/2026-11-21-browser-form.md)。
 - **产品能力补齐候选（2026-11-21）**：网页导航限于公开 HTML 和本 Run 的同源链接；没有通用浏览器自动化。Webhook 接收器只监听回环，公网 HTTPS 代理尚未部署或验收。HTTPS MCP 只支持固定端点的 JSON/SSE 请求响应，不支持 OAuth 和自动重连。Responses 自动压缩须模型端点显式支持；本地超过预算时若没有可用的已提交压缩边界，会停止而不会裁剪密文。真实模型、真实第三方 MCP 服务和用户设备未验。实施与使用边界见[本轮记录](changelog/2026-11-21-agent-product-capabilities.md)。
+
+- **MCP content-ref 的保留边界（2026-11-24）**：canonical blob 保存的是客户端已观测且未被既有传输上限截断的结果，不恢复 server 未发送的字节；canonical result 与 structured 分别有有限存储上限，超限保持 unknown 且不自动重发，尚无分页读取工具。新持久输出不含 endpoint/spawn/env，MCP 仍不经 `exec_backends`，`isolation_requires` 非空仍拒绝。旧 inline 事件/cursor/Receipt 继续兼容，真实第三方 server 与用户设备未验。见[本轮记录](changelog/2026-11-24-mcp-result-content-ref.md)。
 
 - **旧材料空树复核不是物理快照（2026-11-20）**：`7b4d80b` 通过最终扁平真实列举弥补已下降目录中迟到材料被 stale stat 隐藏的缺口，但有限观察仍不能排除某目录最后一次观察后的同 uid 修改，也不是物理隔离。该修复不改变 Windows 受管恢复写入的 `durability_unavailable` 边界，不解决下述自定义路径 #204；本地全量/能力投影不替代新托管 Windows/Mac CI 或用户设备验收。
 

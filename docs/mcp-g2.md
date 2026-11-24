@@ -15,6 +15,7 @@
 | 准入 | `src/tianshu/tool_registry.py` | server 的 `inputSchema` 归一进 `toolschema` 封闭方言；类型不匹配的关键字**拒绝整个工具**；`additionalProperties` 缺省补 `false` 并记 `narrowed`；工具 id `mcp__<server>__<tool>`（两段都查冲突）；`tool_version = mcp1:<sha256(原始 schema + 归一 schema + 描述)>` |
 | 注册表 | 同上 | 进程级 `ToolRegistry`（内置 `SPECS` + 已准入 MCP）；`manifest()` 内置按插入顺序、动态工具追加末尾；无 MCP 时与旧工具面**逐字节相同** |
 | 派发 | `src/tianshu/dispatcher.py` | `mcp://<server>/<tool>` 资源种类与执行器；**任务白名单 → server 可用性 → 隔离要求 → 逐次人工批准**（前三道都在弹批准之前）；超时/断线/协议失败按 `unknown` 结算；成功产 `receipt(backend="mcp")` |
+| 结果正文 | `src/tianshu/mcp_results.py` | 将完整响应规范编码为 `tianshu.mcp-result.v1` 内容寻址 blob；事件与 cursor 只存安全 ref metadata，live/resume/replay/context 在水合临时副本中恢复完整正文 |
 | 配置入口 | `src/tianshu/cli.py` | 任务级 `--allow-mcp-server <name>`（run / `task create`）；只读诊断 `tianshu mcp list [--json]`（server 状态、协议版本、准入/被拒工具与原因、截断） |
 | 契约增量 | `event_schema.py` / `rules.py` / `schemas/` | `task.created.mcp_servers`（恒写）；`tool.intent` / `tool.not_dispatched` / `receipt` 的 `tool_id` 从枚举改为**形状 pattern**（动态 id 无法枚举，放宽的是数据契约不是授权）；`receipt.backend` += `mcp`、`evidence.kind` += `mcp_call`；6 个新规则编号 |
 
@@ -38,8 +39,28 @@
 | 其他错误码（含 −32603、MCP 自定义 −320xx） | `unknown` + `dispatch.mcp_protocol_error` |
 | 超时 / 管道断开 / server 退出 / 畸形帧 | `unknown` + 对应原因（`mcp.timeout` / `mcp.closed` / `dispatch.mcp_protocol_error`）；超时自动发 `notifications/cancelled`（**只是请求**） |
 | 结果超 `max_result_bytes` | 客户端按 UTF-8 字节截断并报 `bytes` / `truncated` / `dropped_bytes`；`structuredContent` 计入同一预算 |
+| canonical 结果或其 structured 部分超存储上限 | `unknown`；正文不写事件/cursor，也不自动重发。已原子写入的 blob 可留作孤儿，不产生悬空 result/Receipt |
 
-### 3.1 崩溃与恢复（收尾轮 + PR #124 实测口径）
+### 3.1 入站正文 content-ref（2026-11-24）
+
+- 外部 MCP 调用结束后，`mcp_results.py` 用既有 canonical JSON 编码
+  `tianshu.mcp-result.v1`：绑定 server/tool/版本/request_id/is_error，保留有序 content
+  blocks、文本与 unsupported 信息、完整 structured 及 bytes/truncated/dropped/duration
+  等客户端已观测事实。这里的“完整”指客户端已接收且未按既有传输上限截断的结果，不表示
+  恢复 server 未发送的字节。
+- `size` 是 canonical bytes 长度，`sha256` 是其摘要，`after_state=mcp:<sha256>`。
+  每次派发先原子写内容寻址 blob，再把内容对象/授权、`tool.result` 与 applied Receipt 放入
+  同一个 `EventLog.transaction()`；外部调用始终在事务外。任一步失败保持 `unknown`，不重发。
+- `output.mcp` 只保存白名单安全 metadata、ref/size/hash/schema、after_state 与相对 blob
+  定位。text、structured、非文本块正文、任意 error、endpoint query 和 env 均不进入事件或
+  cursor；旧 inline 事件、cursor 与 Receipt 继续按旧路径读取，不迁移。
+- live 模型消息、resume/cursor 重建、replay 与 context 编译只水合临时副本。blob 缺失、
+  损坏、schema/size/hash/metadata 不符一律显式失败，不静默降级。RunCursor 持久形状始终
+  ref-only。Receipt 复核会实际定位并读取 blob、重算摘要/after_state，并交叉核对安全 metadata。
+- `memory.erase` 从 append-only `tool.result` 投影同 digest 的 MCP 引用，仍有引用时保留
+  blob；不新增表或事件 schema。引用投影不可用也宁可保留字节，不误删证据。
+
+### 3.2 崩溃与恢复（收尾轮 + PR #124 实测口径）
 
 判定认**两件事**：有没有落盘的 `tool.result`；没有的话，这次调用有没有越过**外发边界**
 （发包前提交的 `dispatches.state=executing`）。
@@ -183,22 +204,25 @@ server 侧时，工具仍然发不出去。
    降低的是"模型自作主张"的风险，**不是**"server 本身恶意"的风险。
    `isolation.CAPABILITY_UNTRUSTED_LOCAL_MCP` **未启用**。
 3. **MCP 进程不经过 `exec_backends` 注册表**（长连接 vs 一次性 `spawn` 的语义差）；
-   `tool.result.output.mcp.spawn.via_exec_backend=false` 如实标注。因此任务的
+   新 ref 结果不再持久化 spawn/env/endpoint 等启动细节。因此任务的
    `isolation_requires` 非空时 MCP **一律拒绝**（`c4.mcp_isolation_unproven`）——现有
    实测报告测的不是这个进程，跨对象作证不可接受。
-4. **只做 stdio**：HTTP/SSE、OAuth、远程 server 未做。**只做 tools**：resources /
+4. **传输只支持 stdio 与固定端点 HTTPS JSON/SSE**：OAuth、自动重连、远程 server
+   能力发现未做；远程 HTTPS 只发固定 JSON/SSE 请求响应。**只做 tools**：resources /
    prompts / sampling / roots / logging / progress / `list_changed` 未做。
    **等批准期间取消不立即生效**：`tools/call` 同步阻塞，取消只在发包前检查一次。
-5. **图片/音频/资源正文不收**，只记类型。大结果**不落内容引用**（客户端截断并报字节，
-   与 `run_command` 的 `stdout_ref` 不是同一机制）。
+5. **客户端已观测的文本与非文本块都进 canonical blob**；客户端传输上限造成的截断事实
+   仍如实保留。canonical result 与 structured 各有有限存储上限，超限 fail closed；
+   大结果分页读取工具尚未提供。
 6. **没有 MCP 专属预算维度**：调用不预占账本；server 的 CPU/内存/磁盘占用无上限（只有
    结果大小、超时与 `max_tools` 上限）。同 server 的调用串行，跨 run 无压力测试。
 7. **Windows 未实机验证**：stdio 管道与线程只在 `windows-latest` 上跑，而 Windows 本来
    就是已知基线红；不许把 CI 绿/红当实机证据。
 8. **UI 只有审批卡片上的 `mcp://` 目标**：没有独立的 MCP 面板；`tianshu mcp list` 是
    命令行诊断。
-9. **回放只读**：不重连 server、不重放调用；事件里只有结果摘要（`mcp:<sha256>`）与
-   有界文本，**没有** server 原始响应全文。
+9. **回放只读**：不重连 server、不重放调用；新事件只保存 ref metadata 与结果摘要
+   （`mcp:<sha256>`），客户端已观测的完整响应在 canonical blob 中。旧 inline 事件仍保留
+   其历史有界文本形状。
 
 10. **崩溃后的结论分三档**（PR #124）：标记之前 → `none_applied` + 不阻断；标记之后
     或无从证明（老库没有派发表 / 没有行 / 状态不认识）→ `unknown` + 阻断。仍然不成立的：
@@ -235,4 +259,5 @@ server 侧时，工具仍然发不出去。
    `initialize` 形状按官方规范复核。
 6. MCP 专属预算维度（调用次数 / 结果字节）与并发调用。
 7. UI 的 MCP 面板（server 状态、准入/被拒工具、截断说明）。
-8. 大结果内容引用（与 `content://` 同一机制）与文本分页读取。
+8. ~~**大结果 canonical 内容引用**~~ **已完成（2026-11-24）**：文本、非文本块与
+   structured 写入内容寻址 blob，事件/cursor ref-only；剩余是文本分页读取工具。

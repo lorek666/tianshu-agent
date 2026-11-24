@@ -37,6 +37,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -52,11 +53,12 @@ from tianshu.dispatcher import (
     DISPATCH_INTENT,
 )
 from tianshu.errors import WorkspaceBlocked
-from tianshu.events import EventLog
+from tianshu.events import EventLog, canonical_bytes
 from tianshu.guard import blocked_workspaces, ensure_not_blocked, unblock
 from tianshu.leases import GuardTimeout
 from tianshu.loop import build_stack
 from tianshu.mcp import McpClients, McpServerConfig
+from tianshu.mcp_results import decode_mcp_result
 from tianshu.model import ModelResponse, ScriptedModel, ToolCall
 from tianshu.permissions import ACTION_OVERWRITE, ApprovalError, HumanIdentity
 from tianshu.receipt import verify_receipts
@@ -320,6 +322,61 @@ def _crash_after_call(tmp_path: Path) -> tuple[Env, str]:
     assert "[failpoint] mcp_after_call" in proc.stderr, proc.stderr
     env.reopen()
     return env, run_id
+
+
+@pytest.mark.parametrize(
+    "failpoint_name", ["mcp_blob_written", "mcp_before_result_commit"]
+)
+def test_crash_after_canonical_blob_before_result_is_unknown_without_replay(
+    tmp_path, failpoint_name
+):
+    env = _env(tmp_path, mode="content_ref")
+    sentinel = b"MCP-CONTENT-SENTINEL-9f31"
+    try:
+        run_id = _start(env)
+        assert _approve(env, run_id), "MCP 调用必须先弹人工批准"
+        proc = _resume(
+            env, run_id, responses=[_end()],
+            env_extra={"TIANSHU_FAILPOINT": failpoint_name},
+        )
+        assert proc.returncode == 77, proc.stdout + proc.stderr
+        assert f"[failpoint] {failpoint_name}" in proc.stderr, proc.stderr
+        env.reopen()
+
+        assert env.types(run_id).count("tool.intent") == 1
+        assert env.types(run_id).count("tool.result") == 0
+        assert env.types(run_id).count("receipt") == 0
+        assert len(env.calls()) == 1
+        assert _dispatch_state(env, run_id) == DISPATCH_EXECUTING
+        blobs = [
+            path for path in env.stack.snapshots.blob_dir.iterdir() if path.is_file()
+        ]
+        assert len(blobs) == 1
+        envelope = decode_mcp_result(blobs[0].read_bytes())
+        assert sentinel.decode() in envelope["text_parts"][0]
+        with sqlite3.connect(env.db) as conn:
+            assert conn.execute("SELECT count(*) FROM content_objects").fetchone()[0] == 0
+            assert conn.execute("SELECT count(*) FROM content_grants").fetchone()[0] == 0
+        assert sentinel not in canonical_bytes([
+            event.payload for event in env.log.read_run(run_id, verify=False)
+        ])
+
+        report = _recover(env, run_id)
+        assert report.unresolved == [CALL_ID]
+        assert report.none_applied == [] and report.applied == []
+        results = env.payloads(run_id, "tool.result")
+        assert len(results) == 1
+        assert results[0]["effect_state"] == "unknown"
+        assert results[0]["output"]["reason"] == "mcp.crash_unsettled"
+        assert env.types(run_id).count("receipt") == 0
+        assert _dispatch_state(env, run_id) == DISPATCH_ERROR
+        assert env.ws_root in blocked_workspaces(env.log)
+        assert len(env.calls()) == 1, "恢复不许重放调用"
+        assert sentinel not in canonical_bytes([
+            event.payload for event in env.log.read_run(run_id, verify=False)
+        ])
+    finally:
+        env.log.close()
 
 
 def test_crash_after_server_executed_settles_unknown_and_blocks(tmp_path):

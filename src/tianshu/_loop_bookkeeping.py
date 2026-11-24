@@ -203,12 +203,17 @@ def _dispatchable(resp: ModelResponse, call: ToolCall) -> tuple[bool, str]:
     return True, ""
 
 
-def _tool_message(call_id: str, tool_id: str, result: ToolResult) -> dict[str, Any]:
+def _tool_message(
+    call_id: str, tool_id: str, result: ToolResult, *, log=None, blob_dir=None,
+) -> dict[str, Any]:
+    from .mcp_results import hydrate_mcp_output
+
+    output = hydrate_mcp_output(result.output, log=log, blob_dir=blob_dir)
     return {
         "role": "tool",
         "tool_call_id": call_id,
         "name": tool_id,
-        "content": json.dumps(result.output, ensure_ascii=False, sort_keys=True),
+        "content": json.dumps(output, ensure_ascii=False, sort_keys=True),
     }
 
 
@@ -488,7 +493,11 @@ class _LoopBookkeepingMixin:
             output=recorded.get("output") or {},
         )
         progress.messages.append(
-            _tool_message(call_id, recorded.get("tool_id", ""), result)
+            _tool_message(
+                call_id, recorded.get("tool_id", ""), result,
+                log=self._log,
+                blob_dir=self._snapshots.blob_dir if self._snapshots is not None else None,
+            )
         )
         # 与消息平行地补一条归因。查不到（例如结果没有对应事件）就记 0：
         # 溯源是记账材料，宁可标"来源不明"也不在这里编一个 seq。

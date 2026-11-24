@@ -209,12 +209,19 @@ def replay(log: EventLog, run_id: str) -> ReplayReport:
 
         elif ev.type == "tool.result":
             p = ev.payload
+            from .mcp_results import McpResultError, hydrate_mcp_output
+
+            try:
+                output = hydrate_mcp_output(p.get("output", {}), log=log)
+            except McpResultError as exc:
+                problems.append(f"seq={ev.seq} MCP 结果正文无法核验：{exc}")
+                output = p.get("output", {})
             messages.append(
                 {
                     "role": "tool",
                     "tool_call_id": p.get("call_id"),
                     "name": p.get("tool_id", ""),
-                    "content": json.dumps(p.get("output", {}), ensure_ascii=False, sort_keys=True),
+                    "content": json.dumps(output, ensure_ascii=False, sort_keys=True),
                 }
             )
             if p.get("status") == "succeeded":

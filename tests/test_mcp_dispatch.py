@@ -158,10 +158,10 @@ def test_approved_mcp_call_runs_once_and_produces_receipt(tmp_path):
         assert payload["effect_state"] == "applied"
         mcp = payload["output"]["mcp"]
         assert mcp["server"] == "fake" and mcp["tool"] == "echo"
-        assert mcp["content"] == ["echo:hi"]
-        assert mcp["unsupported_content"] == ["image"]
+        assert mcp["schema"] == "tianshu.mcp-result.v1"
+        assert "content" not in mcp and "structured" not in mcp
         assert mcp["after_state"].startswith("mcp:")
-        assert mcp["spawn"]["via_exec_backend"] is False
+        assert "spawn" not in mcp and "endpoint" not in mcp
         # 调用确实只发生一次（真子进程的日志是外部可观察证据）
         assert len(calls.read_text(encoding="utf-8").splitlines()) == 1
         # 凭据：backend=mcp、证据含 mcp_call，且 verify_receipts 认为它可核对

@@ -998,8 +998,14 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
                      else RESPONSES_BUDGET_VERSION) if scope is not None else "ctx-v1",
         )
         try:
+            from .mcp_results import hydrate_mcp_messages
+
+            model_messages = hydrate_mcp_messages(
+                progress.messages, log=self._log,
+                blob_dir=self._snapshots.blob_dir if self._snapshots is not None else None,
+            )
             view = compile_context(
-                progress.messages,
+                model_messages,
                 self._message_source_seqs(run_id, progress),
                 budget,
             )

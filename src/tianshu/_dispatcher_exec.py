@@ -42,6 +42,7 @@ from .mcp import (
     McpProtocolError,
     McpTimeout,
 )
+from .mcp_results import encode_mcp_result, set_blob_kind
 from .net import (
     FormSubmitError,
     NetCancelled,
@@ -179,7 +180,9 @@ class _DispatcherExecMixin:
             known_dimensions={"bytes"},
         )
 
-    def _write_content(self, request: ActionRequest, body: bytes) -> str:
+    def _write_content(
+        self, request: ActionRequest, body: bytes, *, register: bool = True,
+    ) -> str:
         """把抓到的字节写成内容引用。
 
         **先落盘、后写事件**：先写 `tool.result` 再落盘的话，崩溃会让日志承诺
@@ -191,7 +194,8 @@ class _DispatcherExecMixin:
                 "没有内容存储：网络结果必须有界落盘并给引用，"
                 "不会把大 body 直接塞进事件"
             )
-        blob_dir = getattr(self._snapshots, "blob_dir", None) or self._log.blob_dir
+        snapshot_dir = getattr(self._snapshots, "blob_dir", None)
+        blob_dir = snapshot_dir or self._log.blob_dir
         if blob_dir is None:
             raise TianshuError(
                 "没有 blob 目录：网络结果无法落盘（SnapshotStore 与 EventLog "
@@ -199,14 +203,17 @@ class _DispatcherExecMixin:
             )
         digest = sha256_hex(body)
         blob = Path(blob_dir) / digest
-        if not blob.exists():
-            from .restore_access import ensure_material_write_allowed
+        from .restore_access import ensure_material_write_allowed
 
-            with ensure_material_write_allowed(blob_dir, owner_log=self._log):
+        # 先验具体 target，再检查是否已存在；恢复隔离必须覆盖 exists 与写入。
+        with ensure_material_write_allowed(blob, owner_log=self._log):
+            if not blob.exists():
                 atomic_write_bytes(blob, body)
-        self._contents.record(
-            digest, body, task_id=request.task_id, run_id=request.run_id
-        )
+        self._log._mcp_blob_dir = Path(blob_dir)
+        if register:
+            self._contents.record(
+                digest, body, task_id=request.task_id, run_id=request.run_id
+            )
         return make_ref(digest)
 
     def _dispatch_mcp(
@@ -263,24 +270,16 @@ class _DispatcherExecMixin:
                 DispatchDenied("远程 MCP 会话与审批版本不匹配", "dispatch.mcp_server_unavailable"),
                 sent=False,
             )
-        spawn = {
-            "via_exec_backend": False,
-            "pid": server.pid,
-            "argv0": server.config.command[0] if server.config.command else "",
-            "cwd": server.config.cwd,
-            "env_keys": sorted(server.config.env),
-        }
+        # 只登记路由身份；endpoint query、argv/env/cwd 等连接细节不进入事件。
+        # 审批仍独立绑定具体 endpoint，诊断面也不得回灌这份输出。
         base_output: dict[str, Any] = {
             "mcp": {
                 "server": target.server,
                 "tool": target.tool,
                 "tool_version": "" if binding is None else binding.tool_version,
                 "protocol_version": server.protocol_version,
-                "spawn": spawn,
             }
         }
-        if server.config.url:
-            base_output["mcp"]["endpoint"] = server.config.url
         # 外发边界：请求一旦发给 MCP server，"这次调用到底发没发出去"在本机
         # 就再也没法证明了。所以写之前先把派发行从 `intent` 推到 `executing`——
         # 这一行同时是**撤销与发送的分界线**：
@@ -376,42 +375,22 @@ class _DispatcherExecMixin:
             return self._fail_unknown(request, dispatch_id, target, exc)
 
         failpoint("mcp_after_call")
-        content_text = list(called.text_parts)
-        kept_text = "\n".join(content_text)
-        mcp_output = {
-            **base_output["mcp"],
-            "is_error": called.is_error,
-            "content": content_text,
-            "unsupported_content": list(called.unsupported_types),
-            "structured": called.structured,
-            "bytes": called.bytes,
-            "truncated": called.truncated,
-            "dropped_bytes": called.dropped_bytes,
-            "dropped_blocks": called.dropped_blocks,
-            "duration_ms": called.duration_ms,
-            "request_id": called.request_id,
-            # 执行摘要进凭据的 after_state（mcp:<sha256>）；没有磁盘可比对的
-            # after_state 时凭据无从"独立核对"，所以这里必须给。
-            "after_state": "mcp:" + sha256_hex(
-                "\x00".join(
-                    [
-                        target.server,
-                        target.tool,
-                        str(called.request_id),
-                        kept_text,
-                        str(called.is_error),
-                    ]
-                ).encode("utf-8")
-            ),
-        }
-        output: dict[str, Any] = {"mcp": mcp_output}
-        status = "failed" if called.is_error else "succeeded"
-        # 与 `run_command` 同一口径：完成落地的调用记 applied（它确实执行过），
-        # isError 只影响 status；"是否动过、动了什么"我们无法核对，已登记。
-        result = ToolResult(status, "applied", output)
         try:
+            body, mcp_output = encode_mcp_result(called, base_output["mcp"])
+            ref = self._write_content(request, body, register=False)
+            snapshot_dir = getattr(self._snapshots, "blob_dir", None)
+            set_blob_kind(
+                mcp_output, event=snapshot_dir is None, blob_dir=snapshot_dir,
+                log=self._log,
+            )
+            mcp_output["ref"] = ref
+            failpoint("mcp_blob_written")
+            output: dict[str, Any] = {"mcp": mcp_output}
+            status = "failed" if called.is_error else "succeeded"
+            # 外部调用已发生；canonical/blob/结果事务任一步失败都只能收敛 unknown。
+            result = ToolResult(status, "applied", output)
             self._commit_result(request, dispatch_id, result, target, intent_seq)
-        except Exception as exc:  # noqa: BLE001 - 外部调用已完成而结果事务失败：效果未知
+        except Exception as exc:  # noqa: BLE001 - 外部调用完成后不能重发
             return self._fail_unknown(request, dispatch_id, target, exc)
         failpoint("after_result")
         return result
