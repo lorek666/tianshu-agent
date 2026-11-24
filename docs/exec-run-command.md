@@ -58,6 +58,17 @@ task = stack.tasks.create_task(goal, [str(workspace_dir)], exec_policy=policy)
 | `cwd` | `string`（可选） | 相对 workspace 的目录；缺省为 workspace 根。必须是任务可写绑定的子目录。 |
 | `pty` | `boolean`（可选） | 本次调用是否请求 PTY。默认 `false`；`allow_pty` 只是策略许可，不会自动启用。 |
 
+## 审批前展示（`approval.requested.command`）
+
+策略与后端预检通过后，派发侧把同一份已校验 `argv`、解析后的实际 `cwd` 和
+`ExecBackend.capabilities.name` 复制到 `approval.requested.command`；控制面的
+`ApprovalView.command` 再按 approval_id 从事件回读。它只是展示上下文，不是新的
+授权来源：审批仍绑定原有完整 args/digest，`ExecPolicy` 仍只按 `argv[0]` 等既有
+规则判定。字段在事件契约中可选，以兼容没有命令详情的历史审批；新 exec 审批由
+派发侧补齐。UI 默认展开、逐项展示完整 argv，并显示 cwd、后端与隔离级别；参数按
+JSON 字符串保留边界，等宽纯文本换行，不截断、不执行、不注入 HTML。历史 exec
+审批缺详情时明确告警，要求拒绝并重新发起。
+
 ## 结果（`tool.result.output`）
 
 必须具备并可审计：

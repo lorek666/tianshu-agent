@@ -610,6 +610,7 @@ Event {
 - `seq` 由单 writer 单调分配，无跳号、无空洞
 - 表上禁 `UPDATE / DELETE`（用触发器强制）；订正靠追加新事件
 - payload > 256 KiB 落内容寻址文件，表内只留 `payload_ref + payload_hash`
+- `approval.requested` 的 exec 动作可带封闭的 `command` 展示对象：`argv: string[]`、`cwd: string`、`backend: string`。它复制派发侧已校验的真实参数，仅供审批人核对，不进入 `args_hash` / `action_digest`，也不构成授权；历史缺字段保持可读，新 exec 审批必须补齐。UI 不得截断或从 resource 猜测拼接。
 - 文件形态日志仍可导出，用于人工排查与外部审计，**但不参与恢复裁决**
 
 #### 5.3.1 为什么把 9 值抽象枚举换成"族 + 具体类型注册表"
