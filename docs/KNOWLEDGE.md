@@ -79,10 +79,10 @@
     `exec_seatbelt.py`（W14 macOS Darwin SBPL 进程级沙箱，`macos-arm64` 四边界实测全 `enforced`）、
     `exec_landlock.py`（W14 Linux `x86_64`/`aarch64` 纯标准库 `ctypes` Landlock 沙箱：ABI >= 4 含 TCP 阻断声明 `app_container`，ABI 1..3 如实声明 `process_tree`，preexec 失败 `exit 126` fail-closed）、
     `exec.py`（本地后端、进程树与后端级敏感环境变量清洗 `scrub_sandbox_env`）、`isolation.py`（`PROBE_VERSION = "v2"` 四边界实测探针 + 门 +
-    `isolation_view`）。「受信任执行」与非 `none` 沙箱后端的实测隔离等级在**审批前**可见（`ApprovalView.isolation`）；
-    exec 审批还完整展示已校验 argv、实际 cwd、后端与隔离级别（`ApprovalView.command` + 卡片），
-    这些字段只供审查，不改变 argv[0] 策略或 digest 授权。执行结果/事件带 `output.isolation`；口径见
-    [F2-sandbox-policy.md](F2-sandbox-policy.md)
+    `isolation_view`）。「受信任执行」与非 `none` 沙箱后端的实测隔离等级在**审批前**可见（`ApprovalView.isolation`）。
+    exec 审批命令展示契约已定义：`ApprovalView.command` 将完整展示已校验 argv、实际 cwd、后端与隔离级别；
+    本契约 PR 不夹带 runtime/UI 实现，字段只供审查，不改变 argv[0] 策略或 digest 授权。执行结果/事件带
+    `output.isolation`；口径见 [F2-sandbox-policy.md](F2-sandbox-policy.md) 与[契约变更记录](changelog/2026-11-24-approval-command-display-contract.md)
   - **F5 上下文编译** → `context.py`（纯函数、按字节预算、丢弃只记账不摘要）
   - **F9a 模型准入** → `capability.py`（能力声明与准入，只用于路由，不用于授权）
   - **F12 凭据** → `credentials.py`（分域查找 + 全链路脱敏；Keychain 后端 **macOS 已落地**——`keychain_macos.py` SecItem 直调、仅 darwin 加载，W1 交付并经 #151 独立复审；其余平台仍如实报 `unsupported`）
