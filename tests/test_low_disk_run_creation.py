@@ -624,16 +624,22 @@ def test_real_mcp_producer_preparation_and_low_disk_order(tmp_path, producer, lo
     from tianshu.memory_control import remember
     from tianshu.resources import MemoryScope
     from tianshu.undo import apply_undo
+    from tianshu.worker import Worker
 
     with closing(EventLog(tmp_path / "events.db")) as log:
-        stack = stack_for(log, data_root=tmp_path / "data")
+        # 与 daemon 一致：控制栈不持有 MCP 客户端，驱动栈才准备真实 server。
+        control_stack = stack_for(log, data_root=tmp_path / "data")
         workspace = tmp_path / "workspace"
         workspace.mkdir()
-        task = stack.tasks.create_task("produce", [str(workspace)])
+        task = control_stack.tasks.create_task(
+            "produce",
+            [str(workspace)],
+            mcp_servers=["fake"] if producer == "control" else (),
+        )
         target_run = None
         if producer == "undo":
             target_run = engine_for(
-                stack,
+                control_stack,
                 ScriptedModel(
                     [
                         ModelResponse(
@@ -651,13 +657,18 @@ def test_real_mcp_producer_preparation_and_low_disk_order(tmp_path, producer, lo
                 ),
             ).start(task.task_id)
             assert target_run.state == "succeeded", target_run.error
+        startup = tmp_path / "mcp-started"
+        server = Path(__file__).parent / "fixtures/fake_mcp_server.py"
         clients = McpClients(
             {
                 "fake": McpServerConfig(
                     name="fake",
                     command=(
                         sys.executable,
-                        str(Path(__file__).parent / "fixtures/fake_mcp_server.py"),
+                        "-c",
+                        "from pathlib import Path; import runpy; "
+                        f"Path({str(startup)!r}).write_bytes(b'started'); "
+                        f"runpy.run_path({str(server)!r}, run_name='__main__')",
                     ),
                 )
             }
@@ -666,10 +677,11 @@ def test_real_mcp_producer_preparation_and_low_disk_order(tmp_path, producer, lo
             stack = build_stack(log, data_root=tmp_path / "data", mcp_clients=clients)
             assert clients.server("fake") is None
             if low:
-                stack.tasks._disk_admission = DiskAdmission(
-                    stack.tasks.disk_admission.context,
-                    probe=lambda p: 0,
-                )
+                for owner in (control_stack, stack):
+                    owner.tasks._disk_admission = DiskAdmission(
+                        owner.tasks.disk_admission.context,
+                        probe=lambda p: 0,
+                    )
             before = {
                 table: log.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
                 for table in ("tasks", "runs", "jobs", "events")
@@ -680,9 +692,12 @@ def test_real_mcp_producer_preparation_and_low_disk_order(tmp_path, producer, lo
                 if producer == "loop":
                     return engine_for(stack, model).start(task.task_id)
                 if producer == "control":
-                    return ControlPlane(stack, model=model).handle(
+                    return ControlPlane(control_stack, model=model).handle(
                         "run.start",
-                        {"task_id": task.task_id},
+                        {
+                            "task_id": task.task_id,
+                            "tool_ids": ["mcp__fake__echo"],
+                        },
                     )
                 if producer == "memory":
                     return remember(
@@ -700,14 +715,42 @@ def test_real_mcp_producer_preparation_and_low_disk_order(tmp_path, producer, lo
                 with pytest.raises((TianshuError, ControlError)):
                     produce()
                 assert clients.server("fake") is None
+                assert not startup.exists()
                 assert model.calls == 0
                 assert {
                     table: log.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
                     for table in before
                 } == before
             else:
-                produce()
-                assert clients.ready_names() == ("fake",)
+                produced = produce()
+                if producer == "control":
+                    # 入队只登记同一个 Run；Worker 认领后才按 Run scope 准备 MCP。
+                    assert clients.ready_names() == ()
+                    assert not startup.exists()
+                    assert model.calls == 0
+                    run_id = produced["run"]["run_id"]
+                    job = stack.claims.job_for_run(run_id)
+                    assert job is not None and job.state == "pending"
+                    model_events = {"model.intent", "model.result"}
+                    assert model_events <= EVENT_TYPES
+                    assert model_events.isdisjoint(e.type for e in log.read_run(run_id))
+                    driving_model = ScriptedModel(
+                        [ModelResponse("end_turn", content="done")]
+                    )
+                    worker = Worker(stack, model=driving_model, heartbeat_interval_ms=0)
+                    try:
+                        assert worker.run_once()
+                        assert worker.errors == []
+                        assert worker.run_ids == [run_id]
+                        assert stack.tasks.get_run(run_id).state == "succeeded"
+                        assert driving_model.calls == 1
+                        assert startup.read_bytes() == b"started"
+                        assert model_events <= {e.type for e in log.read_run(run_id)}
+                    finally:
+                        worker.close()
+                else:
+                    assert clients.ready_names() == ("fake",)
+                    assert startup.read_bytes() == b"started"
         finally:
             clients.close_all()
 
