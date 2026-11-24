@@ -524,7 +524,7 @@ class _HostCluster:
         stderr_path = self.data_root.parent / "host-stderr.log"
         with stderr_path.open("wb") as err_log:
             proc = subprocess.Popen(  # noqa: S603
-                [
+                slo_mod._native_python_command([  # noqa: SLF001
                     sys.executable,
                     str(Path(__file__).resolve()),
                     "--_child-role",
@@ -533,7 +533,7 @@ class _HostCluster:
                     str(self.data_root),
                     "--_ui-dir",
                     str(self.ui_dir),
-                ],
+                ]),
                 stdout=subprocess.DEVNULL,
                 stderr=err_log,
                 env=self.env,
@@ -541,21 +541,10 @@ class _HostCluster:
         self.proc = proc
         slo_mod._record_pid(proc.pid, self.tracked_pids)  # noqa: SLF001
 
-        def _ready() -> host.HostInfo | None:
-            if proc.poll() is not None:
-                with stderr_path.open("rb") as log:
-                    log.seek(max(0, stderr_path.stat().st_size - 600))
-                    tail = log.read(600).decode("utf-8", errors="replace")
-                raise RuntimeError(f"soak-host 提前退出 rc={proc.returncode}: {tail}")
-            try:
-                cand = host.read_host_info(self.data_root)
-            except host.HostError:
-                return None
-            if cand is not None and cand.port > 0 and host._http_alive(cand):  # noqa: SLF001
-                return cand
-            return None
-
-        self.info = slo_mod._wait_condition(_ready, timeout=25.0, interval=0.02)  # noqa: SLF001
+        with stderr_path.open("rb") as log:
+            self.info = slo_mod._wait_host_ready(  # noqa: SLF001
+                proc, self.data_root, log, timeout=25.0,
+            )
         slo_mod._record_lock_pids(  # noqa: SLF001
             self.data_root, self.tracked_pids, phase=f"soak_ready:{self.generation}",
         )

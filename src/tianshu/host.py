@@ -786,9 +786,11 @@ class DaemonSupervisor:
                 # 新会话：Host 被 Ctrl-C / 被杀，Daemon 不该跟着陪葬。
                 kwargs["start_new_session"] = True
             command = self.command
-            # Only the built-in Daemon command bypasses a venv launcher. Its
-            # native process PID must be the PID published in daemon.lock.
-            if command[:4] == [sys.executable, "-m", "tianshu", "daemon"]:
+            # A Windows venv/uv launcher can create a worker whose PID differs
+            # from the owned Popen handle. Run this interpreter directly for
+            # every supervised Python command, including test/SLO child roles,
+            # so daemon.lock and the readiness guard bind the process we own.
+            if command and command[0] == sys.executable:
                 command = [sys._base_executable, *command[1:]]
                 kwargs["env"] = {
                     **os.environ, "PYTHONPATH": os.pathsep.join(sys.path),

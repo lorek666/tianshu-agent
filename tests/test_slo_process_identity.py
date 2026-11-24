@@ -65,6 +65,98 @@ def test_ill_typed_stop_diagnostics_do_not_abort_capture(live_process, field, va
     assert all("terminate_outcome" not in row for row in tracked.host_stops)
 
 
+def test_cluster_launchers_use_the_native_interpreter(monkeypatch):
+    monkeypatch.setattr(slo.sys, "_base_executable", "/native/python")
+    command = [slo.sys.executable, "script.py", "--role", "host"]
+    assert slo._native_python_command(command) == ["/native/python", "script.py", "--role", "host"]
+    assert command[0] == slo.sys.executable, "launcher normalization must not mutate the subject"
+
+
+@pytest.mark.parametrize("foreign", ["pid", "birth"])
+def test_host_readiness_rejects_a_foreign_instance(tmp_path, monkeypatch, foreign):
+    candidate = slo.host.HostInfo(pid=43, port=47123, token="private", started_at=1)
+    proc = SimpleNamespace(pid=42, returncode=None, poll=lambda: None)
+    births = iter(["owned", "owned" if foreign == "pid" else "replacement"])
+    monkeypatch.setattr(slo, "process_birth_identity", lambda _pid: next(births))
+    monkeypatch.setattr(slo.host, "read_host_info", lambda _root: candidate)
+    monkeypatch.setattr(slo.host, "_http_alive", lambda _info: True)
+    now = [0.0]
+
+    def advance():
+        now[0] += 0.006
+        return now[0]
+
+    monkeypatch.setattr(slo.time, "monotonic", advance)
+    monkeypatch.setattr(slo.time, "sleep", lambda _seconds: None)
+    with pytest.raises(RuntimeError, match="不属于本次启动"):
+        slo._wait_host_ready(proc, tmp_path, io.BytesIO(), timeout=0.01)
+
+
+def test_host_readiness_early_exit_preserves_stderr_evidence(tmp_path):
+    proc = SimpleNamespace(pid=42, returncode=7, poll=lambda: 7)
+    with pytest.raises(RuntimeError, match="rc=7.*ownership diagnostic"):
+        slo._wait_host_ready(
+            proc, tmp_path, io.BytesIO(b"ownership diagnostic\n"), timeout=1.0,
+        )
+
+
+@pytest.mark.parametrize(("ready_seconds", "state_available"), [(24.0, False), (29.0, True)])
+def test_host_startup_uses_one_total_deadline(
+    tmp_path, monkeypatch, ready_seconds, state_available,
+):
+    now = [0.0]
+    stderr = io.BytesIO()
+    proc = SimpleNamespace(
+        pid=42, returncode=None, poll=lambda: None, wait=lambda timeout: 0,
+    )
+    info = slo.host.HostInfo(pid=42, port=47123, token="private", started_at=1)
+    http_calls = []
+    readiness_timeouts = []
+
+    def launch(*_args, **_kwargs):
+        now[0] += 5.0
+        return proc, stderr
+
+    def ready(*_args, **kwargs):
+        readiness_timeouts.append(kwargs["timeout"])
+        now[0] += ready_seconds
+        return info
+
+    def request(*_args, **_kwargs):
+        http_calls.append(now[0])
+        if state_available:
+            return 200, {"ok": True}
+        raise OSError("not ready")
+
+    monkeypatch.setattr(slo.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(slo.time, "perf_counter", lambda: 0.0)
+    monkeypatch.setattr(slo.time, "sleep", lambda seconds: now.__setitem__(0, now[0] + seconds))
+    monkeypatch.setattr(slo, "_launch_host", launch)
+    monkeypatch.setattr(slo, "_wait_host_ready", ready)
+    monkeypatch.setattr(slo, "_http_request", request)
+    monkeypatch.setattr(slo, "_record_pid", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(slo, "_record_lock_pids", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(slo, "_capture_host_stop", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(slo.host, "stop_host", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(RuntimeError, match="30s 内未进入就绪状态"):
+        slo._measure_one_host_startup(
+            tmp_path,
+            ui_dir=tmp_path,
+            authority_root=tmp_path / "authority",
+            lock_root=tmp_path / "locks",
+            expect_warm_events=0,
+            tracked_pids=slo.TrackedPids(),
+        )
+    assert readiness_timeouts == [25.0]
+    if state_available:
+        assert now[0] == 34.0
+        assert http_calls == []
+    else:
+        assert now[0] < 31.0
+        assert http_calls
+
+
 def test_recovery_daemon_launcher_drains_unread_stderr_to_a_file():
     payload_bytes = 256 * 1024
     proc, stderr = slo._launch_recovery_daemon(

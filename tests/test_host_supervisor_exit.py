@@ -19,25 +19,31 @@ import pytest
 from tianshu import host
 
 
+def _child_env():
+    # Child protocols and the Host banner must not depend on the Windows OEM
+    # code page inherited by a CI runner.
+    return {**os.environ, "PYTHONIOENCODING": "utf-8"}
+
+
 @pytest.fixture
 def held_child():
     # Use the interpreter itself, not a Windows venv launcher plus its worker.
     child = subprocess.Popen(
         [sys._base_executable, "-u", "-c",
-         "import sys; print('ready', flush=True); sys.stdin.buffer.read(1)"],
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+         "import os,sys; os.write(1, b'ready\\n'); sys.stdin.buffer.read(1)"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, env=_child_env(),
     )
-    assert child.stdout is not None and child.stdout.readline() == b"ready\n"
     try:
+        assert child.stdout is not None and child.stdout.readline() == b"ready\n"
         yield child
     finally:
-        assert child.stdin is not None
-        child.stdin.close()
+        if child.stdin is not None:
+            child.stdin.close()
         try:
             child.wait(timeout=10)
         finally:
-            assert child.stdout is not None
-            child.stdout.close()
+            if child.stdout is not None:
+                child.stdout.close()
 
 
 def test_stop_waits_for_owned_child_after_endpoint_is_gone(
@@ -165,7 +171,7 @@ raise SystemExit(host.run_host(
         with (root / "stderr.log").open("wb") as err:
             proc = subprocess.Popen(
                 [sys.executable, "-u", "-c", script, str(root)],
-                stdout=subprocess.DEVNULL, stderr=err,
+                stdout=subprocess.DEVNULL, stderr=err, env=_child_env(),
             )
         try:
             deadline = time.monotonic() + 20
@@ -420,7 +426,7 @@ raise SystemExit(host.run_host(
             child = subprocess.Popen(
                 [sys.executable, "-m", "tianshu", "daemon", "--model", "scripted",
                  "--data-root", str(root)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=_child_env(),
             )
             children.append(child)
             wait_until(lambda: child.poll() is not None or ipc.probe(root, timeout=0.1))
@@ -432,7 +438,7 @@ raise SystemExit(host.run_host(
             with (root / "stderr.log").open("wb") as stderr:
                 proc = subprocess.Popen(
                     [sys.executable, "-u", "-c", script, str(root)],
-                    stdout=subprocess.DEVNULL, stderr=stderr,
+                    stdout=subprocess.DEVNULL, stderr=stderr, env=_child_env(),
                 )
             wait_until(lambda: (root / "handshake").exists() or proc.poll() is not None)
             assert (root / "handshake").exists(), "Host did not bind a real handshake"
@@ -487,7 +493,7 @@ def test_owned_supervisor_does_not_adopt_an_endpoint_replaced_before_stop(monkey
             assert daemon.request_shutdown(root, expected_instance_id=owner["instance_id"])
             assert owned.wait(timeout=10) == 0
             replacement = subprocess.Popen(
-                command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=_child_env(),
             )
             deadline = time.monotonic() + 20
             while not ipc.probe(root, timeout=0.1):
@@ -533,7 +539,8 @@ from tianshu import ipc
 root = Path(sys.argv[1])
 ipc.load_authkey(root)
 listener = Listener(ipc.endpoint_path(root), family=ipc._family(), authkey=None)
-print("ready", flush=True)
+import os
+os.write(1, b"ready\n")
 connections = []
 while True:
     connections.append(listener.accept())
@@ -562,7 +569,7 @@ raise SystemExit(result)
         root = Path(directory)
         server = subprocess.Popen(
             [sys.executable, "-u", "-c", server_script, str(root)],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=_child_env(),
         )
         proc = None
         try:
@@ -633,7 +640,7 @@ else:
         root = Path(directory)
         daemon_proc = subprocess.Popen(
             [sys.executable, "-u", "-c", daemon_script, str(root)],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=_child_env(),
         )
         proc = None
         try:
@@ -643,7 +650,7 @@ else:
                 threading.Event().wait(0.01)
             proc = subprocess.Popen(
                 [sys.executable, "-u", "-c", supervisor_script, str(root)],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=_child_env(),
             )
             try:
                 stdout, stderr = proc.communicate(timeout=5)
@@ -740,7 +747,7 @@ raise SystemExit(host.run_host(
                 daemon_proc = subprocess.Popen(
                     [sys.executable, "-m", "tianshu", "daemon", "--model", "scripted",
                      "--data-root", str(root)],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=_child_env(),
                 )
                 deadline = time.monotonic() + 20
                 while not ipc.probe(root, timeout=0.1):
@@ -847,7 +854,7 @@ raise SystemExit(host.run_host(
                     first = subprocess.Popen(
                         [sys.executable, "-u", "-c", first_script, str(root),
                          str(reserved.getsockname()[1])],
-                        stdout=subprocess.DEVNULL, stderr=err,
+                        stdout=subprocess.DEVNULL, stderr=err, env=_child_env(),
                     )
                 deadline = time.monotonic() + 30
                 while not (root / "cleanup-paused").exists():
@@ -859,7 +866,7 @@ raise SystemExit(host.run_host(
                 with (root / "second.stderr").open("wb") as err:
                     second = subprocess.Popen(
                         [sys.executable, "-u", "-c", second_script, str(root)],
-                        stdout=subprocess.DEVNULL, stderr=err,
+                        stdout=subprocess.DEVNULL, stderr=err, env=_child_env(),
                     )
                 deadline = time.monotonic() + 2
                 takeover_before_release = False
@@ -992,7 +999,7 @@ def test_owned_readiness_cannot_adopt_another_process_endpoint():
             replacement = subprocess.Popen(
                 [sys.executable, "-m", "tianshu", "daemon", "--model", "scripted",
                  "--data-root", str(root)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=_child_env(),
             )
             worker.join(timeout=15)
             assert not worker.is_alive()
@@ -1101,7 +1108,7 @@ raise SystemExit(host.run_host(
             child = subprocess.Popen(
                 [sys.executable, "-m", "tianshu", "daemon", "--model", "scripted",
                  "--data-root", str(root)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=_child_env(),
             )
             children.append(child)
 
@@ -1117,7 +1124,7 @@ raise SystemExit(host.run_host(
             with (root / "stderr.log").open("wb") as stderr:
                 proc = subprocess.Popen(
                     [sys.executable, "-u", "-c", script, str(root)],
-                    stdout=subprocess.DEVNULL, stderr=stderr,
+                    stdout=subprocess.DEVNULL, stderr=stderr, env=_child_env(),
                 )
 
             def serving():

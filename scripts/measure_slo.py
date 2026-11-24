@@ -587,6 +587,48 @@ def _capture_host_stop(
         tracked_pids.host_stops.append(facts)
 
 
+def _native_python_command(command: list[str]) -> list[str]:
+    """Own the native interpreter process, not a Windows venv/uv launcher."""
+    if command and command[0] == sys.executable:
+        return [sys._base_executable, *command[1:]]
+    return command
+
+
+def _stderr_tail(stderr: BinaryIO, limit: int = 600) -> str:
+    stderr.seek(0, os.SEEK_END)
+    stderr.seek(max(0, stderr.tell() - limit))
+    return stderr.read(limit).decode("utf-8", errors="replace")
+
+
+def _wait_host_ready(
+    proc: subprocess.Popen[bytes], data_root: Path, stderr: BinaryIO, *, timeout: float,
+) -> host.HostInfo:
+    """Bind readiness to the spawned Host PID and its OS birth identity."""
+    birth = process_birth_identity(proc.pid)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            raise RuntimeError(
+                f"Host 启动进程提前退出 rc={proc.returncode}: {_stderr_tail(stderr)}"
+            )
+        # An occupied endpoint or a readable lock is not proof that it belongs
+        # to this cluster. Unreadable/reused identity must never be accepted.
+        if birth is None or process_birth_identity(proc.pid) != birth:
+            time.sleep(0.005)
+            continue
+        try:
+            candidate = host.read_host_info(data_root)
+        except host.HostError:
+            candidate = None
+        if (
+            candidate is not None and candidate.pid == proc.pid
+            and candidate.port > 0 and host._http_alive(candidate)  # noqa: SLF001
+        ):
+            return candidate
+        time.sleep(0.005)
+    raise RuntimeError(f"Host 在 {timeout}s 内未就绪，或就绪实例不属于本次启动的进程")
+
+
 def _launch_host(
     command: list[str], *, env: dict[str, str],
 ) -> tuple[subprocess.Popen[bytes], BinaryIO]:
@@ -595,7 +637,7 @@ def _launch_host(
     stderr = tempfile.TemporaryFile()
     try:
         return subprocess.Popen(  # noqa: S603 - caller constructs a fixed Host argv
-            command, stdout=subprocess.DEVNULL, stderr=stderr, env=env,
+            _native_python_command(command), stdout=subprocess.DEVNULL, stderr=stderr, env=env,
         ), stderr
     except BaseException:
         stderr.close()
@@ -1487,6 +1529,7 @@ def _measure_one_host_startup(
         lock_root=lock_root,
     )
     t0 = time.perf_counter()
+    startup_deadline = time.monotonic() + 30.0
     proc, stderr_log = _launch_host(
         [
             sys.executable,
@@ -1507,43 +1550,35 @@ def _measure_one_host_startup(
     )
     _record_pid(proc.pid, tracked_pids)
     try:
-        deadline = time.monotonic() + 30.0
-        info: host.HostInfo | None = None
-        while time.monotonic() < deadline:
+        remaining = startup_deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError("Host 在 30s 内未进入就绪状态")
+        info = _wait_host_ready(
+            proc, data_root, stderr_log, timeout=remaining,
+        )
+        if time.monotonic() >= startup_deadline:
+            raise RuntimeError("Host 在 30s 内未进入就绪状态")
+        while True:
             try:
-                candidate = host.read_host_info(data_root)
-            except host.HostError:
-                candidate = None
-            if candidate is not None and candidate.port > 0:
-                try:
-                    st, state_resp = _http_request(
-                        candidate.port,
-                        "GET",
-                        "/state",
-                        candidate.token,
-                        timeout=2.0,
-                    )
-                    if st == 200 and state_resp.get("ok") is True:
-                        info = candidate
-                        if expect_warm_events > 0:
-                            assert (
-                                int(state_resp["result"]["event_seq_head"])
-                                >= expect_warm_events
-                            )
-                        break
-                except (OSError, ValueError):
-                    pass
-            if proc.poll() is not None:
-                stderr_log.seek(0, os.SEEK_END)
-                stderr_log.seek(max(0, stderr_log.tell() - 600))
-                stderr_txt = stderr_log.read(600).decode("utf-8", errors="replace")
-                raise RuntimeError(
-                    f"Host 启动进程提前退出 rc={proc.returncode}: {stderr_txt[-600:]}"
+                st, state_resp = _http_request(
+                    info.port, "GET", "/state", info.token, timeout=2.0,
                 )
+                if st == 200 and state_resp.get("ok") is True:
+                    if expect_warm_events > 0:
+                        assert (
+                            int(state_resp["result"]["event_seq_head"])
+                            >= expect_warm_events
+                        )
+                    break
+            except (OSError, ValueError):
+                pass
+            if proc.poll() is not None:
+                raise RuntimeError(
+                    f"Host 启动进程提前退出 rc={proc.returncode}: {_stderr_tail(stderr_log)}"
+                )
+            if time.monotonic() >= startup_deadline:
+                raise RuntimeError("Host 在 30s 内未进入就绪状态")
             time.sleep(0.005)
-
-        if info is None:
-            raise RuntimeError("Host 在 30s 内未就绪")
 
         st_create, create_resp = _http_request(
             info.port,
@@ -1881,17 +1916,7 @@ def run_suite2_cancel_and_approval(
     post_cancel_dispatched = 0
 
     try:
-        info: host.HostInfo = _wait_condition(
-            lambda: (
-                cand
-                if (cand := host.read_host_info(s2_root)) is not None
-                and cand.port > 0
-                and host._http_alive(cand)  # noqa: SLF001
-                else None
-            ),
-            timeout=25.0,
-            interval=0.02,
-        )
+        info = _wait_host_ready(proc, s2_root, stderr_log, timeout=25.0)
         _record_lock_pids(s2_root, tracked_pids, phase="suite2_ready")
 
         ctrl_ipc = (
@@ -2037,7 +2062,9 @@ def run_suite2_cancel_and_approval(
                     "params": {
                         "goal": f"slow-tool:{tag}:{ws}",
                         "workspaces": [{"root_path": str(ws), "mode": "writable"}],
-                        "allow_exec_cmd": [sys.executable],
+                        # Supervised Python roles run natively on Windows; the
+                        # allowlist must name that exact controlled interpreter.
+                        "allow_exec_cmd": [sys._base_executable],
                     },
                 },
             )
