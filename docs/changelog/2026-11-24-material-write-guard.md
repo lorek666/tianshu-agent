@@ -21,11 +21,7 @@ blob 仍先于事件事务或 manifest 引用持久化；拆分 lease 至多留�
 
 最终本机全量 `pytest` 退出码为 0；托管 required CI 结果以关联 PR 的 Actions 日志为准，不用本机通过替代。
 
-独立第二读者只读审阅完整 `restore_access.py`、全部生产调用点与完整回归文件，结论为 **PASS**；复审绑定 code/test tree 的 `git diff --binary` SHA256：
-
-```text
-00d58ddd286a295387e9e62bf05a7f5c8a7f4f50b25b4f5208bde546af7d7a98
-```
+独立第二读者只读审阅完整 `restore_access.py`、全部生产调用点与完整回归文件，首轮结论为 **PASS**；当时记录绑定的是 `git diff --binary` SHA256 `00d58ddd286a295387e9e62bf05a7f5c8a7f4f50b25b4f5208bde546af7d7a98`。该口径只保留作历史，不作为现行 code/test tree 绑定；后续 Windows 跟进已按“仓库相对路径 + 实际文件字节”重新计算并最终取代首轮结论。
 
 新增的 snapshot preimage 负控预置真实逃逸文件，而不是悬空链接：在隔离工作树仅回退“先验 target 再判断 exists”这一处后，用例确定性失败于 `DID NOT RAISE RestoreScopeBusy`；最终候选同一用例通过，并断言保留区文件字节未变、manifest 未提交。
 
@@ -36,6 +32,14 @@ blob 仍先于事件事务或 manifest 引用持久化；拆分 lease 至多留�
 - 夹具按真实 target 种类创建链接。新增确定性 `WinError 267` 注入负控、现有文件 leaf symlink 的同根正控，以及 foreign-root / nonstandard 逃逸负控；本机 mac-arm64 定向 8 passed、完整 access 文件 71 passed、受影响 restore/snapshot/event/material 回归 770 passed / 1 skipped。未在本机运行 Windows，不能称 Windows 已验证；须由主代理在新 code/test tree 上重跑托管 Windows shard0 与全量门禁。
 - Windows 跟进的独立第二读者结论为 **已修**，复核 code/test tree 的路径+实际字节 SHA256 为 `b8b434b7e9d8f581b2f1ceecd62b2b4ba93ea26c35a4b4e7ee1d8b79f362a279`。探针覆盖相对/绝对/链式/祖先链接、循环终止、`WinError 267` 与 readlink 失败拒绝、target 先于 `exists()`，以及同根正控和 foreign/nonstandard 负控。1200 层链接触发 `RecursionError` 的非阻断观察仍拒绝写入，未发现可达绕过；托管 Windows shard0 仍是独立平台门禁。
 - Windows 跟进后的新 code/test tree 已在本机 mac-arm64 重跑完整 `uv run --frozen pytest`，退出码为 0；锁文件、Ruff、diff 与文档相对链接门禁通过。该结果不替代托管 Windows shard0。
+
+## PR #231 Windows 扩展路径前缀二次跟进（2026-11-24）
+
+- 上一轮的托管 Windows shard0 不是超时：新增 `WinError 267` 注入用例在材料入口抛出了 `RestoreAccessError`，没有观察到预期的 `RestoreScopeBusy`。该红推翻了上一轮绑定 `b8b434b7…` 的“已修”结论，历史记录保留但不作为当前证据。
+- 根因是 Windows `os.readlink()` 可返回 `\\?\C:\…` 或 `\\?\UNC\server\share\…`。显式链接守卫已经读取到真实目标，但范围比较仍把扩展长度前缀当成路径的一部分，因而匹配不到普通形式的保留恢复根；随后 canonicalize 才因注入的 `WinError 267` 失败。
+- 恢复范围键现在仅折叠 Windows 驱动盘与 UNC 的这两种扩展前缀，再交给既有 `overlap_key()`；链接递归、实际打开和写入仍使用原始访问路径，不把比较用的规范化结果误当成文件访问结果。target 与链接循环保护也复用同一范围键。
+- 新增驱动盘/UNC 前缀等价回归；现有 `WinError 267` 负控在 Windows 上额外强制 `readlink()` 返回扩展前缀，确保托管平台覆盖真实失败形态。仅在内存中撤回前缀折叠后，新回归确定性失败；恢复实现后通过。完整 access 回归、受影响域回归、锁文件、Ruff 与 diff 按 Tier 1 重跑，独立第二读者须绑定新 code/test tree；托管 Windows shard0 全绿前不销账。
+- 独立第二读者完整阅读生产实现与对应回归后结论为 **已修**，复核 code/test/schema tree（`src` / `tests` / `schemas` 的 tracked + untracked 实际文件字节，按仓库相对路径排序）SHA256 为 `d0a47f386db17c65f8129eb5be0b0e1cd0c02232505dcd5dce5a8c0a05d8fa73`。探针覆盖相对/绝对/链式/祖先链接、realpath 失败、循环终止、readlink 失败拒绝、target 先于 `exists()`、标准域与私有容器边界；未发现新增绕过或异常吞没。该结论不替代原生 Windows 与托管 shard0。
 
 ## 残留边界
 

@@ -85,10 +85,19 @@ def _absolute_target(path: Path) -> Path:
         raise RestoreAccessError(f"目标路径不能规范化：{value}") from exc
 
 
+def _scope_key(path: Path | str) -> str:
+    text = str(path)
+    if text.startswith("\\\\?\\UNC\\"):
+        text = "\\\\" + text[8:]
+    elif text.startswith("\\\\?\\"):
+        text = text[4:]
+    return overlap_key(text)
+
+
 def _target_scope_keys(path: Path) -> set[str]:
-    keys = {overlap_key(str(path)), overlap_key(str(path.parent))}
+    keys = {_scope_key(path), _scope_key(path.parent)}
     try:
-        keys.add(overlap_key(str(path.resolve(strict=False))))
+        keys.add(_scope_key(path.resolve(strict=False)))
     except (OSError, RuntimeError):
         pass
     return keys
@@ -96,7 +105,7 @@ def _target_scope_keys(path: Path) -> set[str]:
 
 def _in_scope(target: Path, root: Path) -> bool:
     for target_key in _target_scope_keys(target):
-        if is_ancestor_or_self(overlap_key(str(root)), target_key):
+        if is_ancestor_or_self(_scope_key(root), target_key):
             return True
     return False
 
@@ -465,7 +474,7 @@ def _active_scope_blocks(
             matched = True
         if not matched and sealed is not None:
             binding = sealed.binding
-            if overlap_key(binding.final_database.text) in target_keys:
+            if _scope_key(binding.final_database.text) in target_keys:
                 matched = True
             elif existing_identity is not None and binding.database_identity == existing_identity:
                 matched = True
@@ -569,7 +578,7 @@ def _ensure_path_not_held(
     if str(path) == ":memory:":
         return
     target = _absolute_target(path)
-    target_key = overlap_key(str(target))
+    target_key = _scope_key(target)
     if target_key in seen:
         return
     seen.add(target_key)

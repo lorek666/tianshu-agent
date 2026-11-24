@@ -645,6 +645,17 @@ def _symlink_or_skip(link: Path, target: Path) -> None:
         pytest.skip(f"当前平台不能创建符号链接：{exc}")
 
 
+@pytest.mark.parametrize(
+    ("extended", "plain"),
+    [
+        (r"\\?\C:\data\reserved\leaf", r"C:\data\reserved\leaf"),
+        (r"\\?\UNC\server\share\reserved\leaf", r"\\server\share\reserved\leaf"),
+    ],
+)
+def test_restore_scope_key_folds_windows_extended_readlink_paths(extended, plain):
+    assert restore_access._scope_key(extended) == restore_access._scope_key(plain)
+
+
 def test_snapshot_manifest_static_subdirectory_symlink_respects_reserved_root(
     tmp_path, registry, active_reserved_root
 ):
@@ -744,6 +755,7 @@ def test_material_scope_guard_checks_leaf_link_when_realpath_fails(
         target.parent.mkdir(parents=True)
         _symlink_or_skip(target, escaped)
         original_resolve = Path.resolve
+        original_readlink = os.readlink
 
         def fail_leaf_realpath(path, *args, **kwargs):
             if path == target:
@@ -753,7 +765,14 @@ def test_material_scope_guard_checks_leaf_link_when_realpath_fails(
                 raise NotADirectoryError("injected Windows leaf realpath WinError 267")
             return original_resolve(path, *args, **kwargs)
 
+        def extended_readlink(path):
+            linked = original_readlink(path)
+            if os.name == "nt" and Path(path) == target and not linked.startswith("\\\\?\\"):
+                return "\\\\?\\" + linked
+            return linked
+
         monkeypatch.setattr(Path, "resolve", fail_leaf_realpath)
+        monkeypatch.setattr(os, "readlink", extended_readlink)
         with pytest.raises(RestoreScopeBusy):
             restore_access.ensure_material_write_allowed(target, owner_log=owner)
         assert target.is_symlink()
