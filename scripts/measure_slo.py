@@ -47,7 +47,8 @@ from collections import Counter
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from time import monotonic_ns
+from typing import Any, BinaryIO
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = REPO_ROOT / "src"
@@ -129,7 +130,17 @@ IN_FLIGHT_HOLD_MS = 40.0
 SUMMARY_CONSTRAINT = "硬约束：报告只用中文。"
 SUMMARY_BUDGET_BYTES = 3000
 SUMMARY_ROUNDS = 6
-type TrackedPids = dict[int, set[str | None]]
+
+
+class TrackedPids(dict[int, set[str | None]]):
+    """Native observations, with one binding per logical lock owner."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.lock_owners: set[str] = set()
+        self.sources: dict[int, set[str]] = {}
+        self.bindings: dict[tuple[int, str], dict[str, Any]] = {}
+        self.host_stops: list[dict[str, Any]] = []
 
 
 class SloConfigError(Exception):
@@ -351,6 +362,7 @@ def _isolated_env(
             "TIANSHU_SANDBOX_BACKEND": "local_fs",
             "TIANSHU_NET_MIN_INTERVAL_S": "0",
             "TIANSHU_CREDENTIAL_BACKEND": "env",
+            "TIANSHU_HOST_PROCESS_DIAGNOSTICS": "1",
         }
     )
     if extra:
@@ -468,33 +480,168 @@ def _http_request(
     return status, parsed
 
 
-def _record_pid(pid: int, tracked_pids: TrackedPids) -> None:
+def _record_pid(
+    pid: int, tracked_pids: dict[int, set[str | None]], *, source: str = "managed_root",
+    phase: str = "started",
+) -> None:
     # Keep every observed instance if the OS recycles a PID during this run.
-    tracked_pids.setdefault(pid, set()).add(process_birth_identity(pid))
+    birth = process_birth_identity(pid)
+    tracked_pids.setdefault(pid, set()).add(birth)
+    if isinstance(tracked_pids, TrackedPids):
+        tracked_pids.sources.setdefault(pid, set()).add(source)
+        _observe_binding(pid, source, birth, tracked_pids, phase=phase, bind=True)
 
 
-def _record_lock_pids(data_root: Path, tracked_pids: TrackedPids) -> None:
+def _observe_binding(
+    pid: int, source: str, birth: str | None, tracked_pids: TrackedPids, *,
+    phase: str, bind: bool,
+) -> None:
+    now = monotonic_ns()
+    row = tracked_pids.bindings.setdefault((pid, source), {
+        "pid": pid, "source": source, "first_birth": birth,
+        "first_phase": phase, "first_monotonic_ns": now, "recorded_births": [],
+    })
+    if bind and birth not in row["recorded_births"]:
+        row["recorded_births"].append(birth)
+    row.update(last_birth=birth, last_phase=phase, last_monotonic_ns=now)
+
+
+def _record_lock_pids(
+    data_root: Path, tracked_pids: TrackedPids, *, phase: str = "sample",
+) -> None:
     for lock_name in ("host.lock", "daemon.lock"):
         p = ipc.run_dir(data_root) / lock_name
         try:
             obj = json.loads(p.read_bytes().decode("utf-8"))
-            pid = obj.get("pid")
-            if isinstance(pid, int) and pid > 0:
-                _record_pid(pid, tracked_pids)
         except (OSError, ValueError, UnicodeDecodeError):
             continue
+        pid = obj.get("pid")
+        if not isinstance(pid, int) or pid <= 0:
+            continue
+        instance = obj.get("token" if lock_name == "host.lock" else "instance_id")
+        started = obj.get("started_at")
+        owner = None
+        if isinstance(instance, str) and instance and type(started) is int and started > 0:
+            key = (str(p.resolve()), pid, started, instance)
+            owner = hashlib.sha256(repr(key).encode("utf-8")).hexdigest()
+        source = f"{lock_name}:{owner or 'unbound'}"
+        if owner is not None and owner in tracked_pids.lock_owners:
+            # Observe a reread for diagnosis, without assigning its current PID
+            # occupant to the old owner or erasing an unreadable initial birth.
+            _observe_binding(
+                pid, source, process_birth_identity(pid), tracked_pids,
+                phase=phase, bind=False,
+            )
+            continue
+        # Re-reading an unchanged lock cannot make a later PID occupant belong
+        # to that owner. An unreadable first identity remains conservative.
+        _record_pid(pid, tracked_pids, source=source, phase=phase)
+        if owner is not None:
+            tracked_pids.lock_owners.add(owner)
 
 
-def _find_orphan_pids(tracked_pids: TrackedPids, marker_root: Path) -> list[int]:
+def _capture_host_stop(
+    proc: subprocess.Popen[bytes], tracked_pids: TrackedPids, stderr: BinaryIO, *,
+    phase: str,
+) -> None:
+    """Keep actual owned-handle facts; never infer that a launcher covers descendants."""
+    tracked_pids.host_stops.append({
+        "source": "owned_host_root", "observer_pid": os.getpid(), "pid": proc.pid,
+        "phase": phase, "monotonic_ns": monotonic_ns(), "returncode": proc.returncode,
+    })
+    stderr.seek(0, os.SEEK_END)
+    stderr.seek(max(0, stderr.tell() - 32768))
+    for line in stderr.read(32768).splitlines():
+        try:
+            obj = json.loads(line)
+        except (ValueError, UnicodeDecodeError):
+            continue
+        row = obj.get("host_supervisor_process") if isinstance(obj, dict) else None
+        if (
+            not isinstance(row, dict) or not isinstance(row.get("action"), str)
+            or row["action"] not in {
+                "wait_exited", "wait_timeout", "terminate_requested",
+                "final_wait_exited", "final_wait_timeout", "wait_error", "final_wait_error",
+            }
+        ):
+            continue
+        if any(type(row.get(key)) is not int for key in ("pid", "observer_pid", "monotonic_ns")):
+            continue
+        if row.get("returncode") is not None and type(row["returncode"]) is not int:
+            continue
+        facts = {key: row[key] for key in ("pid", "observer_pid", "monotonic_ns", "action")}
+        facts.update(source="owned_daemon_root", phase=phase, returncode=row.get("returncode"))
+        if type(row.get("errno")) is int:
+            facts["errno"] = row["errno"]
+        result = row.get("result")
+        if (
+            isinstance(result, dict) and isinstance(result.get("outcome"), str)
+            and result["outcome"] in {
+                "command_exited", "command_timeout", "signal_sent", "os_error",
+            }
+        ):
+            facts["terminate_outcome"] = result["outcome"]
+            for key in ("errno", "returncode"):
+                if type(result.get(key)) is int:
+                    facts[f"terminate_{key}"] = result[key]
+        tracked_pids.host_stops.append(facts)
+
+
+def _launch_host(
+    command: list[str], *, env: dict[str, str],
+) -> tuple[subprocess.Popen[bytes], BinaryIO]:
+    # A native file cannot block shutdown on an unread stderr pipe, and remains
+    # readable if a separate launcher exits before the actual Host.
+    stderr = tempfile.TemporaryFile()
+    try:
+        return subprocess.Popen(  # noqa: S603 - caller constructs a fixed Host argv
+            command, stdout=subprocess.DEVNULL, stderr=stderr, env=env,
+        ), stderr
+    except BaseException:
+        stderr.close()
+        raise
+
+
+def _launch_recovery_daemon(
+    command: list[str], *, env: dict[str, str],
+) -> tuple[subprocess.Popen[bytes], BinaryIO]:
+    stderr = tempfile.TemporaryFile()
+    try:
+        return subprocess.Popen(  # noqa: S603 - caller constructs a fixed Daemon argv
+            command, stdout=subprocess.DEVNULL, stderr=stderr, env=env,
+        ), stderr
+    except BaseException:
+        stderr.close()
+        raise
+
+
+def _find_orphan_pids(
+    tracked_pids: dict[int, set[str | None]], marker_root: Path,
+) -> list[int]:
     me = os.getpid()
     identities = {pid: set(births) for pid, births in tracked_pids.items()}
+    observations: dict[int, dict[str, Any]] = {}
 
     def still_alive(pid: int) -> bool:
-        if not pid_alive(pid):
-            return False
-        current = process_birth_identity(pid)
+        running = pid_alive(pid)
+        current = process_birth_identity(pid) if running else None
+        retained = running and (
+            current is None or None in identities[pid] or current in identities[pid]
+        )
+        observations[pid] = {
+            "pid": pid, "recorded_births": sorted(identities[pid], key=str),
+            "pid_alive": running, "current_birth": current,
+            "liveness_source": "leases.pid_alive", "native_queries_atomic": False,
+            "monotonic_ns": monotonic_ns(),
+            "reason": (
+                "not_alive" if not running else
+                "unreadable_current_identity" if current is None else
+                "unreadable_recorded_identity" if None in identities[pid] else
+                "recorded_instance_running" if retained else "different_instance"
+            ),
+        }
         # An unreadable identity cannot prove the recorded process has exited.
-        return current is None or None in identities[pid] or current in identities[pid]
+        return retained
 
     alive: set[int] = set()
     for pid in sorted(tracked_pids):
@@ -521,8 +668,13 @@ def _find_orphan_pids(tracked_pids: TrackedPids, marker_root: Path) -> list[int]
                     if pid_part.isdigit():
                         found_pid = int(pid_part)
                         if found_pid != me and pid_alive(found_pid) is True:
-                            _record_pid(found_pid, identities)
-                            alive.add(found_pid)
+                            _record_pid(
+                                found_pid, tracked_pids, source="command_line_marker",
+                                phase="orphan_scan",
+                            )
+                            identities[found_pid] = set(tracked_pids[found_pid])
+                            if still_alive(found_pid):
+                                alive.add(found_pid)
         except OSError:
             pass
     if not alive:
@@ -533,6 +685,19 @@ def _find_orphan_pids(tracked_pids: TrackedPids, marker_root: Path) -> list[int]
         alive = {pid for pid in alive if still_alive(pid)}
         if alive:
             time.sleep(0.03)
+    if alive:
+        evidence: dict[str, Any] = {
+            "orphan_process_observations": [observations[pid] for pid in sorted(alive)],
+        }
+        if isinstance(tracked_pids, TrackedPids):
+            evidence["process_sources"] = {
+                str(pid): sorted(tracked_pids.sources.get(pid, set())) for pid in sorted(alive)
+            }
+            evidence["process_bindings"] = [
+                row for (pid, _), row in tracked_pids.bindings.items() if pid in alive
+            ]
+            evidence["host_stop_observations"] = tracked_pids.host_stops
+        print(json.dumps(evidence, sort_keys=True), file=sys.stderr, flush=True)
     return sorted(alive)
 
 
@@ -1322,7 +1487,7 @@ def _measure_one_host_startup(
         lock_root=lock_root,
     )
     t0 = time.perf_counter()
-    proc = subprocess.Popen(  # noqa: S603
+    proc, stderr_log = _launch_host(
         [
             sys.executable,
             "-m",
@@ -1338,8 +1503,6 @@ def _measure_one_host_startup(
             "--model",
             "scripted",
         ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
         env=env,
     )
     _record_pid(proc.pid, tracked_pids)
@@ -1371,9 +1534,9 @@ def _measure_one_host_startup(
                 except (OSError, ValueError):
                     pass
             if proc.poll() is not None:
-                stderr_txt = (proc.stderr.read() if proc.stderr else b"").decode(
-                    "utf-8", errors="replace"
-                )
+                stderr_log.seek(0, os.SEEK_END)
+                stderr_log.seek(max(0, stderr_log.tell() - 600))
+                stderr_txt = stderr_log.read(600).decode("utf-8", errors="replace")
                 raise RuntimeError(
                     f"Host 启动进程提前退出 rc={proc.returncode}: {stderr_txt[-600:]}"
                 )
@@ -1394,14 +1557,14 @@ def _measure_one_host_startup(
             raise RuntimeError(f"启动探针 task.create 失败：{st_create} {create_resp}")
 
         elapsed_ms = (time.perf_counter() - t0) * 1000.0
-        _record_lock_pids(data_root, tracked_pids)
+        _record_lock_pids(data_root, tracked_pids, phase="startup_ready")
 
         records = metrics_mod.read_metrics(data_root)
         ready_vals = metrics_mod.metric_values(records, metrics_mod.STARTUP_READY_MS)
         internal_ms = ready_vals[-1] if ready_vals else None
         return elapsed_ms, internal_ms
     finally:
-        _record_lock_pids(data_root, tracked_pids)
+        _record_lock_pids(data_root, tracked_pids, phase="startup_before_stop")
         with contextlib.redirect_stdout(io.StringIO()):
             host.stop_host(data_root, timeout=15.0)
         try:
@@ -1409,8 +1572,10 @@ def _measure_one_host_startup(
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait(timeout=5.0)
-        if proc.stderr is not None:
-            proc.stderr.close()
+        try:
+            _capture_host_stop(proc, tracked_pids, stderr_log, phase="startup_after_wait")
+        finally:
+            stderr_log.close()
 
 
 def run_suite1_startup(
@@ -1687,7 +1852,7 @@ def run_suite2_cancel_and_approval(
         authority_root=authority_root,
         lock_root=lock_root,
     )
-    proc = subprocess.Popen(  # noqa: S603
+    proc, stderr_log = _launch_host(
         [
             sys.executable,
             str(Path(__file__).resolve()),
@@ -1698,8 +1863,6 @@ def run_suite2_cancel_and_approval(
             "--_ui-dir",
             str(ui_dir),
         ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
         env=env,
     )
     _record_pid(proc.pid, tracked_pids)
@@ -1729,7 +1892,7 @@ def run_suite2_cancel_and_approval(
             timeout=25.0,
             interval=0.02,
         )
-        _record_lock_pids(s2_root, tracked_pids)
+        _record_lock_pids(s2_root, tracked_pids, phase="suite2_ready")
 
         ctrl_ipc = (
             _LabelledSuite2Client(s2_root, timeout=10.0, label=_STATE_CONTROL_LABEL)
@@ -2106,7 +2269,7 @@ def run_suite2_cancel_and_approval(
                 s.close()
             except OSError:
                 pass
-        _record_lock_pids(s2_root, tracked_pids)
+        _record_lock_pids(s2_root, tracked_pids, phase="suite2_before_stop")
         with contextlib.redirect_stdout(io.StringIO()):
             host.stop_host(s2_root, timeout=15.0)
         try:
@@ -2114,8 +2277,10 @@ def run_suite2_cancel_and_approval(
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait(timeout=5.0)
-        if proc.stderr is not None:
-            proc.stderr.close()
+        try:
+            _capture_host_stop(proc, tracked_pids, stderr_log, phase="suite2_after_wait")
+        finally:
+            stderr_log.close()
         shutil.rmtree(s2_root, ignore_errors=True)
 
 
@@ -2128,7 +2293,7 @@ def run_state_pressure_diagnostic(*, repeats: int = 2) -> tuple[dict[str, Any], 
     temp_base = _short_temp_dir("tsst-")
     authority_root = temp_base / "auth"
     lock_root = temp_base / "locks"
-    tracked_pids: TrackedPids = {}
+    tracked_pids = TrackedPids()
     trials: list[dict[str, Any]] = []
     try:
         authority_root.mkdir()
@@ -2262,7 +2427,7 @@ def run_suite3_crash_recovery(
 
         # Step 2: 计时拉起真实 daemon 子进程执行启动恢复扫描与续跑/挂起
         t0 = time.perf_counter()
-        rec_proc = subprocess.Popen(  # noqa: S603
+        rec_proc, rec_stderr = _launch_recovery_daemon(
             [
                 sys.executable,
                 str(Path(__file__).resolve()),
@@ -2273,8 +2438,6 @@ def run_suite3_crash_recovery(
                 "--_scenario",
                 scenario,
             ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
             env=env,
         )
         _record_pid(rec_proc.pid, tracked_pids)
@@ -2316,8 +2479,7 @@ def run_suite3_crash_recovery(
             except subprocess.TimeoutExpired:
                 rec_proc.kill()
                 rec_proc.wait(timeout=5.0)
-            if rec_proc.stderr is not None:
-                rec_proc.stderr.close()
+            rec_stderr.close()
 
         # Step 3: 离线打开事件库与预算账本逐项核对不变量
         rec_metrics = metrics_mod.read_metrics(r_root)
@@ -2688,7 +2850,7 @@ def run_all_benchmarks(
     lock_root = temp_base / "locks"
     authority_root.mkdir(parents=True, exist_ok=True)
     lock_root.mkdir(parents=True, exist_ok=True)
-    tracked_pids: TrackedPids = {}
+    tracked_pids = TrackedPids()
 
     ds_profile = thresholds["dataset_profile"]
     warm_tasks = (

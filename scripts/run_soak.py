@@ -515,8 +515,10 @@ class _HostCluster:
         self.tracked_pids = tracked_pids
         self.proc: subprocess.Popen[bytes] | None = None
         self.info: host.HostInfo | None = None
+        self.generation = 0
 
     def start(self) -> host.HostInfo:
+        self.generation += 1
         # The parent cannot leave an unread PIPE attached during a ten-hour run.
         # This private transient log is not one of the D7 export materials.
         stderr_path = self.data_root.parent / "host-stderr.log"
@@ -554,11 +556,15 @@ class _HostCluster:
             return None
 
         self.info = slo_mod._wait_condition(_ready, timeout=25.0, interval=0.02)  # noqa: SLF001
-        slo_mod._record_lock_pids(self.data_root, self.tracked_pids)  # noqa: SLF001
+        slo_mod._record_lock_pids(  # noqa: SLF001
+            self.data_root, self.tracked_pids, phase=f"soak_ready:{self.generation}",
+        )
         return self.info
 
     def current_pids(self) -> tuple[int | None, int | None]:
-        slo_mod._record_lock_pids(self.data_root, self.tracked_pids)  # noqa: SLF001
+        slo_mod._record_lock_pids(  # noqa: SLF001
+            self.data_root, self.tracked_pids, phase=f"soak_sample:{self.generation}",
+        )
         h_pid: int | None = None
         d_pid: int | None = None
         try:
@@ -578,7 +584,9 @@ class _HostCluster:
 
     def stop(self) -> list[str]:
         failures = []
-        slo_mod._record_lock_pids(self.data_root, self.tracked_pids)  # noqa: SLF001
+        slo_mod._record_lock_pids(  # noqa: SLF001
+            self.data_root, self.tracked_pids, phase=f"soak_before_stop:{self.generation}",
+        )
         with contextlib.redirect_stdout(io.StringIO()):
             rc = host.stop_host(self.data_root, timeout=15.0)
         if rc != 0:
@@ -592,6 +600,11 @@ class _HostCluster:
                 self.proc.wait(timeout=5.0)
             if self.proc.returncode != 0:
                 failures.append(f"host_process_exit:{self.proc.returncode}")
+            with (self.data_root.parent / "host-stderr.log").open("rb") as stderr:
+                slo_mod._capture_host_stop(  # noqa: SLF001
+                    self.proc, self.tracked_pids, stderr,
+                    phase=f"soak_after_wait:{self.generation}",
+                )
             self.proc = None
         self.info = None
         return failures
@@ -805,7 +818,7 @@ def run_soak(
         authority_root=auth_root,
         lock_root=lock_root,
     )
-    tracked_pids: slo_mod.TrackedPids = {}
+    tracked_pids = slo_mod.TrackedPids()
     tracker = ProcessResourceTracker()
     samples: list[dict[str, Any]] = []
     sample_lock = threading.Lock()

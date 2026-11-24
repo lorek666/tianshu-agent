@@ -30,6 +30,7 @@ TECH-ARCH 的原方案是 Tauri 外壳 + WebView 直接调 Rust Host 的 IPC。M
 
 from __future__ import annotations
 
+import errno
 import json
 import mimetypes
 import os
@@ -60,6 +61,7 @@ MAX_RPC_BODY = 1 * 1024 * 1024
 #: 看不到 413；但也不能无上限读完（那就是给 DoS 开门）。
 MAX_DRAIN_BODY = 2 * 1024 * 1024
 RESTART_BACKOFF_S = (1.0, 2.0, 4.0, 8.0, 30.0)
+STOP_CLEANUP_TIMEOUT_S = 3.0
 #: Daemon 活过这个时长才把退避计数清零：否则"起来-立刻崩"会一直从 1s 重试，
 #: 把 CPU 打满还让人以为它在正常工作。
 BACKOFF_RESET_AFTER_S = 60.0
@@ -499,6 +501,41 @@ def acquire_host_info(
 # --------------------------------------------------------------------------- 监护
 
 
+_DAEMON_HELPER_CODE = """
+import json, sys
+payload = json.load(sys.stdin)
+sys.path[:] = payload.pop("sys_path")
+from tianshu.host import _daemon_helper
+_daemon_helper(payload)
+"""
+
+
+def _daemon_helper(payload: dict[str, Any]) -> None:
+    """Run blocking stdlib authentication in a separately reaped interpreter."""
+    root = Path(payload["data_root"])
+    timeout = payload["timeout"]
+    if payload["operation"] == "shutdown":
+        from . import daemon
+
+        sent = daemon.request_shutdown(
+            root, reason=payload["reason"],
+            expected_instance_id=payload["instance_id"], timeout=timeout,
+        )
+        raise SystemExit(0 if sent else 1)
+    if payload["operation"] != "snapshot":
+        raise HostError("不支持的 Daemon 核验操作")
+    client = ipc.Client(root, timeout=timeout)
+    try:
+        welcome = client.connect()
+        snapshot = (ipc.run_dir(root) / "daemon.lock").read_bytes()
+        identity = _daemon_lock_identity(snapshot)
+        if identity is None or identity[1] != welcome.get("instance_id"):
+            raise HostError("附着 Daemon 的握手与锁身份不一致")
+        sys.stdout.buffer.write(snapshot)
+    finally:
+        client.close()
+
+
 class DaemonSupervisor:
     """拉起并监护 Daemon。
 
@@ -519,7 +556,13 @@ class DaemonSupervisor:
         self.start_timeout_s = start_timeout_s
         self._process: subprocess.Popen[bytes] | None = None
         self._lock = threading.Lock()
+        self._stop_lock = threading.Lock()
         self._stop = threading.Event()
+        self._attached_snapshot: bytes | None = None
+        self._owned_snapshot: bytes | None = None
+        self._shutdown_snapshot_taken = False
+        self._shutdown_snapshot: bytes | None = None
+        self._shutdown_unconfirmed = False
         self._thread: threading.Thread | None = None
         self._log_file: Any = None
         self.restarts = 0
@@ -542,8 +585,38 @@ class DaemonSupervisor:
 
     def ensure(self) -> None:
         if self.alive():
+            self._attached_snapshot = self._run_daemon_helper(
+                "snapshot", timeout=self.start_timeout_s,
+            )
             return
         self._spawn_and_wait()
+
+    def _run_daemon_helper(self, operation: str, *, timeout: float, **facts: Any) -> bytes:
+        payload = {
+            "sys_path": sys.path, "data_root": str(self.data_root),
+            "operation": operation, "timeout": timeout, **facts,
+        }
+        try:
+            result = subprocess.run(
+                [sys._base_executable, "-c", _DAEMON_HELPER_CODE],
+                input=json.dumps(payload).encode("utf-8"),
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                timeout=max(0.001, timeout), check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise HostError("Daemon 身份核验或停止请求未在期限内完成") from exc
+        if result.returncode != 0:
+            raise HostError("无法确认 Daemon 的连接与实例身份")
+        return result.stdout
+
+    def _request_shutdown(self, *, reason: str, instance_id: str, timeout: float) -> bool:
+        try:
+            self._run_daemon_helper(
+                "shutdown", reason=reason, instance_id=instance_id, timeout=timeout,
+            )
+        except HostError:
+            return False
+        return True
 
     def start_monitor(self) -> None:
         self._thread = threading.Thread(
@@ -551,16 +624,108 @@ class DaemonSupervisor:
         )
         self._thread.start()
 
-    def stop(self, *, reason: str = "user", timeout: float = 5.0) -> None:
+    def reap_owned_on_exit(self) -> None:
         self._stop.set()
-        self._shutdown_daemon(reason=reason, timeout=timeout)
-        if self._thread is not None:
-            self._thread.join(timeout=timeout + 1)
         with self._lock:
-            if self._process is not None and self._process.poll() is None:
-                self._terminate(self._process.pid)
-            self._process = None
-        self._close_log()
+            proc = self._process
+            if proc is not None:
+                self._abort_start(proc)
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+            if self._thread.is_alive():
+                raise HostError("Daemon 监控线程尚未退出")
+
+    def stop(self, *, reason: str = "user", timeout: float = 5.0) -> None:
+        # Preserve the documented graceful allowance; escalation and final
+        # confirmation share a separate, bounded cleanup window.
+        graceful_deadline = time.monotonic() + timeout
+        deadline = graceful_deadline + STOP_CLEANUP_TIMEOUT_S
+        self._stop.set()
+        if not self._stop_lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            raise HostError("Daemon 停止核验正在进行，请重试同一实例")
+        try:
+            attached_pending = self._shutdown_daemon(
+                reason=reason, timeout=max(0.0, graceful_deadline - time.monotonic()),
+            )
+            if self._thread is not None:
+                self._thread.join(timeout=min(1.0, max(0.0, deadline - time.monotonic())))
+                if self._thread.is_alive():
+                    raise HostError("Daemon 监控线程尚未退出，请重试同一实例")
+            # No monitor can publish a new child after this point.
+            if not self._lock.acquire(timeout=max(0.0, deadline - time.monotonic())):
+                raise HostError("Daemon 启动操作尚未退出，请重试同一实例")
+            try:
+                proc = self._process
+                if proc is not None:
+                    try:
+                        proc.wait(timeout=max(0.0, graceful_deadline - time.monotonic()))
+                        self._observe_owned_process(proc, "wait_exited")
+                    except subprocess.TimeoutExpired:
+                        self._observe_owned_process(proc, "wait_timeout")
+                        result = self._terminate(
+                            proc.pid, timeout=max(0.001, deadline - time.monotonic()) * 0.5,
+                        )
+                        self._observe_owned_process(proc, "terminate_requested", result=result)
+                        try:
+                            proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+                        except subprocess.TimeoutExpired:
+                            self._observe_owned_process(proc, "final_wait_timeout")
+                            raise HostError(
+                                "无法确认自有 Daemon 进程退出，请重试同一实例"
+                            ) from None
+                        except OSError as exc:
+                            self._observe_owned_process(proc, "final_wait_error", errno=exc.errno)
+                            raise HostError(
+                                "无法核验自有 Daemon 进程退出，请重试同一实例"
+                            ) from None
+                        self._observe_owned_process(proc, "final_wait_exited")
+                    except OSError as exc:
+                        self._observe_owned_process(proc, "wait_error", errno=exc.errno)
+                        raise HostError("无法核验自有 Daemon 进程退出，请重试同一实例") from None
+                    self._process = None
+                    self._owned_snapshot = None
+                    self._shutdown_unconfirmed = False
+                elif attached_pending:
+                    # An attached instance has no owned Popen. Keep its original
+                    # snapshot, and require its endpoint to stop after escalation.
+                    snapshot = self._shutdown_snapshot
+                    identity = _daemon_lock_identity(snapshot) if snapshot is not None else None
+                    try:
+                        unchanged = (ipc.run_dir(self.data_root) / "daemon.lock").read_bytes()
+                    except OSError:
+                        unchanged = None
+                    if identity is None or unchanged != snapshot:
+                        raise HostError("Daemon 实例已变更，无法确认原实例退出")
+                    self._terminate(
+                        identity[0], timeout=max(0.001, deadline - time.monotonic()) * 0.5,
+                    )
+                    while not self._endpoint_absent():
+                        if time.monotonic() >= deadline:
+                            raise HostError("无法确认附着 Daemon 端点退出，请重试同一实例")
+                        time.sleep(0.05)
+                    self._shutdown_unconfirmed = False
+                elif self._shutdown_unconfirmed:
+                    raise HostError("无法确认原 Daemon 实例退出，请重试同一实例")
+                self._close_log()
+            finally:
+                self._lock.release()
+        finally:
+            self._stop_lock.release()
+
+    def _observe_owned_process(
+        self, proc: subprocess.Popen[bytes], action: str, **facts: Any,
+    ) -> None:
+        if os.environ.get("TIANSHU_HOST_PROCESS_DIAGNOSTICS") != "1":
+            return
+        # Never log argv, tokens, raw locks, or private filesystem paths.
+        try:
+            print(json.dumps({"host_supervisor_process": {
+                "pid": proc.pid, "observer_pid": os.getpid(),
+                "action": action, "monotonic_ns": time.monotonic_ns(),
+                "returncode": proc.returncode, **facts,
+            }}), file=sys.stderr, flush=True)
+        except (OSError, ValueError):
+            self.last_error = "process_diagnostics_unavailable"
 
     # -- 内部 --
 
@@ -597,7 +762,19 @@ class DaemonSupervisor:
                 self.last_error = str(exc)
 
     def _spawn_and_wait(self) -> None:
+        deadline = time.monotonic() + self.start_timeout_s
         with self._lock:
+            if self._stop.is_set():
+                return
+            previous = self._process
+            if previous is not None:
+                if previous.poll() is None:
+                    raise HostError("上一代自有 Daemon 尚未退出，拒绝启动新一代")
+                previous.wait(timeout=0)
+                self._observe_owned_process(previous, "wait_exited")
+                self._process = None
+                self._owned_snapshot = None
+                self._close_log()
             self._open_log()
             kwargs: dict[str, Any] = {}
             if os.name == "nt":
@@ -608,25 +785,49 @@ class DaemonSupervisor:
             else:
                 # 新会话：Host 被 Ctrl-C / 被杀，Daemon 不该跟着陪葬。
                 kwargs["start_new_session"] = True
-            self._process = subprocess.Popen(  # noqa: S603 - 命令由本进程构造
-                self.command,
+            command = self.command
+            # Only the built-in Daemon command bypasses a venv launcher. Its
+            # native process PID must be the PID published in daemon.lock.
+            if command[:4] == [sys.executable, "-m", "tianshu", "daemon"]:
+                command = [sys._base_executable, *command[1:]]
+                kwargs["env"] = {
+                    **os.environ, "PYTHONPATH": os.pathsep.join(sys.path),
+                }
+            proc = subprocess.Popen(  # noqa: S603 - 命令由本进程构造
+                command,
                 stdout=self._log_file,
                 stderr=self._log_file,
                 stdin=subprocess.DEVNULL,
                 **kwargs,
             )
-        deadline = time.monotonic() + self.start_timeout_s
+            self._process = proc
+            self._owned_snapshot = None
         while time.monotonic() < deadline:
-            if self.alive():
+            if self._stop.is_set():
                 return
-            if self._process.poll() is not None and not self.alive():
+            if self.alive():
+                try:
+                    snapshot = self._run_daemon_helper(
+                        "snapshot", timeout=max(0.001, deadline - time.monotonic()),
+                    )
+                    identity = _daemon_lock_identity(snapshot)
+                    if identity is None or identity[0] != proc.pid or proc.poll() is not None:
+                        raise HostError("Daemon 就绪实例不属于本次启动的进程")
+                    self._owned_snapshot = snapshot
+                except HostError:
+                    self._abort_start(proc)
+                    raise
+                return
+            if proc.poll() is not None and not self.alive():
                 # 进程已经退出且端点没起来：不要无限等，把原因带出去。
+                self._abort_start(proc)
                 raise HostError(
-                    f"Daemon 启动失败（exit={self._process.returncode}）；"
+                    f"Daemon 启动失败（exit={proc.returncode}）；"
                     f"日志：{self.log_path}"
                 )
             time.sleep(0.05)
         detail = self.probe_detail()
+        self._abort_start(proc)
         raise HostError(
             f"Daemon 在 {self.start_timeout_s:.0f}s 内没有就绪"
             f"（探活：{detail.reason}，errno={detail.errno}，"
@@ -634,54 +835,100 @@ class DaemonSupervisor:
             f"日志：{self.log_path}"
         )
 
-    def _shutdown_daemon(self, *, reason: str, timeout: float) -> None:
-        lock_path = ipc.run_dir(self.data_root) / "daemon.lock"
+    def _abort_start(self, proc: subprocess.Popen[bytes]) -> None:
+        """A failed readiness check must also reap the root started before it."""
+        deadline = time.monotonic() + STOP_CLEANUP_TIMEOUT_S
+        if proc.poll() is None:
+            proc.terminate()
         try:
-            snapshot = lock_path.read_bytes()
-        except OSError:
-            snapshot = None
+            proc.wait(timeout=max(0.0, deadline - time.monotonic()) * 0.5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                raise HostError("启动失败且无法确认自有 Daemon 退出") from None
+        self._observe_owned_process(proc, "final_wait_exited")
+        self._process = None
+        self._owned_snapshot = None
+        self._close_log()
+
+    def _shutdown_daemon(self, *, reason: str, timeout: float) -> bool:
+        lock_path = ipc.run_dir(self.data_root) / "daemon.lock"
+        if not self._shutdown_snapshot_taken:
+            self._shutdown_unconfirmed = True
+            self._shutdown_snapshot_taken = True
+            if self._process is not None:
+                self._shutdown_snapshot = self._owned_snapshot
+            elif self._attached_snapshot is not None:
+                self._shutdown_snapshot = self._attached_snapshot
+            else:
+                try:
+                    self._shutdown_snapshot = lock_path.read_bytes()
+                except FileNotFoundError:
+                    self._shutdown_unconfirmed = not self._endpoint_absent()
+                    return False
+                except OSError:
+                    return False
+        snapshot = self._shutdown_snapshot
         identity = _daemon_lock_identity(snapshot) if snapshot is not None else None
         if identity is None:
-            return
+            if not self._shutdown_unconfirmed:
+                self._shutdown_unconfirmed = not self._endpoint_absent()
+            return False
+        self._shutdown_unconfirmed = True
+        try:
+            if lock_path.read_bytes() != snapshot:
+                return False
+        except FileNotFoundError:
+            self._shutdown_unconfirmed = not self._endpoint_absent()
+            return False
+        except OSError:
+            return False
         expected_instance_id = identity[1]
-        from . import daemon as daemon_rpc
-
-        if not daemon_rpc.request_shutdown(
-            self.data_root,
-            reason=reason,
-            expected_instance_id=expected_instance_id,
-            timeout=timeout,
-        ):
-            return
         deadline = time.monotonic() + timeout
+        if not self._request_shutdown(
+            reason=reason, instance_id=expected_instance_id, timeout=timeout,
+        ):
+            return False
         while time.monotonic() < deadline:
-            if not ipc.probe(self.data_root, timeout=0.2):
-                return
+            if self._endpoint_absent():
+                self._shutdown_unconfirmed = False
+                return False
             time.sleep(0.05)
         # 超时只终止发起请求时已核实的同一实例；新实例出现时绝不能拿当前
         # daemon.lock 的 PID 去杀它。
         try:
             current = lock_path.read_bytes()
         except OSError:
-            return
+            return False
         if current != snapshot:
-            return
-        self._terminate(identity[0])
+            return False
+        return True
+
+    def _endpoint_absent(self) -> bool:
+        detail = self.probe_detail()
+        return not detail.ok and detail.errno == errno.ENOENT and not detail.endpoint_exists
 
     @staticmethod
-    def _terminate(pid: int) -> None:
+    def _terminate(pid: int, *, timeout: float = 5.0) -> dict[str, Any]:
         try:
             if os.name == "nt":
-                subprocess.run(
+                result = subprocess.run(
                     ["taskkill", "/PID", str(pid), "/T", "/F"],
                     check=False,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
+                    timeout=timeout,
                 )
+                return {"outcome": "command_exited", "returncode": result.returncode}
             else:
                 os.kill(pid, 15)
-        except OSError:
-            pass
+                return {"outcome": "signal_sent"}
+        except subprocess.TimeoutExpired:
+            return {"outcome": "command_timeout"}
+        except OSError as exc:
+            return {"outcome": "os_error", "errno": exc.errno}
 
     def _open_log(self) -> None:
         if self._log_file is None:
@@ -1172,22 +1419,24 @@ def run_host(
         info.port = bridge.port
 
         stop_event = threading.Event()  # 主循环等这个：**清理完成**才放行
-        stop_requested = threading.Event()  # 回调去重（重复点 /shutdown 不重复清理）
+        stop_guard = threading.Lock()  # 同一实例只允许一个停止操作；失败后仍可重试。
 
         def stop_all() -> None:
-            if stop_requested.is_set():
+            if not stop_guard.acquire(blocking=False):
                 return
-            stop_requested.set()
             try:
-                supervisor.stop()
-            finally:
+                if stop_event.is_set():
+                    return
                 try:
-                    bridge.stop()
-                finally:
-                    # 最后一步才让主线程退出。先 set 的话主线程会立刻结束进程，
-                    # 把还在关 Daemon 的这条线程一起带走——"tianshu host stop"
-                    # 于是报"Host 已退出"，但 Daemon 被留成孤儿继续跑。
-                    stop_event.set()
+                    supervisor.stop()
+                except (HostError, OSError) as exc:
+                    print(f"停止 Daemon 尚未完成：{exc}", file=sys.stderr, flush=True)
+                    return
+                bridge.stop()
+                # 只有清理已确认后才放行主线程；失败保留桥、锁和自有进程句柄。
+                stop_event.set()
+            finally:
+                stop_guard.release()
 
         bridge.install_stop_callback(stop_all)
         try:
@@ -1215,20 +1464,29 @@ def run_host(
             # 误判成 Path.open(mode=None)。那条门禁值得保留（它抓的是 CRLF
             # 哈希漂移），没必要为了一个浏览器调用去放宽它。
             webbrowser.open_new_tab(bridge.url)
-        try:
-            while not stop_event.is_set():
+        while not stop_event.is_set():
+            try:
                 stop_event.wait(0.5)
-        except KeyboardInterrupt:
-            print("收到中断，正在退出…", file=sys.stderr, flush=True)
-            stop_all()
+            except KeyboardInterrupt:
+                print("收到中断，正在退出…", file=sys.stderr, flush=True)
+                stop_all()
         exit_code = 0
     finally:
         try:
-            clear_host_info(data_root, expected=info)
-        except HostError as exc:
-            # 清理失败不能把成功变绿，也不能遮住启动/运行中的原始异常。
-            print(f"清理 Host 信息失败：{exc}", file=sys.stderr)
+            # Hold the identity guard through reap so a new Host cannot attach to the dying root.
+            with _host_info_guard(data_root):
+                if _read_host_info(data_root) == info:
+                    supervisor.reap_owned_on_exit()
+        except (HostError, OSError) as exc:
+            print(f"清理自有 Daemon 失败：{exc}", file=sys.stderr)
             exit_code = 1
+        finally:
+            try:
+                clear_host_info(data_root, expected=info)
+            except HostError as exc:
+                # 清理失败不能把成功变绿，也不能遮住启动/运行中的原始异常。
+                print(f"清理 Host 信息失败：{exc}", file=sys.stderr)
+                exit_code = 1
     return exit_code
 
 

@@ -224,3 +224,108 @@ v9 local and independent PASS remain bound to v9.
 Windows native sandbox, general descendant supervision and remote MCP isolation
 remain unimplemented under open #224. Do not merge, release, alter #225/#227 or
 start another major item.
+
+## Task 7: Confirm Host shutdown and retain per-owner process evidence
+
+The v10b head `49a52a7703facbcec4879674d03ec173a25da289` reached complete
+run `45183420559`, which failed Windows runner 1 and the Windows required
+summary. All selections finished; soak reported PID 9168 still present.
+Its precise cause remains unknown. Preserve the original logs, ZIP digests and
+all six shard reports; do not rerun the rejected run for a green.
+
+**Files:** `src/tianshu/host.py`, `scripts/measure_slo.py`, `scripts/run_soak.py`,
+`tests/test_host_supervisor_exit.py`, `tests/test_host.py`,
+`tests/test_slo_process_identity.py` and boundary documentation.
+
+**Interfaces:** Preserve the full default 5-second graceful interval and use a
+shared additional 3-second escalation/final-confirmation interval. Keep the
+250ms orphan check and zero-orphan criterion. No authority, schema, backend,
+workflow, supported-platform or arbitrary-descendant claim changes.
+
+- [x] Reproduce old-owner rebinding with real process identities and a controlled
+  ownership transition; independently reproduce real Daemon exit after its lock
+  and endpoint are gone. Neither experiment determines the hosted PID's cause.
+- [x] Observe RED for discarded owned roots, premature Host success, post-stop
+  spawning, early escalation, attached timeout and diagnostic-write failure.
+- [x] Wait/reap the same owned `Popen`, confirm monitor exit, retain Host/bridge/
+  lock/owned object on failure, and freeze the original snapshot across retries.
+- [x] Bind native identity once per logical owner, retain rereads as diagnosis,
+  and record first/last phase, source and actual Host/Daemon wait facts without
+  secrets. Independent PID queries remain explicitly non-atomic.
+- [x] Complete final mutation negatives and affected regressions; freeze the
+  non-document tree and run its own bare full suite plus static gates.
+- [x] Obtain bounded independent second-reader probes for this exact freeze,
+  verify originals and replay them in a new private copy.
+- [ ] Commit/push one repair batch as draft, drain synchronize, ready and accept
+  its own complete CI with exact head/base/merge and all original shard evidence.
+
+The Task 6 hosted checkbox remains incomplete. This follow-up does not turn
+v10b local PASS into hosted acceptance. #224 remains open; do not merge, release,
+change #225/#227 or begin the next major item.
+
+### v11 rejection and v12 follow-up
+
+The v11 freeze `c0898a8241e83397278e381c32733ddf8d5eb424` was independently
+REJECTED: one lock-read EIO made an attached Host and CLI report success while
+the original Daemon still served. A fresh fixed-tree parent replay reproduced
+the named failure and reaped both processes. Its bare full suite was interrupted
+with exit 2, so v11 local acceptance is FAIL.
+
+- [x] Preserve attachment EIO failure/retry, handshake-A/lock-B barriers, unknown
+  probe results and real authentication stalls as separate regressions.
+- [x] Bind snapshots at authenticated readiness; owned roots also require PID
+  correspondence. A late replacement lock must not become a stop target.
+- [x] Bound startup/shutdown authentication in reaped native helpers; clean up
+  failed startup roots and refuse a new generation while its old root is live.
+- [x] Retain marker-only orphan sources and reject ill-typed diagnostic fields.
+- [ ] Freeze the final candidate, run its own negatives/full gates and independent
+  probes, replay originals, then bind a new complete hosted run. No old green is
+  reused.
+
+### v16 TOCTOU rejection and v17 atomic cleanup
+
+v16 passed its private negatives and affected suite, but a real two-Host probe
+found a takeover window between reading `host.lock` and reaping the owned root.
+The replacement Host acquired the identity and then failed when the old Host
+killed the shared Daemon. v17 holds the Host metadata guard through both the
+identity check and owned-root reap; the new barrier regression is RED against
+v16 and green against v17. The interrupted v16 full suite is not final evidence.
+
+The v12 negative control was rejected: a mutation adopting the current owned
+lock escaped a parent-process patch of the shutdown function now executed in a
+helper. v13 moves that test guard to the supervisor's actual request boundary,
+retaining the real replacement's lock, endpoint and process assertions. Product
+code is unchanged; v12 rejection remains preserved.
+
+v13's 25 mutation negatives all failed by assertion, but its affected regression
+exited 1: a 0.2-second helper budget could expire before the shutdown request was
+delivered under load. A standalone rerun passed, confirming a budget race rather
+than a stable product failure. v14 changes only that test budget to 2 seconds;
+product code is unchanged and v14 requires fresh freeze, negatives, full gates,
+independent probes and hosted CI.
+
+v14 passed its 25 mutation negatives and affected regression, but both independent
+second readers reproduced a P1 and the controller rejected the freeze. A UI bridge
+bind failure after Daemon readiness leaked the owned root; the recovery Daemon's
+unread stderr pipe could block its wait. v15 reaps only a still-owned `Popen` on
+Host exit, leaves attached instances untouched, and redirects recovery stderr to a
+native temporary file. The real RED probes, green regressions and v14 rejection
+receipt remain preserved. v15 then failed its affected domain: an earlier Host's
+exit cleanup killed the Daemon after a replacement Host had adopted it. v16 checks
+that the current Host lock still equals this instance before reaping an owned root;
+unconfirmed ownership never authorizes a signal. v15's failure remains preserved,
+and v16 requires a new freeze plus all Tier 1 gates.
+
+### v14-v16 rejections and v17 atomic cleanup
+
+v14 independent Host and SLO probes each returned "部分修": a real occupied UI
+bridge port leaked the owned Daemon after readiness, and an unread recovery
+Daemon stderr PIPE blocked on 256 KiB. v15 fixed both, but its affected suite
+reproduced a late Host takeover followed by the old Host stopping the shared
+Daemon. v16 then passed local negatives and affected tests but a real two-Host
+probe found a takeover window between reading `host.lock` and reaping the owned
+root. v17 holds the metadata guard through both operations; uncertainty sends no
+stop signal. The final local freeze has non-document SHA256
+`c19d77ea98b914da30c8e16f9ad22c9c8c325786a1e5a2b6a12be32b3855221c`; its 30 private mutation negatives,
+affected suite, bare full suite, static gates and bounded second-reader replay
+passed. These are local facts, not a new hosted acceptance.
