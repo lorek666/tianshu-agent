@@ -491,6 +491,17 @@ _SUBTASK_USAGE = _obj(
     required=("turns", "tokens"),
 )
 
+#: exec 审批的只读命令详情。它复制派发侧已校验的 argv / 实际 cwd / 后端，
+#: 仅供审批人审查；不是授权来源，也不替代 args_hash / action_digest。
+_APPROVAL_COMMAND = _obj(
+    {
+        "argv": {"type": "array", "items": _s(), "minItems": 1},
+        "cwd": _s(pattern=r"^.+$"),
+        "backend": _s(pattern=r"^.+$"),
+    },
+    required=("argv", "cwd", "backend"),
+)
+
 #: 当前版本（1）的逐类型契约。键必须与 `events.EVENT_TYPES` 完全一致
 #: （`ensure_registry()` 在导入时校验，测试再次绑定）。
 CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
@@ -550,6 +561,8 @@ CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
             "expires_at": _i(minimum=1),
             # 与 dispatch.requested 同一个视图；审批卡片从事件回读它。
             "isolation": _ISOLATION_VIEW,
+            # 可选只为兼容历史审批；新 exec 审批必须带完整命令详情。
+            "command": _APPROVAL_COMMAND,
         },
         required=(
             "approval_id",
@@ -1206,6 +1219,8 @@ LEGACY_SCHEMAS: dict[str, dict[str, Any]] = {
     )
     for name, schema in CURRENT_SCHEMAS.items() if name not in V1_ONLY_EVENTS
 }
+# command 是当前审批视图的增量，不属于冻结前的 v0 形状。
+LEGACY_SCHEMAS["approval.requested"]["properties"].pop("command", None)
 
 # 必须在建立 current v2 之前冻结，不能原地扩张共享 _MODEL_USAGE。
 MODEL_RESULT_V1_SCHEMA = copy.deepcopy(CURRENT_SCHEMAS["model.result"])

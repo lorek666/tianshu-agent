@@ -77,6 +77,7 @@ function makeApproval(overrides: Partial<ApprovalView> = {}): ApprovalView {
     reason: "覆盖已有认证实现",
     rule_id: "c4.overwrite",
     isolation: null,
+    command: null,
     state: "pending",
     created_at: Date.now() - 5_000,
     expires_at: Date.now() + 600_000,

@@ -6,6 +6,7 @@ import {
   approvalStateTone,
   describeApproval,
   isOpenApproval,
+  isolationLevelLabel,
   isolationSentence,
   taskGoalSummary,
 } from "../lib/humanize";
@@ -87,6 +88,15 @@ export function ApprovalCard({
   // 审批前就要让用户看到真实权限范围（PRD §8.1）：这条命令是不是受信任执行、
   // 后端自称的隔离级别有没有实测。
   const isolation = isolationSentence(approval.isolation);
+  const command = approval.command;
+  const commandIncomplete =
+    command !== null &&
+    (command.argv.length === 0 || command.cwd === "" || command.backend === "");
+  const isExec =
+    approval.action === "exec" ||
+    approval.rule_id === "c4.exec" ||
+    approval.isolation !== null ||
+    command !== null;
   const working = busy === `approval:${approval.approval_id}`;
   const expired = approval.expires_at !== null && approval.expires_at <= now;
   const pending = isOpenApproval(approval.state) && !expired;
@@ -133,10 +143,52 @@ export function ApprovalCard({
         <div className="approval-rule">触发规则：{display.ruleText}</div>
       ) : null}
 
-      {isolation !== null ? (
-        <p className={`approval-isolation approval-isolation-${isolation.tone}`}>
-          {isolation.text}
-        </p>
+      {isExec ? (
+        <section className="approval-command" aria-label="命令执行详情">
+          <h4>命令执行详情</h4>
+          {command !== null && !commandIncomplete ? (
+            <>
+              <div className="approval-command-meta">
+                <span>执行后端</span>
+                <code className="mono">{command.backend}</code>
+              </div>
+              <div className="approval-command-meta">
+                <span>工作目录（cwd）</span>
+                <code className="mono">{command.cwd}</code>
+              </div>
+              <div className="approval-argv-title">
+                命令参数（argv · 共 {command.argv.length} 项 · 完整显示）
+              </div>
+              <ol className="approval-argv">
+                {command.argv.map((argument, index) => (
+                  <li key={index}>
+                    <span className="approval-argv-index" aria-hidden="true">
+                      {index + 1}
+                    </span>
+                    <code className="mono">{JSON.stringify(argument)}</code>
+                  </li>
+                ))}
+              </ol>
+            </>
+          ) : (
+            <p className="approval-command-missing" role="alert">
+              这条审批缺少完整命令详情（可能是旧审批）。请拒绝并让 Agent 重新发起，不要在无法核对参数时批准。
+            </p>
+          )}
+          {approval.isolation !== null ? (
+            <p className="approval-command-meta">
+              <span>隔离级别</span>
+              <code className="mono">{isolationLevelLabel(approval.isolation.level)}</code>
+            </p>
+          ) : null}
+          {isolation !== null ? (
+            <p className={`approval-isolation approval-isolation-${isolation.tone}`}>
+              {isolation.text}
+            </p>
+          ) : (
+            <p className="approval-isolation approval-isolation-warn">隔离级别未知</p>
+          )}
+        </section>
       ) : null}
 
       {approval.reason !== null && approval.reason !== "" ? (

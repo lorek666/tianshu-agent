@@ -222,6 +222,7 @@ def approval_view(
     *,
     rule_id: str = "",
     isolation: dict[str, Any] | None = None,
+    command: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "approval_id": approval.approval_id,
@@ -233,6 +234,8 @@ def approval_view(
         "rule_id": rule_id,
         # 审批前可见的隔离视图（F2）：null = 这条动作不涉及执行隔离。
         "isolation": isolation,
+        # exec 审批的完整只读命令详情；null = 非 exec 或历史审批。
+        "command": command,
         "state": approval.state,
         "created_at": int(approval.created_at),
         "expires_at": int(approval.expires_at),
@@ -1019,9 +1022,13 @@ class ControlPlane:
         )
         views = []
         for approval in pending:
-            rule_id, isolation = context.get(approval.approval_id, ("", None))
+            rule_id, isolation, command = context.get(
+                approval.approval_id, ("", None, None)
+            )
             views.append(
-                approval_view(approval, rule_id=rule_id, isolation=isolation)
+                approval_view(
+                    approval, rule_id=rule_id, isolation=isolation, command=command
+                )
             )
         return views
 
@@ -1029,10 +1036,11 @@ class ControlPlane:
         self,
         approval_ids: set[str],
         run_ids: set[str],
-    ) -> dict[str, tuple[str, dict[str, Any] | None]]:
-        """按需读这些审批自己的 `approval.requested` 事件，补 rule_id / isolation。
+    ) -> dict[str, tuple[str, dict[str, Any] | None, dict[str, Any] | None]]:
+        """按需读这些审批自己的 `approval.requested` 事件，补审批展示上下文。
 
-        `Approval` 投影没有这两项，它们只在 `approval.requested` 事件里；视图
+        `Approval` 投影没有 rule_id / isolation / command，它们只在
+        `approval.requested` 事件里；视图
         要按契约给出（UI 拿去映射人话）。旧实现 `read_types([...])` 每次全表
         扫**整份**事件日志——连早已决定的审批也重读、逐条 SHA256 验签，state /
         approvals.list 的内存与 CPU 随全部历史线性涨。现在只读**目标审批所在
@@ -1044,7 +1052,7 @@ class ControlPlane:
         历史审批总数无关。同一张审批只被请求一次（`ApprovalStore.request`
         幂等），同一 Run 内按 approval_id 取第一条匹配，字典不会歧义。
         """
-        mapping: dict[str, tuple[str, dict[str, Any] | None]] = {}
+        mapping: dict[str, tuple[str, dict[str, Any] | None, dict[str, Any] | None]] = {}
         for run_id in sorted(run_ids):
             for event in self._log.read_run(run_id, verify=False):
                 if event.type != "approval.requested":
@@ -1056,9 +1064,11 @@ class ControlPlane:
                     continue
                 rule_id = event.payload.get("rule_id")
                 isolation = event.payload.get("isolation")
+                command = event.payload.get("command")
                 mapping[approval_id] = (
                     rule_id if isinstance(rule_id, str) else "",
                     isolation if isinstance(isolation, dict) else None,
+                    command if isinstance(command, dict) else None,
                 )
         return mapping
 
@@ -1098,12 +1108,12 @@ class ControlPlane:
         resumed = self._enqueue_resume(approval.run_id)
         # 决定后的审批已不是 pending，上下文要显式点名这一张（读它自己 Run 的
         # 事件），否则响应视图里的 rule_id / isolation 会退化成空值。
-        rule_id, isolation = self._approval_context(
+        rule_id, isolation, command = self._approval_context(
             {approval.approval_id}, {approval.run_id}
-        ).get(approval.approval_id, ("", None))
+        ).get(approval.approval_id, ("", None, None))
         return {
             "approval": approval_view(
-                approval, rule_id=rule_id, isolation=isolation
+                approval, rule_id=rule_id, isolation=isolation, command=command
             ),
             "resumed": resumed,
         }
