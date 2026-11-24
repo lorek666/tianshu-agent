@@ -13,5 +13,5 @@
 
 - 授权仍绑定原完整 args、`args_hash` / `action_digest`；执行侧二次核验与审批一次性消费不变。
 - 新 exec 审批必须带真实展示详情；畸形对象拒绝写入，历史事件保持兼容读取。
-- 实现将同步 C3 schema 的 current/legacy 分支、`event_schema.py`、dispatcher/permissions/control、React 审批卡与 `ui/dist`，并以真实 schema、版本旁表、关闭重开、参数篡改与零 spawn 负控验证。
+- 实现将把 `command` 加入 C3 current v1 与对应 JSON schema；冻结的 legacy v0 保持原形状并拒绝该字段。`event_schema.py`、dispatcher/permissions/control、React 审批卡与 `ui/dist` 按同一契约实现，并以真实 schema、版本旁表、关闭重开、参数篡改与零 spawn 负控验证。
 - 本 PR 只定义契约，不夹带运行时代码、测试或构建产物。

@@ -64,10 +64,10 @@ task = stack.tasks.create_task(goal, [str(workspace_dir)], exec_policy=policy)
 `ExecBackend.capabilities.name` 复制到 `approval.requested.command`；控制面的
 `ApprovalView.command` 再按 approval_id 从事件回读。它只是展示上下文，不是新的
 授权来源：审批仍绑定原有完整 args/digest，`ExecPolicy` 仍只按 `argv[0]` 等既有
-规则判定。字段在事件契约中可选，以兼容没有命令详情的历史审批；新 exec 审批由
-派发侧补齐。UI 默认展开、逐项展示完整 argv，并显示 cwd、后端与隔离级别；参数按
-JSON 字符串保留边界，等宽纯文本换行，不截断、不执行、不注入 HTML。历史 exec
-审批缺详情时明确告警，要求拒绝并重新发起。
+规则判定。字段在 current v1 事件契约中可选，以兼容没有命令详情的历史审批；冻结的
+legacy v0 不接受该字段。新 exec 审批由派发侧补齐。UI 默认展开、逐项展示完整 argv，
+并显示 cwd、后端与隔离级别；参数按 JSON 字符串保留边界，等宽纯文本换行，不截断、
+不执行、不注入 HTML。历史 exec 审批缺详情时明确告警，要求拒绝并重新发起。
 
 ## 结果（`tool.result.output`）
 
