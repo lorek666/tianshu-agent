@@ -39,6 +39,7 @@ f0ccf88cfee6b3ac25f81f968d846ffd101d6a13554b0a4108ac8990db1de892
 - 新增 MCP 节点本身全部进入 shard0，但整文件贪心分组因此重排了 52 个既有文件；旧表也未校准新增的 `test_prompt_cache.py`，其 100 个快节点被默认按慢节点估算。实际完整文件区间与估计的偏差累积到 shard1。
 - 现从该轮 shard0 完整日志、shard1 中所有选中节点均完成的文件提取状态区间，按半秒单位向上取整并加每文件一个调度单位；取消文件中未完成的部分不使用。该轮缺失文件回退到完整 run `45055708214`。`test_mcp_content_ref.py` 与 `test_mcp_crash.py` 也使用本轮已实测值。
 - 当前完整 collection 的历史回算中，两片文件数与节点数不要求相等，估计权重均为 1437 秒；该值只用于解释分组，不是验收上限或新 runner 的耗时保证。定向分片测试覆盖新增 MCP 文件，验证器仍要求真实上游 success、精确 SHA、完整 collection、互斥全集与逐阶段报告。
-- 未删测试、未提高 25 分钟上限、未忽略 artifact 上传失败、未改变 wrapper/fatal handler/60 秒 Python 线程栈。新 head 的 Windows 两分片及 required 汇总全绿前不销账。
+- 未删测试、未提高 25 分钟上限、未忽略 artifact 上传失败、未改变 wrapper/fatal handler/60 秒 Python 线程栈。校准提交 `3f334c89c50e86f9a3697e1d318b92d53156031c` 的 Windows 两分片及 required 汇总已全绿；后续纯文档回填仍须由 required CI 绑定最终提交。
 - 最终校准树独立第二读者复核为 **已修**：逐文件重算与真实完整区间一致，取消分片只使用全部选中节点均完成的文件，剩余缺失项回退完整 run；PR head/base/合成 merge 身份与知识库条目连续性也经第二次只读复核确认。完整 code/test tree SHA256：`6ff6a699bcbe907afbb6e892df7c140aea75d5c77f8ef492e9a910afec62fa18`。
-- 最终树本机 mac-arm64 `uv run --frozen pytest`：`5191 passed, 15 skipped in 903.30s`，退出码 0；定向分片测试 `77 passed`，锁文件、Ruff、diff 与文档相对链接门禁通过。托管 Windows 两分片及 required 汇总仍以新 head 的 Actions 结果为准。
+- 最终树本机 mac-arm64 `uv run --frozen pytest`：`5191 passed, 15 skipped in 903.30s`，退出码 0；定向分片测试 `77 passed`，锁文件、Ruff、diff 与文档相对链接门禁通过。
+- 校准提交的 [run 45345940207](https://github.com/lorek666/tianshu-agent/actions/runs/45345940207) 已完成且 `conclusion=success`，所有 Python、Rust 与 UI 作业成功。PR head `3f334c89c50e86f9a3697e1d318b92d53156031c`、base `c5fcff0715a02a89704581ffdc0a15c5789705f6` 的合成 merge/checkout 为 `6802dfff254c43ee6f5809338ae3f2d182290a93`，tree 与 head 相同。重新下载的两份 Windows 原始报告均绑定该 SHA，完整有序 collection 互斥全集、逐阶段通过/跳过与 session exit=0 已复核；没有失败、漏报或重复。
