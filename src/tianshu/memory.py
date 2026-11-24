@@ -607,8 +607,8 @@ class MemoryProjection(_MemoryApplyMixin):
             return ref
         from .restore_access import ensure_material_write_allowed
 
-        with ensure_material_write_allowed(self._blob_dir, owner_log=self._log):
-            target = self._blob_dir / ref
+        target = self._blob_dir / ref
+        with ensure_material_write_allowed(target, owner_log=self._log):
             if not target.is_file():
                 atomic_write_bytes(target, data)
         return ref

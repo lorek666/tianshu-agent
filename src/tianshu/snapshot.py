@@ -180,8 +180,8 @@ class SnapshotStore:
         """
         from .restore_access import ensure_material_write_allowed
 
-        with ensure_material_write_allowed(self.root, owner_log=self._owner_log):
-            path = self.manifest_path(run_id)
+        path = self.manifest_path(run_id)
+        with ensure_material_write_allowed(path, owner_log=self._owner_log):
             if path.exists():
                 return
             payload = json.dumps(
@@ -211,27 +211,29 @@ class SnapshotStore:
 
         resolved_root = _clean_root(root)
         rel = _clean_rel(rel_path)
-        with ensure_material_write_allowed(self.root, owner_log=self._owner_log):
-            if before is None:
-                change = Change(call_id, resolved_root, rel, ABSENT, expected_after, None)
-            else:
-                digest = hashlib.sha256(before).hexdigest()
-                blob = self.blob_dir / digest
+        manifest = self.manifest_path(run_id)
+        if before is None:
+            change = Change(call_id, resolved_root, rel, ABSENT, expected_after, None)
+        else:
+            digest = hashlib.sha256(before).hexdigest()
+            blob = self.blob_dir / digest
+            with ensure_material_write_allowed(blob, owner_log=self._owner_log):
                 if not blob.exists():
                     atomic_write_bytes(blob, before)  # 内容寻址，同内容只存一份
-                change = Change(
-                    call_id, resolved_root, rel, digest, expected_after, str(blob)
-                )
+            change = Change(
+                call_id, resolved_root, rel, digest, expected_after, str(blob)
+            )
 
-            entries = [c for c in self.load(run_id) if c.call_id != call_id]
-            entries.append(change)
-            payload = json.dumps(
-                {"version": MANIFEST_VERSION,
-                 "changes": [c.to_dict() for c in entries]},
-                ensure_ascii=False, indent=2,
-            ).encode("utf-8")
-            atomic_write_bytes(self.manifest_path(run_id), payload)
-            return change
+        entries = [c for c in self.load(run_id) if c.call_id != call_id]
+        entries.append(change)
+        payload = json.dumps(
+            {"version": MANIFEST_VERSION,
+             "changes": [c.to_dict() for c in entries]},
+            ensure_ascii=False, indent=2,
+        ).encode("utf-8")
+        with ensure_material_write_allowed(manifest, owner_log=self._owner_log):
+            atomic_write_bytes(manifest, payload)
+        return change
 
     def load(self, run_id: str) -> list[Change]:
         path = self.manifest_path(run_id)
@@ -332,7 +334,9 @@ class SnapshotStore:
         guard()
         from .restore_access import ensure_material_write_allowed
 
-        with ensure_material_write_allowed(self.root, owner_log=self._owner_log):
+        with ensure_material_write_allowed(
+            self.manifest_path(run_id), owner_log=self._owner_log
+        ):
             return self._undo_locked(
                 run_id,
                 ws,

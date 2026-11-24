@@ -15,8 +15,9 @@ import pytest
 from test_restore_contract import UUID, samples
 
 from tianshu import maintenance, pathkeys, restore_access
+from tianshu.contents import ContentStore
 from tianshu.data_cli import _backup
-from tianshu.events import EventLog
+from tianshu.events import MAX_INLINE_BYTES, EventLog, canonical_bytes, sha256_hex
 from tianshu.maintenance import (
     MaintenanceBusy,
     MaintenanceConnection,
@@ -24,9 +25,12 @@ from tianshu.maintenance import (
     acquire_entity_access,
     acquire_restore_gate,
 )
+from tianshu.memory import MemoryProjection
 from tianshu.platform_identity import observe_entity
 from tianshu.restore_access import RestoreAccessError, RestoreScopeBusy
 from tianshu.restore_registry import RestoreRegistry
+from tianshu.snapshot import SnapshotStore
+from tianshu.undo_journal import JournalStore
 
 SRC = str(Path(__file__).resolve().parents[1] / "src")
 
@@ -397,6 +401,406 @@ def test_case_insensitive_material_alias_accepts_matching_active_owner(
         target = root.joinpath(*relative.split("/"))
         with restore_access.ensure_material_write_allowed(target, owner_log=owner) as lease:
             assert lease.active
+    finally:
+        owner.close()
+
+
+@pytest.mark.parametrize("ancestor", ["artifacts", "blobs", "memory_blobs"])
+def test_private_event_spill_under_unrelated_standard_ancestor(
+    tmp_path, registry, ancestor
+):
+    standard_ancestor = tmp_path / ancestor
+    db = standard_ancestor / "nested" / "aux.db"
+    _, event_blobs, _ = restore_access.default_material_paths(db)
+    assert event_blobs == db.parent / ".aux.db.materials" / "event_blobs"
+    payload = {
+        "call_id": "c_private_spill",
+        "tool_id": "fs.read",
+        "status": "succeeded",
+        "effect_state": "none_applied",
+        "output": {"content": "X" * (MAX_INLINE_BYTES + 1024)},
+    }
+
+    log = EventLog(db, blob_dir=event_blobs)
+    try:
+        log.append("r_private_spill", "tool.result", payload, actor_kind="system")
+        row = log.conn.execute(
+            "SELECT payload, payload_ref FROM events ORDER BY seq DESC LIMIT 1"
+        ).fetchone()
+        assert row["payload"] is None
+        assert row["payload_ref"] is not None
+        ref = Path(row["payload_ref"])
+        assert ref.parent == event_blobs
+        assert json.loads(ref.read_bytes()) == payload
+        assert log.read_after(0)[0].payload == payload
+    finally:
+        log.close()
+
+    assert not (standard_ancestor / "events.db").exists()
+    assert not (db.parent / "events.db").exists()
+
+
+@pytest.mark.parametrize("container", [".aux.db.materials", ".memory.materials"])
+def test_private_material_container_stops_standard_ancestor_scan(tmp_path, container):
+    target = tmp_path / "artifacts" / "nested" / container / "event_blobs"
+    assert restore_access._standard_material_root_and_domain(target) is None
+
+
+@pytest.mark.parametrize(
+    "relative",
+    ["artifacts", "blobs", "memory_blobs", ".aux.db.materials/artifacts"],
+)
+def test_private_container_does_not_hide_explicit_standard_domain(
+    tmp_path, registry, relative
+):
+    root = tmp_path / "standard"
+    owner = EventLog(tmp_path / "foreign" / "aux.db")
+    try:
+        target = root / relative
+        with pytest.raises(RestoreAccessError, match="同根 events.db"):
+            restore_access.ensure_material_write_allowed(target, owner_log=owner)
+        assert not root.exists()
+    finally:
+        owner.close()
+
+
+def test_private_material_symlink_alias_to_standard_domain_still_rejects(
+    tmp_path, registry
+):
+    root = tmp_path / "standard"
+    (root / "artifacts").mkdir(parents=True)
+    alias = tmp_path / "alias" / ".aux.db.materials"
+    alias.parent.mkdir()
+    try:
+        alias.symlink_to(root / "artifacts", target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"当前平台不能创建符号链接：{exc}")
+    owner = EventLog(tmp_path / "foreign" / "aux.db")
+    try:
+        with pytest.raises(RestoreAccessError, match="同根 events.db"):
+            restore_access.ensure_material_write_allowed(
+                alias / "event_blobs", owner_log=owner
+            )
+        assert not list((root / "artifacts").iterdir())
+        assert not (root / "events.db").exists()
+    finally:
+        owner.close()
+
+
+@pytest.mark.parametrize("explicit", [True, False], ids=["owner", "ownerless"])
+@pytest.mark.parametrize(
+    ("destination", "relative"),
+    [
+        ("foreign-memory", "memory_blobs"),
+        ("foreign-artifacts", "artifacts"),
+        ("same-root-memory", "memory_blobs"),
+        ("outside-standard", "ordinary"),
+    ],
+)
+def test_standard_material_symlink_cannot_rebind_after_resolution(
+    tmp_path, registry, explicit, destination, relative
+):
+    shell_root = tmp_path / "shell"
+    owner = EventLog(shell_root / "events.db")
+    try:
+        if destination == "same-root-memory":
+            resolved_target = shell_root / relative
+        else:
+            resolved_target = tmp_path / destination / relative
+        resolved_target.mkdir(parents=True)
+        alias = shell_root / "artifacts"
+        try:
+            alias.symlink_to(resolved_target, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"当前平台不能创建符号链接：{exc}")
+
+        raw = restore_access._standard_material_root_and_domain(alias)
+        canonical = restore_access._standard_material_root_and_domain(
+            alias.resolve(strict=True)
+        )
+        assert raw == (shell_root, "artifacts")
+        assert canonical != raw
+        before = sorted(path.relative_to(resolved_target) for path in resolved_target.rglob("*"))
+        with pytest.raises(RestoreAccessError, match="canonical"):
+            with restore_access.ensure_material_write_allowed(
+                alias, owner_log=owner if explicit else None
+            ) as lease:
+                assert lease.active
+                if explicit:
+                    store = SnapshotStore(alias, owner_log=owner)
+                    store.init_run("r_escape")
+                    manifest = resolved_target / "snapshots" / "r_escape.json"
+                    assert manifest.is_file()
+                else:
+                    marker = resolved_target / "escaped.marker"
+                    marker.write_bytes(b"written-through-rebound-standard-domain")
+                    assert marker.is_file()
+        after = sorted(path.relative_to(resolved_target) for path in resolved_target.rglob("*"))
+        assert after == before
+    finally:
+        owner.close()
+
+
+@pytest.mark.parametrize("explicit", [True, False], ids=["owner", "ownerless"])
+def test_nonstandard_material_symlink_rebinds_to_real_standard_root(
+    tmp_path, registry, explicit
+):
+    root = tmp_path / "data"
+    owner = EventLog(root / "events.db")
+    try:
+        standard = root / "artifacts"
+        standard.mkdir()
+        alias = tmp_path / "private" / ".aux.db.materials"
+        alias.parent.mkdir()
+        try:
+            alias.symlink_to(standard, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"当前平台不能创建符号链接：{exc}")
+        assert restore_access._standard_material_root_and_domain(alias) is None
+        assert restore_access._standard_material_root_and_domain(
+            alias.resolve(strict=True)
+        ) == (root, "artifacts")
+        with restore_access.ensure_material_write_allowed(
+            alias, owner_log=owner if explicit else None
+        ) as lease:
+            assert lease.active
+            marker = alias / "rebound-safe.marker"
+            marker.write_bytes(b"real-standard-root")
+        assert (standard / "rebound-safe.marker").read_bytes() == b"real-standard-root"
+    finally:
+        owner.close()
+
+
+@pytest.mark.parametrize("explicit", [True, False], ids=["owner", "ownerless"])
+def test_standard_material_self_symlink_keeps_same_root_and_domain(
+    tmp_path, registry, explicit
+):
+    root = tmp_path / "data"
+    owner = EventLog(root / "events.db")
+    try:
+        artifacts = root / "artifacts"
+        artifacts.mkdir()
+        alias = artifacts / "self"
+        try:
+            alias.symlink_to(artifacts, target_is_directory=True)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"当前平台不能创建符号链接：{exc}")
+        with restore_access.ensure_material_write_allowed(
+            alias, owner_log=owner if explicit else None
+        ) as lease:
+            assert lease.active
+            marker = alias / "safe.marker"
+            marker.write_bytes(b"same-standard-domain")
+        assert marker.read_bytes() == b"same-standard-domain"
+    finally:
+        owner.close()
+
+
+def test_active_restore_scope_still_blocks_private_material_container(
+    tmp_path, registry
+):
+    fixture_root = tmp_path / "fixture"
+    fixture_root.mkdir()
+    reserved = samples(fixture_root)["e1"]
+    before = registry.observe()
+    gate = acquire_restore_gate(exclusive=True)
+    try:
+        registry.append_event(reserved, expected=before, operation_access=gate)
+    finally:
+        gate.close()
+    final_root = Path(reserved.payload.placement.canonical_root.text)
+    owner = EventLog(tmp_path / "owner" / "aux.db")
+    try:
+        target = final_root / ".aux.db.materials" / "event_blobs"
+        with pytest.raises(RestoreScopeBusy):
+            restore_access.ensure_material_write_allowed(target, owner_log=owner)
+        assert not target.exists()
+    finally:
+        owner.close()
+
+
+@pytest.fixture
+def active_reserved_root(tmp_path, registry):
+    fixture_root = tmp_path / "reserved-fixture"
+    fixture_root.mkdir()
+    reserved = samples(fixture_root)["e1"]
+    before = registry.observe()
+    gate = acquire_restore_gate(exclusive=True)
+    try:
+        registry.append_event(reserved, expected=before, operation_access=gate)
+    finally:
+        gate.close()
+    root = Path(reserved.payload.placement.canonical_root.text)
+    root.mkdir(parents=True)
+    return root
+
+
+def _symlink_or_skip(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"当前平台不能创建符号链接：{exc}")
+
+
+def test_snapshot_manifest_static_subdirectory_symlink_respects_reserved_root(
+    tmp_path, registry, active_reserved_root
+):
+    root = tmp_path / "safe"
+    root.mkdir(parents=True)
+    _symlink_or_skip(root / "snapshots", active_reserved_root)
+    owner = EventLog(tmp_path / "owner" / "events.db")
+    try:
+        store = SnapshotStore(root, owner_log=owner)
+        with pytest.raises(RestoreScopeBusy):
+            store.init_run("static-manifest-escape")
+        assert not (active_reserved_root / "static-manifest-escape.json").exists()
+    finally:
+        owner.close()
+
+
+def test_journal_static_subdirectory_symlink_respects_reserved_root(
+    tmp_path, registry, active_reserved_root
+):
+    root = tmp_path / "safe"
+    root.mkdir(parents=True)
+    _symlink_or_skip(root / "undo", active_reserved_root)
+    owner = EventLog(tmp_path / "owner" / "events.db")
+    try:
+        journal = JournalStore(root, owner_log=owner)
+        with pytest.raises(RestoreScopeBusy):
+            journal.begin("static-journal-escape", control_run="control", items=())
+        assert not (active_reserved_root / "static-journal-escape.json").exists()
+    finally:
+        owner.close()
+
+
+def test_event_spill_static_leaf_symlink_respects_reserved_root(
+    tmp_path, registry, active_reserved_root
+):
+    root = tmp_path / "safe"
+    log = EventLog(root / "events.db", blob_dir=root / "blobs")
+    payload = {
+        "call_id": "c_static_spill",
+        "tool_id": "fs.read",
+        "status": "succeeded",
+        "effect_state": "none_applied",
+        "output": {"content": "X" * (MAX_INLINE_BYTES + 1024)},
+    }
+    digest = sha256_hex(canonical_bytes(payload))
+    target = root / "blobs" / digest
+    try:
+        _symlink_or_skip(target, active_reserved_root / "static-spill.json")
+        with pytest.raises(RestoreScopeBusy):
+            log.append("r_static_spill", "tool.result", payload, actor_kind="system")
+        assert target.is_symlink()
+        assert not (active_reserved_root / "static-spill.json").exists()
+        assert log.conn.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+    finally:
+        log.close()
+
+
+def test_snapshot_preimage_existing_leaf_symlink_respects_reserved_root(
+    tmp_path, registry, active_reserved_root
+):
+    root = tmp_path / "safe"
+    owner = EventLog(tmp_path / "owner" / "events.db")
+    try:
+        store = SnapshotStore(root, owner_log=owner)
+        before = b"static preimage symlink negative control"
+        target = store.blob_dir / sha256_hex(before)
+        escaped = active_reserved_root / "static-preimage.bin"
+        escaped.write_bytes(b"reserved bytes must remain untouched")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _symlink_or_skip(target, escaped)
+        with pytest.raises(RestoreScopeBusy):
+            store.record_preimage(
+                "static-preimage-escape",
+                "c_static_preimage",
+                "note.txt",
+                before,
+                "after",
+                root=tmp_path / "workspace",
+            )
+        assert target.is_symlink()
+        assert escaped.read_bytes() == b"reserved bytes must remain untouched"
+        assert not store.manifest_path("static-preimage-escape").exists()
+    finally:
+        owner.close()
+
+
+def test_content_record_static_leaf_symlink_respects_reserved_root(
+    tmp_path, registry, active_reserved_root
+):
+    root = tmp_path / "safe"
+    log = EventLog(root / "events.db", blob_dir=root / "blobs")
+    data = b"static content symlink negative control"
+    digest = sha256_hex(data)
+    target = root / "blobs" / digest
+    try:
+        store = ContentStore(log, blob_dir=root / "blobs")
+        _symlink_or_skip(target, active_reserved_root / "static-content.json")
+        with pytest.raises(RestoreScopeBusy):
+            store.record(digest, data, task_id="t_static", run_id="r_static")
+        assert target.is_symlink()
+        assert not (active_reserved_root / "static-content.json").exists()
+        assert store.created_count() == 0
+    finally:
+        log.close()
+
+
+def test_memory_put_static_leaf_symlink_respects_reserved_root(
+    tmp_path, registry, active_reserved_root
+):
+    root = tmp_path / "safe"
+    log = EventLog(root / "events.db", blob_dir=root / "event_blobs")
+    content = "static memory symlink negative control"
+    digest = sha256_hex(content.encode("utf-8"))
+    target = root / "memory_blobs" / digest
+    try:
+        projection = MemoryProjection(log.conn, log=log, blob_dir=root / "memory_blobs")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _symlink_or_skip(target, active_reserved_root / "static-memory.txt")
+        with pytest.raises(RestoreScopeBusy):
+            projection.put_content(content)
+        assert target.is_symlink()
+        assert not (active_reserved_root / "static-memory.txt").exists()
+    finally:
+        log.close()
+
+
+@pytest.mark.parametrize("container", [".aux.db.materials", ".memory.materials"])
+def test_private_material_child_symlink_cannot_escape_canonical_container(
+    tmp_path, registry, container
+):
+    private = tmp_path / "artifacts" / "nested" / container / "event_blobs"
+    private.mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _symlink_or_skip(private / "escape", outside)
+    owner = EventLog(tmp_path / "owner" / "aux.db")
+    try:
+        with pytest.raises(RestoreAccessError, match="canonical"):
+            restore_access.ensure_material_write_allowed(
+                private / "escape" / "payload.json", owner_log=owner
+            )
+        assert not list(outside.iterdir())
+    finally:
+        owner.close()
+
+
+@pytest.mark.parametrize("container", [".aux.db.materials", ".memory.materials"])
+def test_private_material_self_symlink_stays_inside_canonical_container(
+    tmp_path, registry, container
+):
+    private = tmp_path / "artifacts" / "nested" / container / "event_blobs"
+    private.mkdir(parents=True)
+    _symlink_or_skip(private / "self", private)
+    owner = EventLog(tmp_path / "owner" / "aux.db")
+    try:
+        with restore_access.ensure_material_write_allowed(
+            private / "self" / "payload.json", owner_log=owner
+        ):
+            pass
     finally:
         owner.close()
 

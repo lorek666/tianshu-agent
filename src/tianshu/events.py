@@ -508,11 +508,12 @@ class EventLog:
                 raise EventLogCorrupt(
                     f"payload {len(raw)}B exceeds inline limit and no blob_dir configured"
                 )
-            with ensure_material_write_allowed(self._blob_dir, owner_log=self):
-                ref = str(self._blob_dir / digest)
+            target = self._blob_dir / digest
+            with ensure_material_write_allowed(target, owner_log=self):
+                ref = str(target)
                 # 先完整持久化内容，再允许事务提交引用；数据库事务本身不覆盖文件。
-                if not Path(ref).exists():
-                    atomic_write_bytes(Path(ref), raw)
+                if not target.exists():
+                    atomic_write_bytes(target, raw)
 
         # 事件行与版本旁表必须同生同死：分开提交会留下"没有版本记录的新事件"，
         # 读取时会被当成 version=0，等于把新版语义伪装成旧版。

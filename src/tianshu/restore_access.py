@@ -2,7 +2,9 @@
 
 固定顺序是 restore gate → canonical namespace → native entity → registry 短读/事务。
 gate 只覆盖 anchor/身份固定窗口；namespace 与 entity access 从 SQLite 打开前一直持续到
-真实 close 成功。外部 OS 锁是协作式准入，不把路径字符串当安全边界。
+真实 close 成功。外部 OS 锁是协作式准入，不把路径字符串当安全边界。材料守卫只核验
+检查时的具体 target；同 uid 仍可在检查后替换目录链接，本轮不以 fd-relative/openat
+建立物理封闭，也不把 canonical containment 冒充 TOCTOU 隔离。
 """
 
 from __future__ import annotations
@@ -1211,10 +1213,29 @@ def unregister_admitted_eventlog(access: RestoreDatabaseAccess) -> None:
         _ACTIVE_EVENTLOG_ACCESSES.pop(id(access), None)
 
 
+def _private_material_container(target: Path) -> Path | None:
+    for entry in (target, *target.parents):
+        name_key = overlap_key(entry.name)
+        if (
+            name_key.startswith(".")
+            and name_key.endswith(".materials")
+            and len(name_key) > len(".materials") + 1
+        ):
+            return entry
+    return None
+
+
 def _standard_material_root_and_domain(target: Path) -> tuple[Path, str] | None:
     for entry in (target, *target.parents):
         name_key = overlap_key(entry.name)
         parent_name_key = overlap_key(entry.parent.name)
+        # Private containers are naming boundaries, not unrelated standard domains.
+        if (
+            name_key.startswith(".")
+            and name_key.endswith(".materials")
+            and len(name_key) > len(".materials") + 1
+        ):
+            return None
         if name_key == overlap_key("blobs") and parent_name_key == overlap_key("artifacts"):
             continue
         domains = {
@@ -1355,18 +1376,44 @@ def ensure_material_write_allowed(
     *,
     owner_log: Any = None,
 ) -> _MaterialWriteLease:
-    """三材料域每个写 API 统一写前守卫：动态重验隔离范围 + 唯一标准主库白名单连续准入。"""
+    """守卫具体材料 target，并动态重验隔离范围与唯一标准主库连续准入。
+
+    私有 ``.<db>.materials`` / ``.memory.materials`` 容器内的 target 解析后不得
+    逃逸其 canonical 容器；标准材料域仍要求 raw/canonical 同根同域。这里是检查时
+    的协作式边界，同 uid 在检查后换链的竞态仍需 fd-relative/openat 才能物理封闭。
+    """
     if str(material_path) == ":memory:":
         return _NOOP_MATERIAL_LEASE
     ensure_path_not_held(material_path)
 
-    target = _absolute_target(Path(material_path))
-    located = _standard_material_root_and_domain(target)
-    if located is None:
-        try:
-            located = _standard_material_root_and_domain(target.resolve(strict=False))
-        except (OSError, RuntimeError) as exc:
-            raise RestoreAccessError(f"无法解析材料写入目标路径：{target}") from exc
+    target = Path(material_path).absolute()
+    raw_located = _standard_material_root_and_domain(target)
+    raw_private_container = _private_material_container(target)
+    try:
+        resolved_target = target.resolve(strict=False)
+        if raw_private_container is not None:
+            canonical_container = raw_private_container.resolve(strict=False)
+            if not is_ancestor_or_self(
+                overlap_key(str(canonical_container)),
+                overlap_key(str(resolved_target)),
+            ):
+                raise RestoreAccessError(
+                    "私有材料 target 解析后逃逸 canonical 容器："
+                    f"{target} -> {resolved_target}"
+                )
+        located = _standard_material_root_and_domain(resolved_target)
+        if raw_located is not None and (
+            located is None
+            or raw_located[1] != located[1]
+            or overlap_key(str(raw_located[0].resolve(strict=False)))
+            != overlap_key(str(located[0]))
+        ):
+            raise RestoreAccessError(
+                "材料路径 canonical 解析后改变标准根/域，不能沿用原始同根 events.db 绑定："
+                f"{target}"
+            )
+    except (OSError, RuntimeError) as exc:
+        raise RestoreAccessError(f"无法解析材料写入目标路径：{target}") from exc
     if located is None:
         return _owner_material_lease(owner_log) if owner_log is not None else _NOOP_MATERIAL_LEASE
     standard_root, domain = located
