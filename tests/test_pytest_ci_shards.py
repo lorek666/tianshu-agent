@@ -15,6 +15,8 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 WRAPPER = SCRIPTS / "pytest_with_stacks.py"
 VERIFIER = SCRIPTS / "pytest_ci_shards.py"
 RUN_ID, ATTEMPT = "123456", "2"
+SHARD_COUNT = 3
+SHARD_INDICES = list(range(SHARD_COUNT))
 FILES = {
     "tests/test_a.py": "def test_zeta(): pass\ndef test_alpha(): pass\ndef test_mid(): pass\n",
     "tests/test_b.py": "def test_b1(): pass\ndef test_b2(): pass\n",
@@ -61,14 +63,14 @@ def project(root, files):
     return env
 
 
-def shards(tmp_path, files=None, extra=(), extra_env=None):
+def shards(tmp_path, files=None, extra=(), extra_env=None, *, count=SHARD_COUNT):
     files = FILES if files is None else files
     evidence = tmp_path / "reports"
     results, documents = [], []
-    for index in range(2):
+    for index in range(count):
         root = tmp_path / f"checkout-{index}"
         env = project(root, files)
-        # Both runners check out exactly the same Git object, including commit metadata.
+        # Every runner checks out exactly the same Git object, including commit metadata.
         if index == 0:
             first_env = dict(env)
         else:
@@ -76,7 +78,7 @@ def shards(tmp_path, files=None, extra=(), extra_env=None):
         env.update(extra_env or {})
         report = evidence / str(index) / "shard.json"
         args = [sys.executable, str(WRAPPER), "-p", "pytest_ci_shards",
-                f"--ci-shard-index={index}", "--ci-shard-count=2",
+                f"--ci-shard-index={index}", f"--ci-shard-count={count}",
                 f"--ci-shard-report={report}", "-o", "addopts=", "-q",
                 "--stack-timeout=60", *extra]
         results.append(run(args, root, env))
@@ -84,16 +86,18 @@ def shards(tmp_path, files=None, extra=(), extra_env=None):
     return evidence, first_env, results, documents
 
 
-def verify(evidence, env, *, needs="success", extra=()):
+def verify(evidence, env, *, needs="success", count=SHARD_COUNT, indices=None, extra=()):
+    indices = SHARD_INDICES if indices is None else indices
     return run([sys.executable, str(VERIFIER), "verify", "--reports-root", str(evidence),
                 "--sha", env["GITHUB_SHA"], "--run-id", RUN_ID, "--run-attempt", ATTEMPT,
-                "--count", "2", "--indices", "0", "1", "--needs-result", needs, *extra],
-               evidence.parent, env)
+                "--count", str(count), "--indices", *map(str, indices),
+                "--needs-result", needs, *extra], evidence.parent, env)
 
 
-def test_independent_runners_cover_every_file_once_in_original_collection_order(tmp_path):
+def test_three_independent_runners_cover_every_node_once_in_original_collection_order(tmp_path):
     evidence, env, results, docs = shards(tmp_path)
-    assert [r.returncode for r in results] == [0, 0], [(r.stdout, r.stderr) for r in results]
+    assert [r.returncode for r in results] == [0, 0, 0], [
+        (r.stdout, r.stderr) for r in results]
     expected = [
         ["tests/test_a.py::test_zeta", "tests/test_a.py"],
         ["tests/test_a.py::test_alpha", "tests/test_a.py"],
@@ -102,20 +106,29 @@ def test_independent_runners_cover_every_file_once_in_original_collection_order(
         ["tests/test_b.py::test_b2", "tests/test_b.py"],
         ["tests/test_c.py::test_c", "tests/test_c.py"],
     ]
-    assert docs[0]["full_collection"] == docs[1]["full_collection"] == expected
-    assert docs[0]["selected"] == [pair[0] for pair in expected[:3]]
-    assert docs[1]["selected"] == [pair[0] for pair in expected[3:]]
+    assert all(doc["full_collection"] == expected for doc in docs)
+    assert [doc["shard_index"] for doc in docs] == SHARD_INDICES
+    assert [doc["shard_count"] for doc in docs] == [SHARD_COUNT] * SHARD_COUNT
+    assert [doc["selected"] for doc in docs] == [
+        [pair[0] for pair in expected[:3]],
+        [pair[0] for pair in expected[3:5]],
+        [pair[0] for pair in expected[5:]],
+    ]
+    selected = [node for doc in docs for node in doc["selected"]]
+    assert len(selected) == len(set(selected)) == len(expected)
+    assert set(selected) == {pair[0] for pair in expected}
     accepted = verify(evidence, env)
     assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+    assert f"across {SHARD_COUNT} Windows shards" in accepted.stdout
 
 
 def test_expensive_file_is_accounted_for_by_runners_and_verifier(tmp_path):
     heavy = "tests/test_eval_real_tasks.py"
     evidence, env, results, docs = shards(tmp_path, {**FILES, heavy: "def test_case(): pass\n"})
-    assert [result.returncode for result in results] == [0, 0]
+    assert [result.returncode for result in results] == [0, 0, 0]
     assert docs[0]["selected"] == [f"{heavy}::test_case"]
-    assert docs[1]["selected"] == [node for node, file in docs[1]["full_collection"]
-                                   if file != heavy]
+    assert [node for doc in docs[1:] for node in doc["selected"]] == [
+        node for node, file in docs[0]["full_collection"] if file != heavy]
     accepted = verify(evidence, env)
     assert accepted.returncode == 0, accepted.stdout + accepted.stderr
 
@@ -136,13 +149,13 @@ def test_windows_file_weights_balance_observed_cost_in_a_reduced_collection(tmp_
     files = {file: "".join(f"def test_probe_{index}(): pass\n" for index in range(count))
              for file, (count, _) in observed.items()}
     evidence, env, results, docs = shards(tmp_path, files)
-    assert [result.returncode for result in results] == [0, 0], [
+    assert [result.returncode for result in results] == [0, 0, 0], [
         (result.stdout, result.stderr) for result in results]
     accepted = verify(evidence, env)
     assert accepted.returncode == 0, accepted.stdout + accepted.stderr
     costs = [sum(observed[file][1] for file in {node.split("::", 1)[0]
                                                for node in doc["selected"]}) for doc in docs]
-    assert abs(costs[0] - costs[1]) < 60, costs
+    assert max(costs) - min(costs) < 60, costs
 
 
 @pytest.mark.parametrize("fast_file,fast_nodes,fast_seconds", [
@@ -164,13 +177,14 @@ def test_windows_weights_correct_fast_parameterized_files_and_slow_small_files(
     files = {file: "".join(f"def test_probe_{index}(): pass\n" for index in range(count))
              for file, (count, _) in observed.items()}
     evidence, env, results, docs = shards(tmp_path, files)
-    assert [result.returncode for result in results] == [0, 0], [
+    assert [result.returncode for result in results] == [0, 0, 0], [
         (result.stdout, result.stderr) for result in results]
     accepted = verify(evidence, env)
     assert accepted.returncode == 0, accepted.stdout + accepted.stderr
     costs = [sum(observed[file][1] for file in {node.split("::", 1)[0]
                                                for node in doc["selected"]}) for doc in docs]
-    assert abs(costs[0] - costs[1]) < 15, costs
+    # Three-way whole-file partitioning cannot split the 66s file pair.
+    assert max(costs) - min(costs) < 40, costs
 
 
 def test_windows_weights_cover_accumulated_medium_file_estimation_errors(tmp_path):
@@ -191,13 +205,13 @@ def test_windows_weights_cover_accumulated_medium_file_estimation_errors(tmp_pat
     files = {file: "".join(f"def test_probe_{index}(): pass\n" for index in range(count))
              for file, (count, _) in observed.items()}
     evidence, env, results, docs = shards(tmp_path, files)
-    assert [result.returncode for result in results] == [0, 0], [
+    assert [result.returncode for result in results] == [0, 0, 0], [
         (result.stdout, result.stderr) for result in results]
     accepted = verify(evidence, env)
     assert accepted.returncode == 0, accepted.stdout + accepted.stderr
     costs = [sum(observed[file][1] for file in {node.split("::", 1)[0]
                                                for node in doc["selected"]}) for doc in docs]
-    assert abs(costs[0] - costs[1]) < 15, costs
+    assert max(costs) - min(costs) < 15, costs
 
 
 def test_windows_weights_include_measured_summary_and_cache_evaluation_work(tmp_path):
@@ -216,13 +230,14 @@ def test_windows_weights_include_measured_summary_and_cache_evaluation_work(tmp_
     files = {file: "".join(f"def test_probe_{index}(): pass\n" for index in range(count))
              for file, (count, _) in observed.items()}
     evidence, env, results, docs = shards(tmp_path, files)
-    assert [result.returncode for result in results] == [0, 0], [
+    assert [result.returncode for result in results] == [0, 0, 0], [
         (result.stdout, result.stderr) for result in results]
     accepted = verify(evidence, env)
     assert accepted.returncode == 0, accepted.stdout + accepted.stderr
     costs = [sum(observed[file][1] for file in {node.split("::", 1)[0]
                                                for node in doc["selected"]}) for doc in docs]
-    assert abs(costs[0] - costs[1]) < 15, costs
+    # The two largest files must stay whole and therefore occupy separate shards.
+    assert max(costs) - min(costs) < 90, costs
 
 
 def phase_source(phase, action, *, mark=""):
@@ -239,7 +254,7 @@ def phase_source(phase, action, *, mark=""):
 def test_pytest_successful_skip_and_xfail_in_every_phase_are_accepted(tmp_path, phase, outcome):
     files = {**FILES, "tests/test_a.py": phase_source(phase, f"pytest.{outcome}('expected')")}
     evidence, env, results, docs = shards(tmp_path, files)
-    assert [r.returncode for r in results] == [0, 0], [(r.stdout, r.stderr) for r in results]
+    assert [r.returncode for r in results] == [0, 0, 0], [(r.stdout, r.stderr) for r in results]
     row = next(row for doc in docs for row in doc["reports"]
                if row["nodeid"] == "tests/test_a.py::test_subject" and row["when"] == phase)
     assert row["outcome"] == "skipped"
@@ -253,8 +268,8 @@ def test_nonstrict_xpass_is_accepted_and_strict_xpass_is_rejected(tmp_path, stri
     files = {**FILES, "tests/test_a.py": phase_source(
         "call", "pass", mark=f"@pytest.mark.xfail(strict={strict})\n")}
     evidence, env, results, docs = shards(tmp_path, files)
-    # test_b has two nodes, so test_a and test_c are assigned to shard 1.
-    assert [r.returncode for r in results] == [0, exitcode]
+    # The two-node b file leads; equal-weight a and c take the next shards.
+    assert [r.returncode for r in results] == [0, exitcode, 0]
     call = next(row for row in docs[1]["reports"] if row["when"] == "call")
     assert call["outcome"] == ("failed" if strict else "passed")
     result = verify(evidence, env)
@@ -265,7 +280,7 @@ def test_nonstrict_xpass_is_accepted_and_strict_xpass_is_rejected(tmp_path, stri
 def test_real_phase_failures_cannot_be_hidden_by_successful_other_phases(tmp_path, phase):
     files = {**FILES, "tests/test_a.py": phase_source(phase, "assert False, 'expected failure'")}
     evidence, env, results, docs = shards(tmp_path, files)
-    assert [r.returncode for r in results] == [0, 1]
+    assert [r.returncode for r in results] == [0, 1, 0]
     assert any(row["when"] == phase and row["outcome"] == "failed"
                for row in docs[1]["reports"])
     # Even a forged session success cannot hide a real failed phase.
@@ -291,9 +306,9 @@ def test_collection_error_preserves_native_exit_even_with_too_few_valid_files(
     assert native.returncode == 2, native.stdout + native.stderr
     assert "SyntaxError" in native.stdout
     evidence, env, results, docs = shards(tmp_path, files)
-    assert [r.returncode for r in results] == [native.returncode] * 2, [
+    assert [r.returncode for r in results] == [native.returncode] * SHARD_COUNT, [
         (r.stdout, r.stderr) for r in results]
-    assert [doc["pytest_session_exit"] for doc in docs] == [2, 2]
+    assert [doc["pytest_session_exit"] for doc in docs] == [2, 2, 2]
     assert verify(evidence, env).returncode == 1
 
 
@@ -307,7 +322,7 @@ def test_real_keyboard_interrupt_preserves_native_exit_two(tmp_path, phase):
     assert native.returncode == 2, native.stdout + native.stderr
     assert "KeyboardInterrupt" in native.stdout + native.stderr
     evidence, env, results, docs = shards(tmp_path, files)
-    expected = [0, 2] if phase == "call" else [2, 2]
+    expected = [0, 2, 0] if phase == "call" else [2, 2, 2]
     assert [r.returncode for r in results] == expected, [(r.stdout, r.stderr) for r in results]
     assert [doc["pytest_session_exit"] for doc in docs] == expected
     assert verify(evidence, env).returncode == 1
@@ -321,8 +336,8 @@ def test_real_keyboard_interrupt_preserves_native_exit_two(tmp_path, phase):
 ])
 def test_subset_reordering_and_early_stop_options_are_rejected(tmp_path, extra):
     _, _, results, docs = shards(tmp_path, extra=extra)
-    assert [r.returncode for r in results] == [4, 4]
-    assert docs == [None, None]
+    assert [r.returncode for r in results] == [4, 4, 4]
+    assert docs == [None, None, None]
 
 
 @pytest.mark.parametrize("hook", [
@@ -348,14 +363,21 @@ def test_empty_collection_or_empty_shard_is_rejected(tmp_path, files):
 
 def test_actual_checkout_must_match_ci_sha(tmp_path):
     _, _, results, docs = shards(tmp_path, extra_env={"GITHUB_SHA": "0" * 40})
-    assert [r.returncode for r in results] == [4, 4]
-    assert docs == [None, None]
+    assert [r.returncode for r in results] == [4, 4, 4]
+    assert docs == [None, None, None]
+
+
+@pytest.mark.parametrize("count", [1, 2, 4])
+def test_runner_and_verifier_reject_any_other_shard_count(tmp_path, count):
+    evidence, env, results, _ = shards(tmp_path, count=count)
+    assert all(result.returncode != 0 for result in results)
+    assert verify(evidence, env, count=count).returncode == 1
 
 
 @pytest.fixture(scope="module")
 def complete_evidence(tmp_path_factory):
     evidence, env, results, docs = shards(tmp_path_factory.mktemp("complete-shards"))
-    assert [r.returncode for r in results] == [0, 0]
+    assert [r.returncode for r in results] == [0, 0, 0]
     assert verify(evidence, env).returncode == 0
     return env, docs
 
@@ -363,8 +385,9 @@ def complete_evidence(tmp_path_factory):
 @pytest.mark.parametrize("mutation", [
     "missing-artifact", "extra-artifact", "bad-json", "version", "checkout_sha", "github_sha",
     "run_id", "run_attempt", "shard_index", "shard_count", "pytest_session_exit", "boolean-index",
-    "collection-drift", "duplicate-node", "empty-collection", "invalid-path", "selected-missing",
-    "selected-duplicate", "missing-setup", "missing-call", "missing-teardown", "duplicate-phase",
+    "collection-drift", "duplicate-node", "duplicate-across-shards", "empty-collection",
+    "invalid-path", "selected-missing", "selected-duplicate", "missing-setup", "missing-call",
+    "missing-teardown", "duplicate-phase",
     "illegal-phase", "failed-phase", "illegal-outcome", "unselected-node", "missing-finish",
     "duplicate-finish", "setup-skipped-with-call",
 ])
@@ -384,6 +407,10 @@ def test_verifier_rejects_incomplete_or_mismatched_real_evidence(
         docs[1]["full_collection"].pop()
     elif mutation == "duplicate-node":
         doc["full_collection"].append(doc["full_collection"][0])
+    elif mutation == "duplicate-across-shards":
+        duplicate = docs[0]["selected"][0]
+        docs[1]["selected"][0] = duplicate
+        docs[1]["finished"][0] = duplicate
     elif mutation == "empty-collection":
         doc["full_collection"] = []
     elif mutation == "invalid-path":
@@ -424,6 +451,20 @@ def test_verifier_rejects_incomplete_or_mismatched_real_evidence(
         (evidence / "0" / "shard.json").write_text("{", encoding="utf-8")
     result = verify(evidence, env)
     assert result.returncode == 1, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("count,indices", [
+    (2, [0, 1]), (3, [0, 1]), (3, [0, 1, 1]), (3, [0, 1, 3]), (4, [0, 1, 2, 3]),
+])
+def test_verifier_rejects_missing_duplicate_or_extra_shard_plan(
+    complete_evidence, tmp_path, count, indices,
+):
+    env, docs = complete_evidence
+    for index, doc in enumerate(docs):
+        directory = tmp_path / str(index)
+        directory.mkdir()
+        (directory / "shard.json").write_text(json.dumps(doc), encoding="utf-8")
+    assert verify(tmp_path, env, count=count, indices=indices).returncode == 1
 
 
 @pytest.mark.parametrize("needs", ["failure", "cancelled", "skipped"])
@@ -468,6 +509,7 @@ def pytest_unconfigure(config):
     plugin.probe_reader = reader
 '''
     evidence, env, results, docs = shards(tmp_path, {**FILES, "conftest.py": hook})
-    assert [r.returncode for r in results] == [3, 3], [(r.stdout, r.stderr) for r in results]
-    assert [doc["pytest_session_exit"] for doc in docs] == [0, 0]
+    assert [r.returncode for r in results] == [3, 3, 3], [
+        (r.stdout, r.stderr) for r in results]
+    assert [doc["pytest_session_exit"] for doc in docs] == [0, 0, 0]
     assert verify(evidence, env, needs="failure").returncode == 1

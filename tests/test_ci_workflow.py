@@ -184,6 +184,96 @@ def test_macos_required_summary_shell_rejects_any_unsuccessful_upstream(
     assert (result.returncode == 0) is (python_result == desktop_result == "success")
 
 
+def _assert_windows_complete_native_gates(workflow):
+    shards = _job_block(workflow, "windows_shards")
+    assert "runs-on: windows-latest" in shards
+    assert "timeout-minutes: 25" in shards
+    assert "fail-fast: false" in shards
+    assert "shard: [0, 1, 2]" in shards
+    assert "ref: ${{ github.sha }}" in shards
+    assert "continue-on-error" not in shards
+    for command in (
+        "uv python install 3.12", "uv lock --check", "uv sync --frozen",
+        "uv run --frozen ruff check .", 'PYTEST_ADDOPTS: ""',
+        "scripts/pytest_with_stacks.py -p pytest_ci_shards",
+        "--ci-shard-count=3", '--ci-shard-report="$CI_SHARD_REPORT"',
+        '-o addopts="" -vv -rs --tb=short', "--durations=20 --stack-timeout=60",
+    ):
+        assert command in shards
+    assert (
+        "name: windows-pytest-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}"
+        in shards
+    )
+    assert "if-no-files-found: error" in shards
+
+    summary = _job_block(workflow, "windows_summary")
+    assert "name: test (windows-latest) · py3.12" in summary
+    assert "needs: [windows_shards, desktop_windows]" in summary
+    assert "timeout-minutes: 25" in summary
+    assert "if: always() && (" in summary
+    for index in range(3):
+        artifact = f"windows-pytest-${{{{ github.run_id }}}}-${{{{ github.run_attempt }}}}-{index}"
+        destination = f"${{{{ runner.temp }}}}/windows-ci-shards/{index}"
+        assert f"name: {artifact}" in summary
+        assert f"path: {destination}" in summary
+    assert "--count 3 --indices 0 1 2" in summary
+    assert '--needs-result "$UPSTREAM_RESULT"' in summary
+    assert '${{ needs.windows_shards.result }}' in summary
+    assert 'test "$UPSTREAM_DESKTOP_RESULT" = success' in summary
+    assert '${{ needs.desktop_windows.result }}' in summary
+
+
+def test_windows_python_uses_three_independent_runners_and_atomic_summary():
+    _assert_windows_complete_native_gates(_workflow())
+
+
+@pytest.mark.parametrize("old,new", [
+    ("shard: [0, 1, 2]", "shard: [0, 1]"),
+    ("--ci-shard-count=3", "--ci-shard-count=2"),
+    ("--count 3 --indices 0 1 2", "--count 2 --indices 0 1"),
+    ("          name: windows-pytest-${{ github.run_id }}-${{ github.run_attempt }}-2\n", ""),
+    ("--stack-timeout=60", "--stack-timeout=0"),
+    ("-vv -rs --tb=short", "-vv --tb=short"),
+    (
+        "    timeout-minutes: 25\n    strategy:\n      fail-fast: false\n"
+        "      matrix:\n        shard: [0, 1, 2]",
+        "    timeout-minutes: 30\n    strategy:\n      fail-fast: false\n"
+        "      matrix:\n        shard: [0, 1, 2]",
+    ),
+])
+def test_windows_runner_or_summary_regressions_are_rejected(old, new):
+    workflow = _workflow()
+    assert old in workflow
+    with pytest.raises(AssertionError):
+        _assert_windows_complete_native_gates(workflow.replace(old, new, 1))
+
+
+def test_state_pressure_evidence_is_uploaded_even_when_pytest_fails():
+    workflow = _workflow()
+    for job, artifact in (
+        (
+            "macos_python",
+            "slo-state-pressure-macos-${{ github.run_id }}-${{ github.run_attempt }}",
+        ),
+        (
+            "windows_shards",
+            "slo-state-pressure-windows-${{ github.run_id }}-"
+            "${{ github.run_attempt }}-${{ matrix.shard }}",
+        ),
+    ):
+        block = _job_block(workflow, job)
+        upload = re.search(
+            r"(?ms)^      - name: 上传 state 背压诊断证据\n(?P<body>.*?)(?=^      - |\Z)",
+            block,
+        )
+        assert upload, f"{job} must upload state-pressure evidence"
+        body = upload["body"]
+        assert "if: always()" in body
+        assert f"name: {artifact}" in body
+        assert "path: ${{ runner.temp }}/slo-state-pressure.json" in body
+        assert "if-no-files-found: warn" in body
+
+
 def test_main_push_ci_is_not_made_cancellable_or_draft_gated():
     workflow = _workflow()
     assert re.search(r"(?m)^  push:\n    branches: \[main\]$", workflow)
