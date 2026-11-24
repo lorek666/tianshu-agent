@@ -121,17 +121,19 @@ def test_expensive_file_is_accounted_for_by_runners_and_verifier(tmp_path):
 
 
 def test_windows_file_weights_balance_observed_cost_in_a_reduced_collection(tmp_path):
-    # Complete-file costs from run 44916124972, except real_tasks: its new
-    # three-run sample reuse projects <=205s from retained work in 44939541307.
-    # This is scheduling input, not a claim that the new Windows run passed.
+    # Complete status intervals from run 45335797049, except w15_safe_gc: shard1
+    # was canceled during that file, so its completed 45055708214 interval is the
+    # fallback. Neither the canceled run nor its missing artifact is passing evidence.
     observed = {
-        "tests/test_eval_harness.py": (19, 75),
-        "tests/test_eval_real_tasks.py": (36, 205),
-        "tests/test_low_disk_execution.py": (96, 101),
-        "tests/test_m2_acceptance.py": (45, 66),
-        "tests/test_recovery.py": (16, 95),
-        "tests/test_slo_and_soak.py": (5, 58),
-        "tests/test_w15_safe_gc.py": (43, 69),
+        "tests/test_eval_harness.py": (19, 71),
+        "tests/test_eval_real_tasks.py": (37, 198),
+        "tests/test_low_disk_execution.py": (96, 70),
+        "tests/test_m2_acceptance.py": (45, 57),
+        "tests/test_mcp_content_ref.py": (32, 18),
+        "tests/test_mcp_crash.py": (26, 24),
+        "tests/test_recovery.py": (16, 147),
+        "tests/test_slo_and_soak.py": (5, 48),
+        "tests/test_w15_safe_gc.py": (43, 47),
     }
     files = {file: "".join(f"def test_probe_{index}(): pass\n" for index in range(count))
              for file, (count, _) in observed.items()}
@@ -174,19 +176,19 @@ def test_windows_weights_correct_fast_parameterized_files_and_slow_small_files(
 
 
 def test_windows_weights_cover_accumulated_medium_file_estimation_errors(tmp_path):
-    # Complete-file intervals from runs 44927917869 and 44939541307, rounded up.
+    # Complete status intervals from run 45335797049, rounded up to whole seconds.
     # These files have comparable node counts but very different execution costs.
     observed = {
-        "tests/test_data_binding.py": (76, 63),
-        "tests/test_data_state.py": (52, 1),
-        "tests/test_eval_report.py": (33, 1),
-        "tests/test_model_contract.py": (77, 3),
+        "tests/test_data_binding.py": (76, 70),
+        "tests/test_data_state.py": (52, 0),
+        "tests/test_eval_report.py": (33, 0),
+        "tests/test_model_contract.py": (77, 2),
         "tests/test_model_usage_v2.py": (73, 8),
-        "tests/test_mcp_crash.py": (24, 50),
-        "tests/test_round2_data_integrity.py": (39, 52),
-        "tests/test_network_fetch.py": (24, 29),
+        "tests/test_mcp_crash.py": (26, 24),
+        "tests/test_round2_data_integrity.py": (39, 41),
+        "tests/test_network_fetch.py": (24, 26),
         "tests/test_host_memory.py": (18, 23),
-        "tests/test_isolation.py": (13, 20),
+        "tests/test_isolation.py": (13, 10),
     }
     files = {file: "".join(f"def test_probe_{index}(): pass\n" for index in range(count))
              for file, (count, _) in observed.items()}
@@ -201,17 +203,18 @@ def test_windows_weights_cover_accumulated_medium_file_estimation_errors(tmp_pat
 
 
 def test_windows_weights_include_measured_summary_and_cache_evaluation_work(tmp_path):
-    # Complete-file intervals from Windows run 45050478841, rounded up.
+    # Complete status intervals from Windows run 45335797049, rounded up.
     # Include all test files changed by this cache batch and the affected
-    # evaluation assembly, rather than a subset dominated by one large file.
-    # That run was RED: these completed intervals are scheduling evidence only.
+    # evaluation assembly, plus a medium summary file so whole-file granularity
+    # does not dominate the balance assertion.
     observed = {
-        "tests/test_cache_metrics.py": (46, 46),
-        "tests/test_summary_cache_telemetry.py": (28, 32),
-        "tests/test_eval_separation.py": (8, 153),
-        "tests/test_eval_real_tasks.py": (37, 172),
+        "tests/test_cache_metrics.py": (46, 28),
+        "tests/test_summary_cache_telemetry.py": (29, 34),
+        "tests/test_eval_separation.py": (8, 159),
+        "tests/test_eval_real_tasks.py": (37, 198),
         "tests/test_model_usage_v2.py": (73, 8),
         "tests/test_prompt_cache.py": (100, 2),
+        "tests/test_summary_loop.py": (18, 18),
     }
     files = {file: "".join(f"def test_probe_{index}(): pass\n" for index in range(count))
              for file, (count, _) in observed.items()}

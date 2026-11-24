@@ -32,3 +32,13 @@ f0ccf88cfee6b3ac25f81f968d846ffd101d6a13554b0a4108ac8990db1de892
 路径解析与 `read_bytes()` 之间仍存在同 UID 替换链接的竞态；本项目按单用户协作边界记录它，不把 canonical containment 表述为物理隔离。
 
 本机 mac-arm64 完整 `uv run --frozen pytest` 已退出码 0；锁文件、Ruff、diff 与文档相对链接门禁通过。托管 required CI 结果以关联 PR 的 Actions 日志为准；本机通过不替代平台验证。
+
+## Windows 分片超时二次跟进（2026-11-24）
+
+- PR head `be7948f2f9e2e14adb96c0f2921c02c342f17184`、base `c5fcff0715a02a89704581ffdc0a15c5789705f6` 的 run [45335797049](https://github.com/lorek666/tianshu-agent/actions/runs/45335797049) 中，shard0 完成（`2535 passed, 195 skipped`，pytest 21m44s）；shard1 没有 FAILED/ERROR，但在 pytest 24m47s、约 91% 处被取消。PR 事件的合成 merge `GITHUB_SHA`/checkout 为 `e137eaffa20209ba4d8b690182c1ceb4c6c0b7ca`，其双亲正是上述 head 与 base；shard0 artifact 也绑定该合成 merge，不表示运行了另一份 PR head。因 shard1 未进入 `sessionfinish`，`shard.json` 不存在，上传与汇总按既有规则失败。该记录是超时红，不是通过证据。
+- 新增 MCP 节点本身全部进入 shard0，但整文件贪心分组因此重排了 52 个既有文件；旧表也未校准新增的 `test_prompt_cache.py`，其 100 个快节点被默认按慢节点估算。实际完整文件区间与估计的偏差累积到 shard1。
+- 现从该轮 shard0 完整日志、shard1 中所有选中节点均完成的文件提取状态区间，按半秒单位向上取整并加每文件一个调度单位；取消文件中未完成的部分不使用。该轮缺失文件回退到完整 run `45055708214`。`test_mcp_content_ref.py` 与 `test_mcp_crash.py` 也使用本轮已实测值。
+- 当前完整 collection 的历史回算中，两片文件数与节点数不要求相等，估计权重均为 1437 秒；该值只用于解释分组，不是验收上限或新 runner 的耗时保证。定向分片测试覆盖新增 MCP 文件，验证器仍要求真实上游 success、精确 SHA、完整 collection、互斥全集与逐阶段报告。
+- 未删测试、未提高 25 分钟上限、未忽略 artifact 上传失败、未改变 wrapper/fatal handler/60 秒 Python 线程栈。新 head 的 Windows 两分片及 required 汇总全绿前不销账。
+- 最终校准树独立第二读者复核为 **已修**：逐文件重算与真实完整区间一致，取消分片只使用全部选中节点均完成的文件，剩余缺失项回退完整 run；PR head/base/合成 merge 身份与知识库条目连续性也经第二次只读复核确认。完整 code/test tree SHA256：`6ff6a699bcbe907afbb6e892df7c140aea75d5c77f8ef492e9a910afec62fa18`。
+- 最终树本机 mac-arm64 `uv run --frozen pytest`：`5191 passed, 15 skipped in 903.30s`，退出码 0；定向分片测试 `77 passed`，锁文件、Ruff、diff 与文档相对链接门禁通过。托管 Windows 两分片及 required 汇总仍以新 head 的 Actions 结果为准。
