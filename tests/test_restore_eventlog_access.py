@@ -637,7 +637,10 @@ def active_reserved_root(tmp_path, registry):
 
 def _symlink_or_skip(link: Path, target: Path) -> None:
     try:
-        link.symlink_to(target, target_is_directory=True)
+        # Windows records the link kind at creation time. A directory link to an
+        # existing file makes non-strict realpath raise WinError 267 instead of
+        # following the leaf; POSIX ignores this flag, so derive it from target.
+        link.symlink_to(target, target_is_directory=target.is_dir())
     except (OSError, NotImplementedError) as exc:
         pytest.skip(f"当前平台不能创建符号链接：{exc}")
 
@@ -724,6 +727,88 @@ def test_snapshot_preimage_existing_leaf_symlink_respects_reserved_root(
         assert target.is_symlink()
         assert escaped.read_bytes() == b"reserved bytes must remain untouched"
         assert not store.manifest_path("static-preimage-escape").exists()
+    finally:
+        owner.close()
+
+
+def test_material_scope_guard_checks_leaf_link_when_realpath_fails(
+    tmp_path, registry, active_reserved_root, monkeypatch
+):
+    root = tmp_path / "safe"
+    owner = EventLog(tmp_path / "owner" / "events.db")
+    try:
+        before = b"static preimage realpath failure negative control"
+        target = root / "preimage_blobs" / sha256_hex(before)
+        escaped = active_reserved_root / "static-preimage-realpath.bin"
+        escaped.write_bytes(b"reserved bytes must remain untouched")
+        target.parent.mkdir(parents=True)
+        _symlink_or_skip(target, escaped)
+        original_resolve = Path.resolve
+
+        def fail_leaf_realpath(path, *args, **kwargs):
+            if path == target:
+                # Model CPython 3.12 ntpath realpath(strict=False): WinError 267
+                # is not in its non-strict allowlist, so readlink fallback is
+                # never reached. The scope guard must inspect the link itself.
+                raise NotADirectoryError("injected Windows leaf realpath WinError 267")
+            return original_resolve(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "resolve", fail_leaf_realpath)
+        with pytest.raises(RestoreScopeBusy):
+            restore_access.ensure_material_write_allowed(target, owner_log=owner)
+        assert target.is_symlink()
+        assert escaped.read_bytes() == b"reserved bytes must remain untouched"
+    finally:
+        owner.close()
+
+
+@pytest.mark.parametrize(
+    ("destination", "allowed"),
+    [("same-root", True), ("foreign-root", False), ("outside-standard", False)],
+)
+def test_snapshot_preimage_existing_file_leaf_symlink_keeps_standard_domain(
+    tmp_path, registry, destination, allowed
+):
+    root = tmp_path / "safe"
+    owner = EventLog(root / "events.db")
+    try:
+        store = SnapshotStore(root / "artifacts", owner_log=owner)
+        before = b"static preimage file leaf symlink control"
+        if destination == "same-root":
+            source = root / "artifacts" / "blobs" / "source.bin"
+        elif destination == "foreign-root":
+            source = tmp_path / "foreign" / "artifacts" / "blobs" / "source.bin"
+        else:
+            source = tmp_path / "outside" / "source.bin"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(before)
+        target = store.blob_dir / sha256_hex(before)
+        _symlink_or_skip(target, source)
+
+        if allowed:
+            change = store.record_preimage(
+                "static-preimage-safe-leaf",
+                "c_static_preimage_safe_leaf",
+                "note.txt",
+                before,
+                "after",
+                root=tmp_path / "workspace",
+            )
+            assert change.blob_ref == str(target)
+            assert store.manifest_path("static-preimage-safe-leaf").is_file()
+        else:
+            with pytest.raises(RestoreAccessError, match="canonical"):
+                store.record_preimage(
+                    "static-preimage-rebound-leaf",
+                    "c_static_preimage_rebound_leaf",
+                    "note.txt",
+                    before,
+                    "after",
+                    root=tmp_path / "workspace",
+                )
+            assert not store.manifest_path("static-preimage-rebound-leaf").exists()
+        assert target.is_symlink()
+        assert source.read_bytes() == before
     finally:
         owner.close()
 

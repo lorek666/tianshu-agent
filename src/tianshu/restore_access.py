@@ -558,10 +558,21 @@ def ensure_path_not_held(
     registry: RestoreRegistry | None = None,
 ) -> None:
     """独立材料/后台/维护入口的隔离守卫；不反向抢 restore_gate，遵守全局锁序。"""
+    _ensure_path_not_held(Path(path), registry, set())
 
+
+def _ensure_path_not_held(
+    path: Path,
+    registry: RestoreRegistry | None,
+    seen: set[str],
+) -> None:
     if str(path) == ":memory:":
         return
-    target = _absolute_target(Path(path))
+    target = _absolute_target(path)
+    target_key = overlap_key(str(target))
+    if target_key in seen:
+        return
+    seen.add(target_key)
     reg = _registry_factory() if registry is None else registry
     observed = reg.observe()
     existing_identity: EntityIdentityV1 | None = None
@@ -572,6 +583,25 @@ def ensure_path_not_held(
         existing_identity = None
     if _active_scope_blocks(observed, target, existing_identity):
         raise RestoreScopeBusy(f"路径落入尚未终结/尚未解除隔离的恢复范围：{target}")
+
+    # realpath(strict=False) is not a complete scope oracle: Windows raises
+    # WinError 267 for a directory-kind leaf link aimed at an existing file,
+    # before ntpath reaches its readlink fallback. Inspect explicit link targets
+    # independently, including ancestors, before any caller checks exists().
+    for entry in (target, *target.parents):
+        try:
+            is_link = entry.is_symlink() or entry.is_junction()
+        except OSError as exc:
+            raise RestoreAccessError(f"无法检查路径链接状态：{entry}") from exc
+        if not is_link:
+            continue
+        try:
+            linked = Path(os.readlink(entry))
+        except (OSError, ValueError) as exc:
+            raise RestoreAccessError(f"无法读取路径链接目标：{entry}") from exc
+        if not linked.is_absolute():
+            linked = entry.parent / linked
+        _ensure_path_not_held(linked, reg, seen)
 
 
 def _revalidate_registry_under_gate(
