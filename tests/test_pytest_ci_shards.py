@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import runpy
 import subprocess
 import sys
 from copy import deepcopy
@@ -147,6 +148,34 @@ def test_windows_file_weights_balance_observed_cost_in_a_reduced_collection(tmp_
     assert abs(costs[0] - costs[1]) < 60, costs
 
 
+def test_windows_weights_use_maximum_completed_intervals_after_shard_timeout(tmp_path):
+    # Run 45345940207 completed every file. Run 45350527384 contributes only
+    # completed intervals; its canceled w15_safe_gc and two unstarted files are
+    # excluded rather than assigned a fabricated duration.
+    observed = {
+        "tests/test_data_admission.py": (15, 30),
+        "tests/test_eval_separation.py": (91, 182),
+        "tests/test_g2_delegation_control.py": (27, 54),
+        "tests/test_g2_delegation_fence.py": (17, 35),
+        "tests/test_recovery.py": (120, 241),
+        "tests/test_slo_and_soak.py": (65, 131),
+        "tests/test_undo_recovery.py": (13, 26),
+    }
+    files = {file: "def test_probe(): pass\n" for file in observed}
+    evidence, env, results, docs = shards(tmp_path, files)
+    assert [result.returncode for result in results] == [0, 0], [
+        (result.stdout, result.stderr) for result in results]
+    accepted = verify(evidence, env)
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+    costs = [sum(observed[file][0] for file in {node.split("::", 1)[0]
+                                               for node in doc["selected"]}) for doc in docs]
+    assert abs(costs[0] - costs[1]) < 15, costs
+    weights = runpy.run_path(str(VERIFIER))["_FILE_WEIGHTS"]
+    assert {file: weights[file] for file in observed} == {
+        file: expected for file, (_, expected) in observed.items()
+    }
+
+
 @pytest.mark.parametrize("fast_file,fast_nodes,fast_seconds", [
     ("tests/test_assemble_release.py", 148, 5),
     ("tests/test_restore_contract.py", 119, 2),
@@ -203,15 +232,16 @@ def test_windows_weights_cover_accumulated_medium_file_estimation_errors(tmp_pat
 
 
 def test_windows_weights_include_measured_summary_and_cache_evaluation_work(tmp_path):
-    # Complete status intervals from Windows run 45335797049, rounded up.
+    # Maximum complete-file seconds across runs 45345940207 and 45350527384,
+    # rounded up. The canceled run contributes no duration for incomplete files.
     # Include all test files changed by this cache batch and the affected
     # evaluation assembly, plus a medium summary file so whole-file granularity
     # does not dominate the balance assertion.
     observed = {
         "tests/test_cache_metrics.py": (46, 28),
         "tests/test_summary_cache_telemetry.py": (29, 34),
-        "tests/test_eval_separation.py": (8, 159),
-        "tests/test_eval_real_tasks.py": (37, 198),
+        "tests/test_eval_separation.py": (8, 91),
+        "tests/test_eval_real_tasks.py": (37, 180),
         "tests/test_model_usage_v2.py": (73, 8),
         "tests/test_prompt_cache.py": (100, 2),
         "tests/test_summary_loop.py": (18, 18),

@@ -15,13 +15,14 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
-# Half-second scheduling units. Calibrated files use complete observed pytest
-# status intervals from Windows run 45335797049: shard0 completed, while shard1
-# was canceled and contributes only files whose selected nodes all finished.
-# Files missing from that partial run use complete intervals from 45055708214.
-# Add one unit per measured file for setup/teardown and collection overhead.
-# Unmeasured files use ~0.5s per node as a rough proxy. A canceled run and its
-# missing artifact remain failed evidence, not a passing calibration sample.
+# Half-second scheduling units. The latest recalibration uses complete observed
+# pytest status intervals from Windows run 45345940207 and completed-only file
+# intervals from 45350527384. The latter canceled during test_w15_safe_gc.py and
+# never started test_w4_streaming.py or test_windows_145_147_regressions.py; none
+# of those three contributes a duration from the canceled run. Earlier complete
+# runs supply the remaining hints. Add one unit per measured file for setup,
+# teardown, and collection overhead. Unmeasured files use ~0.5s per node as a
+# rough proxy. Canceled runs and missing artifacts remain failed evidence.
 # These fixed hints are not acceptance limits or runner guarantees.
 _FILE_WEIGHTS = {
     "tests/test_acceptance.py": 20,
@@ -53,7 +54,7 @@ _FILE_WEIGHTS = {
     "tests/test_crash_consistency.py": 20,
     "tests/test_credentials.py": 3,
     "tests/test_daemon.py": 72,
-    "tests/test_data_admission.py": 48,
+    "tests/test_data_admission.py": 30,
     "tests/test_data_binding.py": 142,
     "tests/test_data_cli.py": 81,
     "tests/test_data_migration_cli.py": 75,
@@ -69,7 +70,7 @@ _FILE_WEIGHTS = {
     "tests/test_eval_real_tasks.py": 396,
     "tests/test_eval_report.py": 2,
     "tests/test_eval_scoped_checks.py": 38,
-    "tests/test_eval_separation.py": 319,
+    "tests/test_eval_separation.py": 182,
     "tests/test_event_schema.py": 29,
     "tests/test_events.py": 18,
     "tests/test_evidence_keys.py": 42,
@@ -82,9 +83,9 @@ _FILE_WEIGHTS = {
     "tests/test_g1_admission.py": 8,
     "tests/test_g1d_resource_kinds.py": 2,
     "tests/test_g2_delegation_contract.py": 4,
-    "tests/test_g2_delegation_control.py": 12,
+    "tests/test_g2_delegation_control.py": 54,
     "tests/test_g2_delegation_exec.py": 24,
-    "tests/test_g2_delegation_fence.py": 4,
+    "tests/test_g2_delegation_fence.py": 35,
     "tests/test_g2_delegation_recovery.py": 4,
     "tests/test_g2_delegation_replay.py": 11,
     "tests/test_g2_delegation_spawn.py": 17,
@@ -143,7 +144,7 @@ _FILE_WEIGHTS = {
     "tests/test_pytest_ci_shards.py": 166,
     "tests/test_pytest_with_stacks.py": 37,
     "tests/test_receipts.py": 10,
-    "tests/test_recovery.py": 294,
+    "tests/test_recovery.py": 241,
     "tests/test_recovery_atomicity.py": 14,
     "tests/test_release_build.py": 32,
     "tests/test_release_draft.py": 18,
@@ -188,7 +189,7 @@ _FILE_WEIGHTS = {
     "tests/test_schedule_webhook.py": 8,
     "tests/test_scheduler.py": 43,
     "tests/test_schemas.py": 2,
-    "tests/test_slo_and_soak.py": 96,
+    "tests/test_slo_and_soak.py": 131,
     "tests/test_slo_state_pressure.py": 19,
     "tests/test_slow_subscriber.py": 64,
     "tests/test_snapshot.py": 11,
@@ -204,7 +205,7 @@ _FILE_WEIGHTS = {
     "tests/test_tasks.py": 12,
     "tests/test_transactions.py": 4,
     "tests/test_undo_journal.py": 24,
-    "tests/test_undo_recovery.py": 6,
+    "tests/test_undo_recovery.py": 26,
     "tests/test_usage.py": 5,
     "tests/test_veto_scope.py": 6,
     "tests/test_w14_os_sandboxes.py": 2,
