@@ -16,7 +16,9 @@ R0–R3 是 Tauri 桌面壳与发行构建链。
 | **M3** 可替换 | 第二个 chat provider + 内存文件后端（不提供进程隔离） | ✅ 完成 |
 | **M4** 可评估 | 固定案例套件，`replay` 与 `evaluate` 分离 | ✅ 完成 |
 | **M5** 桌面闭环 | Daemon/Host/UI 三进程打通 + 权限审批 UI | ✅ 完成（PR #49） |
-| **R0–R3（拆分）** | R1 Tauri 薄壳；R2 锁定 Python/UI bundle 与构建；R3 安装/卸载与发行草稿 | 🟡 四目标基线已并入 `main`（PR #170 / #175 / #186）；已接入 `macos-arm64` 单目标手动草稿。合入后正式 workflow 实跑、安装/升级/回退与 G3 候选实测待完成 |
+| **R0–R3（拆分）** | R1 Tauri 薄壳；R2 锁定 Python/UI bundle 与构建；R3 安装/卸载与发行草稿 | 🟡 四目标基线已并入 `main`（PR #170 / #175 / #186）；`e87a38c` 的单目标预览 workflow 已成功生成未公开的 `v0.1.1` prerelease 草稿，但不是当前主干候选。真机安装/升级/回退、候选 SLO、真实模型 UI 与四目标正式发行仍待验收 |
+
+**当前主干与预览草稿（2026-11-24）**：`e87a38c` 的 [release run 44892061206](https://github.com/lorek666/tianshu-agent/actions/runs/44892061206) 成功，以 `workflow_dispatch` 的 `version=0.1.1`、`macos_arm64_preview=true` 生成[未公开的 prerelease 草稿](https://github.com/lorek666/tianshu-agent/releases/tag/v0.1.1)，含六项资产；`runtime_smoke=pass`、`device_verification=unknown`、`signed=false`。其同 SHA [main push CI 44890059535](https://github.com/lorek666/tianshu-agent/actions/runs/44890059535) 九项 job 全部 success，但当前 `origin/main=c5fcff0`；该主干的 [push CI 45078725688](https://github.com/lorek666/tianshu-agent/actions/runs/45078725688) 因 Windows shard0 达到 25 分钟上限而整体 cancelled。因此该草稿只证明 `e87a38c` 的预览构建已实跑，不是当前主干候选，也不等于已发布或真机验收。
 
 W9 网络校验与分页、W14 macOS 和 Linux 子进程沙箱、SLO/Soak 测量工具已随 [PR #196](https://github.com/lorek666/tianshu-agent/pull/196) 合入。首发 `macos-arm64` 限定预览的最终候选 SLO、资源采样和用户设备验收仍待执行；按 [PRD §10.6 / §11.1](PRD-v1.md)，**已取消强制 ≥10h soak，无替代时长**，现有工具/测试/阈值仅为可选、非阻断诊断，长时稳定性未验证。四目标正式发行的长时 Soak 要求不变；Windows 系统凭据后端尚待交付。
 
@@ -44,8 +46,11 @@ GitHub Actions。**四项 required 全部必过**：Ubuntu / macOS / Windows Pyt
 （`ui · typecheck / test / build`，含 `git diff --exit-code -- ui/dist` 产物漂移门禁）。
 准确检查名称见 [CONTRIBUTING §6](../CONTRIBUTING.md#6-pr-要求)；任一失败或未完成均不能合并。
 
-Python 矩阵为三平台 × Python 3.12。Windows 用两个独立 runner 分片 + 原生命名管道/长等待诊断，
-由汇总 job 绑定其 `success`；R1 的 macOS Rust fmt/test/clippy 并入现有 macOS required job，
+Python 矩阵为三平台 × Python 3.12。Windows 用多个独立 runner 分片 + 原生命名管道/长等待诊断，
+分片数量与权重以冻结工作流为准，不减少测试、不提高 25 分钟上限；当前 `c5fcff0` 的 shard0
+超时修复候选见 [PR #229](https://github.com/lorek666/tianshu-agent/pull/229)，其[托管 run 45324054878](https://github.com/lorek666/tianshu-agent/actions/runs/45324054878)
+整轮十个 job 已全部成功，包括三个 Windows 分片与 required 汇总、macOS Python、Ubuntu、UI 与桌面 Rust；候选尚未合入 `main`，当前主干状态不变。
+由汇总 job 绑定各片 `success`；R1 的 macOS Rust fmt/test/clippy 并入现有 macOS required job，
 Windows Rust 检查由现有 Windows required 汇总 job 绑定，**不新增 required 名称**。
 
 两条容易被误用的门禁口径：
