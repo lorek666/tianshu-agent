@@ -92,6 +92,46 @@ def test_host_readiness_rejects_a_foreign_instance(tmp_path, monkeypatch, foreig
         slo._wait_host_ready(proc, tmp_path, io.BytesIO(), timeout=0.01)
 
 
+def test_host_readiness_rejects_identity_replaced_during_http_probe(tmp_path, monkeypatch):
+    candidate = slo.host.HostInfo(pid=42, port=47123, token="private", started_at=1)
+    proc = SimpleNamespace(pid=42, returncode=None, poll=lambda: None)
+    births = iter(["owned", "owned"])
+    monkeypatch.setattr(slo, "process_birth_identity", lambda _pid: next(births, "replacement"))
+    monkeypatch.setattr(slo.host, "read_host_info", lambda _root: candidate)
+    monkeypatch.setattr(slo.host, "_http_alive", lambda _info: True)
+    now = [0.0]
+
+    def advance():
+        now[0] += 0.006
+        return now[0]
+
+    monkeypatch.setattr(slo.time, "monotonic", advance)
+    monkeypatch.setattr(slo.time, "sleep", lambda _seconds: None)
+    with pytest.raises(RuntimeError, match="不属于本次启动"):
+        slo._wait_host_ready(proc, tmp_path, io.BytesIO(), timeout=0.01)
+
+
+def test_host_readiness_http_exit_preserves_stderr_at_deadline(tmp_path, monkeypatch):
+    candidate = slo.host.HostInfo(pid=42, port=47123, token="private", started_at=1)
+    polls = iter([None, 7])
+    proc = SimpleNamespace(pid=42, returncode=7, poll=lambda: next(polls))
+    now = [0.0]
+    monkeypatch.setattr(slo, "process_birth_identity", lambda _pid: "owned")
+    monkeypatch.setattr(slo.host, "read_host_info", lambda _root: candidate)
+
+    def finish_http(_info):
+        now[0] = 1.0
+        return True
+
+    monkeypatch.setattr(slo.host, "_http_alive", finish_http)
+    monkeypatch.setattr(slo.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(slo.time, "sleep", lambda _seconds: None)
+    with pytest.raises(RuntimeError, match="rc=7.*ownership diagnostic"):
+        slo._wait_host_ready(
+            proc, tmp_path, io.BytesIO(b"ownership diagnostic\n"), timeout=0.01,
+        )
+
+
 def test_host_readiness_early_exit_preserves_stderr_evidence(tmp_path):
     proc = SimpleNamespace(pid=42, returncode=7, poll=lambda: 7)
     with pytest.raises(RuntimeError, match="rc=7.*ownership diagnostic"):
@@ -100,7 +140,9 @@ def test_host_readiness_early_exit_preserves_stderr_evidence(tmp_path):
         )
 
 
-@pytest.mark.parametrize(("ready_seconds", "state_available"), [(24.0, False), (29.0, True)])
+@pytest.mark.parametrize(
+    ("ready_seconds", "state_available"), [(24.0, False), (29.0, True), (24.5, False)],
+)
 def test_host_startup_uses_one_total_deadline(
     tmp_path, monkeypatch, ready_seconds, state_available,
 ):
@@ -112,6 +154,7 @@ def test_host_startup_uses_one_total_deadline(
     info = slo.host.HostInfo(pid=42, port=47123, token="private", started_at=1)
     http_calls = []
     readiness_timeouts = []
+    state_timeouts = []
 
     def launch(*_args, **_kwargs):
         now[0] += 5.0
@@ -122,8 +165,10 @@ def test_host_startup_uses_one_total_deadline(
         now[0] += ready_seconds
         return info
 
-    def request(*_args, **_kwargs):
+    def request(*_args, **kwargs):
         http_calls.append(now[0])
+        state_timeouts.append(kwargs["timeout"])
+        now[0] += kwargs["timeout"]
         if state_available:
             return 200, {"ok": True}
         raise OSError("not ready")
@@ -149,12 +194,44 @@ def test_host_startup_uses_one_total_deadline(
             tracked_pids=slo.TrackedPids(),
         )
     assert readiness_timeouts == [25.0]
+    if ready_seconds == 24.5:
+        assert state_timeouts and state_timeouts[0] == pytest.approx(0.5)
     if state_available:
         assert now[0] == 34.0
         assert http_calls == []
     else:
         assert now[0] < 31.0
         assert http_calls
+
+
+@pytest.mark.parametrize("windows", [True, False])
+def test_native_python_child_bypasses_only_the_windows_launcher(
+    tmp_path, monkeypatch, windows,
+):
+    executable = tmp_path / "venv" / "python.exe"
+    base_executable = tmp_path / "base" / "python.exe"
+    argv = [str(executable), "worker.py"]
+    with monkeypatch.context() as patch:
+        patch.setattr(slo.os, "name", "nt" if windows else "posix")
+        patch.setattr(sys, "executable", str(executable))
+        patch.setattr(sys, "_base_executable", str(base_executable))
+        command, env = slo._native_python_child(argv, env={"KEEP": "yes"})
+    assert command == ([str(base_executable), "worker.py"] if windows else argv)
+    assert env["KEEP"] == "yes"
+    if windows:
+        assert env["PYTHONPATH"] == os.pathsep.join(sys.path)
+    else:
+        assert "PYTHONPATH" not in env
+
+
+def test_native_python_child_leaves_non_python_commands_unchanged(monkeypatch):
+    argv = ["custom-daemon", "--serve"]
+    with monkeypatch.context() as patch:
+        patch.setattr(slo.os, "name", "nt")
+        command, env = slo._native_python_child(argv, env={"KEEP": "yes"})
+    assert command == argv
+    assert command is argv
+    assert env == {"KEEP": "yes"}
 
 
 def test_recovery_daemon_launcher_drains_unread_stderr_to_a_file():

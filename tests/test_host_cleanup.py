@@ -12,6 +12,8 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -24,6 +26,7 @@ import os
 import socket
 import sys
 import threading
+import time
 from pathlib import Path
 from tianshu import host, ipc, leases
 from tianshu.cli import _force_utf8_streams
@@ -47,7 +50,10 @@ send({'pid': os.getpid()})
 if mode.startswith('host:'):
     original_ensure = host.DaemonSupervisor.ensure
     original_serve = host.UiBridge.serve_background
+    original_forever = host.UiBridge.serve_forever
+    original_health = host.UiBridge.wait_until_healthy
     original_init = host.UiBridge.__init__
+    original_write = host._write_host_info
     bridges = []
     supervisors = []
     def ensure(self):
@@ -65,6 +71,22 @@ if mode.startswith('host:'):
             assert receive() == 'serve'
         original_serve(self)
         send({'ready': True})
+    def checked_write(data_root, info, *, expected=None):
+        if mode == 'host:first-after-publish' and info.pid == os.getpid() and info.port > 0:
+            assert host._http_healthy(info.port, timeout=0.2)
+        return original_write(data_root, info, expected=expected)
+    def paused_forever(self):
+        if mode == 'host:first-after-publish':
+            (root / 'serving-paused').touch()
+            deadline = time.monotonic() + 20
+            while not (root / 'allow-health').exists():
+                assert time.monotonic() < deadline
+                time.sleep(0.01)
+        return original_forever(self)
+    def observed_health(self, *, timeout):
+        if mode == 'host:first-after-publish':
+            (root / 'health-wait-entered').touch()
+        return original_health(self, timeout=timeout)
     if mode == 'host:monitor-held':
         original_start = threading.Thread.start
         def start(self):
@@ -95,6 +117,9 @@ if mode.startswith('host:'):
     host.DaemonSupervisor.ensure = ensure
     host.UiBridge.__init__ = bridge_init
     host.UiBridge.serve_background = serve
+    host.UiBridge.serve_forever = paused_forever
+    host.UiBridge.wait_until_healthy = observed_health
+    host._write_host_info = checked_write
     code = host.run_host(
         root, ui_dir=root / 'ui',
         daemon_command=[sys.executable, '-m', 'tianshu', 'daemon', '--model', 'scripted'],
@@ -381,6 +406,21 @@ def test_same_instance_can_publish_its_new_port(tmp_path: Path) -> None:
     assert host.read_host_info(tmp_path) == info
 
 
+def _wait_published(root: Path, pid: int, *, timeout: float = 10.0) -> host.HostInfo:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        current = host.read_host_info(root)
+        if (
+            current is not None
+            and current.pid == pid
+            and current.port > 0
+            and host._http_alive(current)
+        ):
+            return current
+        threading.Event().wait(0.02)
+    raise AssertionError(f"Host {pid} 未发布健康实例")
+
+
 def test_late_real_host_cannot_replace_the_running_owner_or_stop_its_daemon() -> None:
     """A 真 ensure 后暂停，B 真启动；A 必须非零退出，B 与共享 Daemon 仍可用。"""
     with tempfile.TemporaryDirectory(prefix="hstop-", dir=None if os.name == "nt" else "/tmp") as d:
@@ -393,10 +433,9 @@ def test_late_real_host_cannot_replace_the_running_owner_or_stop_its_daemon() ->
                 assert initial is not None and initial.pid == first.pid and initial.port == 0
                 with _peer(root, "host:second") as second:
                     assert second.receive() == {"ready": True}
-                    winner = host.read_host_info(root)
-                    assert winner is not None and winner.pid == second.pid
-                    assert host._http_alive(winner)
+                    winner = _wait_published(root, second.pid)
                     first.send("publish")
+                    assert first.receive() == {"ready": True}
                     assert first.receive() == {
                         "exit": 1, "bridge_closed": True, "monitor_alive": False, "log_open": False
                     }
@@ -415,38 +454,148 @@ def test_late_real_host_cannot_replace_the_running_owner_or_stop_its_daemon() ->
             daemon.request_shutdown(root, reason="test_cleanup", timeout=5)
 
 
-def test_real_host_publication_and_service_start_cannot_be_taken_over() -> None:
-    """端口已写、serve尚未开始时，第二真实Host不能接管出两个活桥。"""
+def test_running_host_exits_without_stopping_daemon_when_identity_is_replaced() -> None:
+    temporary_dir = None if os.name == "nt" else "/tmp"
+    with tempfile.TemporaryDirectory(prefix="howner-", dir=temporary_dir) as d:
+        root = Path(d)
+        try:
+            with _peer(root, "host:second-after-publish") as running:
+                assert running.receive() == {"ready": True}
+                published = _wait_published(root, running.pid)
+                current = host.read_host_info(root)
+                assert current == published and current.pid == running.pid and current.port > 0
+                replacement = host.HostInfo(
+                    current.pid + 1, 0, "replacement", current.started_at + 1
+                )
+                host.write_host_info(root, replacement, expected=current)
+                assert running.receive() == {
+                    "exit": 1, "bridge_closed": True, "monitor_alive": False, "log_open": False
+                }
+                assert running.proc.wait(timeout=10) == 1
+                assert host.read_host_info(root) == replacement
+                assert ipc.probe(root, timeout=1)
+        finally:
+            daemon.request_shutdown(root, reason="test_cleanup", timeout=5)
+
+
+def test_starting_host_cannot_leave_two_published_bridges() -> None:
+    """桥尚未健康时端口不发布；后接管者成功后旧桥必须关闭。"""
     with tempfile.TemporaryDirectory(prefix="hpub-", dir=None if os.name == "nt" else "/tmp") as d:
         root = Path(d)
         try:
             with _peer(root, "host:first-after-publish") as first:
                 before_serve = first.receive()
                 assert before_serve["before_serve"] is True and before_serve["port"] > 0
+                starting = host.read_host_info(root)
+                assert starting is not None
+                assert starting.pid == first.pid and starting.port == 0
                 assert ipc.probe(root, timeout=1)
-                with _peer(root, "host:second-after-publish") as second:
-                    # 只在真实内核锁返回busy后放行A；不等待本来就该被挡住的B ready。
-                    assert second.receive() == {"blocked": True}
+                with _peer(root, "host:second") as second:
+                    assert second.receive() == {"ready": True}
+                    winner = _wait_published(root, second.pid)
                     first.send("serve")
                     assert first.receive() == {"ready": True}
-                    assert second.receive() == {
+                    deadline = time.monotonic() + 10
+                    while not (root / "health-wait-entered").exists():
+                        assert first.proc.poll() is None and time.monotonic() < deadline
+                        threading.Event().wait(0.01)
+                    (root / "allow-health").touch()
+                    assert first.receive() == {
                         "exit": 1, "bridge_closed": True, "monitor_alive": False, "log_open": False
                     }
-                    assert second.proc.wait(timeout=10) == 1
-                    winner = host.read_host_info(root)
-                    assert winner is not None and winner.pid == first.pid
-                    assert winner.port == before_serve["port"]
+                    assert first.proc.wait(timeout=10) == 1
+                    assert host.read_host_info(root) == winner
                     assert host._http_alive(winner)
                     assert ipc.probe(root, timeout=1)
                     assert host.stop_host(root, timeout=20) == 0
-                    assert first.receive() == {
+                    assert second.receive() == {
                         "exit": 0, "bridge_closed": True, "monitor_alive": False, "log_open": False
                     }
-                    assert first.proc.wait(timeout=10) == 0
+                    assert second.proc.wait(timeout=10) == 0
                     assert not ipc.probe(root, timeout=0.5)
                     assert host.read_host_info(root) is None
         finally:
             daemon.request_shutdown(root, reason="test_cleanup", timeout=5)
+
+
+def test_http_health_requires_a_real_health_response() -> None:
+    accepted = threading.Event()
+    release = threading.Event()
+    errors = []
+
+    def silent_listener(listener: socket.socket) -> None:
+        connections = []
+        try:
+            while not release.is_set():
+                try:
+                    connection, _ = listener.accept()
+                except TimeoutError:
+                    continue
+                connections.append(connection)
+                accepted.set()
+        except OSError as exc:
+            if not release.is_set():
+                errors.append(exc)
+        finally:
+            for connection in connections:
+                connection.close()
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(4)
+        listener.settimeout(0.05)
+        thread = threading.Thread(target=silent_listener, args=(listener,), daemon=True)
+        thread.start()
+        try:
+            assert not host._http_healthy(listener.getsockname()[1], timeout=0.1)
+            assert accepted.wait(timeout=2)
+        finally:
+            release.set()
+            thread.join(timeout=5)
+    assert not thread.is_alive() and not errors
+
+
+def test_monitor_stop_waits_until_thread_start_finishes(tmp_path: Path, monkeypatch) -> None:
+    supervisor = host.DaemonSupervisor(tmp_path, [])
+    real_start = threading.Thread.start
+    real_join = threading.Thread.join
+    start_entered = threading.Event()
+    release_start = threading.Event()
+    join_entered = threading.Event()
+    errors = []
+
+    def held_start(thread):
+        if thread.name == "daemon-supervisor":
+            start_entered.set()
+            assert release_start.wait(timeout=10)
+        return real_start(thread)
+
+    def observed_join(thread, *args, **kwargs):
+        if thread.name == "daemon-supervisor":
+            join_entered.set()
+        return real_join(thread, *args, **kwargs)
+
+    def run(action):
+        try:
+            action()
+        except Exception as exc:  # noqa: BLE001 - asserted after both real threads join
+            errors.append(exc)
+
+    monkeypatch.setattr(threading.Thread, "start", held_start)
+    monkeypatch.setattr(threading.Thread, "join", observed_join)
+    starter = threading.Thread(target=run, args=(supervisor.start_monitor,))
+    stopper = threading.Thread(target=run, args=(supervisor.stop_monitor,))
+    try:
+        starter.start()
+        assert start_entered.wait(timeout=10)
+        stopper.start()
+        assert not join_entered.wait(timeout=0.2), "joined an unstarted monitor thread"
+    finally:
+        release_start.set()
+        starter.join(timeout=15)
+        stopper.join(timeout=15)
+    assert not starter.is_alive() and not stopper.is_alive()
+    assert errors == []
 
 
 def test_real_stop_cannot_join_monitor_before_its_thread_has_started() -> None:
@@ -483,7 +632,6 @@ def test_real_stop_cannot_join_monitor_before_its_thread_has_started() -> None:
                             assert client.fileno() >= 0
                             running.send("start")
                             released = True
-                            assert running.receive() == {"ready": True}
                             # 边界观测仍为0.4秒；服务确认启动后只读完同一请求。
                             client.settimeout(5)
                             while chunk := client.recv(65536):
@@ -492,6 +640,10 @@ def test_real_stop_cannot_join_monitor_before_its_thread_has_started() -> None:
                         assert separator and headers.split(b"\r\n")[0].split()[1] == b"200"
                         health = json.loads(body)
                         assert health == {"ok": True, "pid": running.pid}
+                    if not released:
+                        running.send("start")
+                        released = True
+                    _wait_published(root, running.pid)
                     env = {
                         k: v for k, v in os.environ.items()
                         if not k.startswith(("TIANSHU_", "OPENAI_", "ANTHROPIC_"))
@@ -521,7 +673,7 @@ def test_real_stop_cannot_join_monitor_before_its_thread_has_started() -> None:
                     "exit": 0, "bridge_closed": True, "monitor_alive": False, "log_open": False
                 }, stderr.decode()
                 assert stderr == b""
-                assert not http_alive_before_start
+                assert http_alive_before_start
         finally:
             daemon.request_shutdown(root, reason="test_cleanup", timeout=5)
 

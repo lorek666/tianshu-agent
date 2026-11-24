@@ -624,16 +624,40 @@ def _wait_host_ready(
             candidate is not None and candidate.pid == proc.pid
             and candidate.port > 0 and host._http_alive(candidate)  # noqa: SLF001
         ):
-            return candidate
+            if proc.poll() is not None:
+                raise RuntimeError(
+                    f"Host 启动进程提前退出 rc={proc.returncode}: {_stderr_tail(stderr)}"
+                )
+            try:
+                confirmed = host.read_host_info(data_root)
+            except host.HostError:
+                confirmed = None
+            if (
+                proc.poll() is None and birth is not None
+                and process_birth_identity(proc.pid) == birth
+                and confirmed == candidate
+            ):
+                return candidate
         time.sleep(0.005)
     raise RuntimeError(f"Host 在 {timeout}s 内未就绪，或就绪实例不属于本次启动的进程")
+
+
+def _native_python_child(
+    command: list[str], *, env: dict[str, str],
+) -> tuple[list[str], dict[str, str]]:
+    if os.name != "nt":
+        return command, env
+    native = _native_python_command(command)
+    if native == command:
+        return command, env
+    return native, {**env, "PYTHONPATH": os.pathsep.join(sys.path)}
 
 
 def _launch_host(
     command: list[str], *, env: dict[str, str],
 ) -> tuple[subprocess.Popen[bytes], BinaryIO]:
-    # A native file cannot block shutdown on an unread stderr pipe, and remains
-    # readable if a separate launcher exits before the actual Host.
+    command, env = _native_python_child(command, env=env)
+    # A native file cannot block shutdown on an unread stderr pipe.
     stderr = tempfile.TemporaryFile()
     try:
         return subprocess.Popen(  # noqa: S603 - caller constructs a fixed Host argv
@@ -647,6 +671,7 @@ def _launch_host(
 def _launch_recovery_daemon(
     command: list[str], *, env: dict[str, str],
 ) -> tuple[subprocess.Popen[bytes], BinaryIO]:
+    command, env = _native_python_child(command, env=env)
     stderr = tempfile.TemporaryFile()
     try:
         return subprocess.Popen(  # noqa: S603 - caller constructs a fixed Daemon argv
@@ -1559,9 +1584,12 @@ def _measure_one_host_startup(
         if time.monotonic() >= startup_deadline:
             raise RuntimeError("Host 在 30s 内未进入就绪状态")
         while True:
+            remaining = startup_deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError("Host 在 30s 内未进入就绪状态")
             try:
                 st, state_resp = _http_request(
-                    info.port, "GET", "/state", info.token, timeout=2.0,
+                    info.port, "GET", "/state", info.token, timeout=min(2.0, remaining),
                 )
                 if st == 200 and state_resp.get("ok") is True:
                     if expect_warm_events > 0:
@@ -2418,7 +2446,7 @@ def run_suite3_crash_recovery(
             lock_root=lock_root,
         )
         # Step 1: 真子进程执行至 failpoint 触发 os._exit(77) 硬退
-        crash_proc = subprocess.run(  # noqa: S603
+        crash_command, crash_env = _native_python_child(
             [
                 sys.executable,
                 str(Path(__file__).resolve()),
@@ -2432,6 +2460,10 @@ def run_suite3_crash_recovery(
                 scenario,
             ],
             env=env,
+        )
+        crash_proc = subprocess.run(  # noqa: S603
+            crash_command,
+            env=crash_env,
             capture_output=True,
             text=True,
             encoding="utf-8",

@@ -522,21 +522,25 @@ class _HostCluster:
         # The parent cannot leave an unread PIPE attached during a ten-hour run.
         # This private transient log is not one of the D7 export materials.
         stderr_path = self.data_root.parent / "host-stderr.log"
+        command, env = slo_mod._native_python_child(  # noqa: SLF001
+            [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "--_child-role",
+                "soak-host",
+                "--data-root",
+                str(self.data_root),
+                "--_ui-dir",
+                str(self.ui_dir),
+            ],
+            env=self.env,
+        )
         with stderr_path.open("wb") as err_log:
             proc = subprocess.Popen(  # noqa: S603
-                slo_mod._native_python_command([  # noqa: SLF001
-                    sys.executable,
-                    str(Path(__file__).resolve()),
-                    "--_child-role",
-                    "soak-host",
-                    "--data-root",
-                    str(self.data_root),
-                    "--_ui-dir",
-                    str(self.ui_dir),
-                ]),
+                command,
                 stdout=subprocess.DEVNULL,
                 stderr=err_log,
-                env=self.env,
+                env=env,
             )
         self.proc = proc
         slo_mod._record_pid(proc.pid, self.tracked_pids)  # noqa: SLF001

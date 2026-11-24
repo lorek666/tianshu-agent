@@ -426,7 +426,7 @@ def test_measure_slo_smoke_and_run_soak_real_subprocesses(
     soak_dir = tmp_path / "soak-out"
 
     def _run_slo() -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
+        command, env = slo_mod._native_python_child(  # noqa: SLF001
             [
                 sys.executable,
                 str(SCRIPTS_DIR / "measure_slo.py"),
@@ -438,6 +438,11 @@ def test_measure_slo_smoke_and_run_soak_real_subprocesses(
                 "--output-md",
                 str(slo_md),
             ],
+            env=dict(os.environ),
+        )
+        return subprocess.run(
+            command,
+            env=env,
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -446,7 +451,7 @@ def test_measure_slo_smoke_and_run_soak_real_subprocesses(
         )
 
     def _run_soak() -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
+        command, env = slo_mod._native_python_child(  # noqa: SLF001
             [
                 sys.executable,
                 str(SCRIPTS_DIR / "run_soak.py"),
@@ -457,6 +462,11 @@ def test_measure_slo_smoke_and_run_soak_real_subprocesses(
                 "--output-dir",
                 str(soak_dir),
             ],
+            env=dict(os.environ),
+        )
+        return subprocess.run(
+            command,
+            env=env,
             capture_output=True,
             text=True,
             encoding="utf-8",

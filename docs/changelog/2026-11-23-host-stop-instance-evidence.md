@@ -85,7 +85,32 @@ TOCTOU 窗口：真实双 Host 探针让次 Host 在旧 Host 停止前完成接�
 放入同一 Host 元数据临界区，次 Host 在旧根回收完成前不能接管；新增双 Host 屏障
 回归在 v16 私有副本为红、v17 为绿。v16 裸全量在发现该反例后停止，不作最终验收。
 
-## 验证与边界
+## v26–v35 独立复审与停止竞态修复（2026-11-24）
+
+v28 冻结被两路独立读者拒绝：`stop_monitor()` 未与 spawn 锁串行化，
+监控恢复在一次存活检查后可能永久失监，SLO readiness 在 HTTP 返回前没有复核
+进程出生身份与完整 Host 实例，冻结 manifest 的描述也无法按字节复算。
+后续私有变异还依次暴露了 Popen 前二次停止检查、旧监控代等待后复核，
+以及“先置停止事件再抢 spawn 锁”仍不足以约束 in-flight Popen 的顺序问题。
+v29–v34 的逃逸与失败原件全部保留，没有用后续绿覆盖。
+
+v35 将 `stop_monitor()` 固定为“先取得 spawn `_lock`，再置位 `_stop`，最后在
+`_monitor_lock` 内递增代际并 join”；`_spawn_and_wait()` 在入口和 `Popen`
+前各检查一次停止事件。监控恢复先递增代际并启动替代线程，旧代在等待前、
+等待后和退避后均复核代际，不再依赖一次 `is_alive()` 猜测。
+SLO readiness 在 HTTP 健康检查后再次核对原进程存活、OS birth identity 和完整
+HostInfo；HTTP 期间早退立即保留 rc/stderr，启动与 `/state` 共享同一总截止。
+Windows 仅改写当前 Python launcher，并保留调用方环境与项目导入路径；非 Python
+命令原样返回。冻结清单改用 `git ls-tree -r -z --full-tree`，明确排除 `docs/`
+及所有 `.md` 路径，并把 NUL 记录分隔符转为 LF 后计算 SHA256。
+
+v35 首次生成凭证时脚本误沿用 `freeze-v34.json` 文件名，独立读者据此拒绝绑定；
+主控保留误命名原件，生成正确命名的 `freeze-v35.json` 后重新绑定两路复审。
+最终 Host 与 Process/SLO 限定复审均为 PASS，主控在新私有目录重放关键绿灯、
+两项变异红测和 manifest 逐字节重算均通过。该结论只绑定下述非文档代码树，
+不代表 Windows 原生沙箱、任意后代监管、hosted CI 或用户设备验收。
+
+## v17 验证与边界（历史）
 
 本机最终受影响 Host、SLO/soak、进程身份及集成回归退出 0；
 30 项私有副本变异负控均实际触发预期断言失败，原源文件字节未变。
@@ -101,6 +126,41 @@ TOCTOU 窗口：真实双 Host 探针让次 Host 在旧 Host 停止前完成接�
 - 裸全量日志 SHA256：`9c6d25c7ae6e4d96e37c336270e540e9da091127a3dd950d43d20f3085545fa4`。
 - 第二读者报告 SHA256：`ad3093909d1d40f362f5811bb57e828248727b8ca603331e664e9d2545e1b909`；
   主控复审验收回执 SHA256：`e24fffade375fae281aca475d2f24ed616ccc5e3ed3467dcfd46175ae773e8ec`。
+
+## v35 当前候选验证与边界
+
+- 冻结 index tree：`f8f54975b0ca593455c160c405a11ee124fe7172`；
+  src 树：`317defbd5e35ad8f5295bdea1667ad6a11f4361c`；
+  tests 树：`46abdfb0154b0b874380ab3f993edfc11518e69a`；
+  scripts 树：`f3d26727678cdc28e2b2b293a8a071b55352bd14`。
+- 非文档清单 SHA256：`c3908bf54edcd5b96a2d605be9a1a202f8ebe8edd2b9b45f652ac766f4014b03`；
+  冻结凭证 SHA256：`a568c461957cb807eb26615a3ae2e10c46aba036b4a50692c96e49fffd68e899`。
+- 完整私有变异负控 receipt SHA256：`c55f79282ee19af30b813ac62141e58391a99009f7f88daa7ba5a1dfc614d675`；
+  八文件受影响域日志 SHA256：`12da52b716e1dc1ae153cc884fa12502ea55c988d6bec63eecfc944bbaca4625`。
+- Host 绑定复审 SHA256：`7f5fb90cb700d021075e182213c5926e2d04458dfc9e4d8656a5b343b75a5331`；
+  Process/SLO 绑定复审 SHA256：`a934daec6291e792d4f229df90d3124713989168ea7499d2c8e1a562292407ed`；
+  主控私有重放回执 SHA256：`6100948547803b26a21fa11ff63507fdd73808b3f0903d72ee16fe8dcf3cadde`。
+- 验证环境为 `macOS-26.6.2-arm64-arm-64bit` / Python 3.12.13；本机结果不替代
+  原生 Windows、hosted required CI、真实付费模型或用户设备验收。
+- 首次裸全量实际退出 1：系统盘 `/` 仅约 348 MiB 可用，真实触发每根至少 2 GiB
+  的产品准入；失败日志 SHA256
+  `5c9ec797de6c2465fff682a9b8a4128f863f43aca8ecdce1c2691cd6f2f77309`。
+  仅切换 `TMPDIR` 到高空间卷的重试仍退出 1，剩余失败都硬编码 `/tmp`，
+  继续触发同一低盘准入；日志 SHA256
+  `32dc317e18ca5ae5a97b6bf1686bee715b98509bc2d72a101a97bba2b028fe79`。
+  两份失败原件均保留，不改产品门槛、不跳过失败。
+- 用冻结树已有的 `TIANSHU_TEST_TMP_ROOT` 与 `TMPDIR` 将测试数据移到
+  `/Volumes/Date/tianshu-v35-tmp.kiJxww` 后，全部剩余失败用例定向复验退出 0；
+  日志 SHA256
+  `ecf57d762b443151696ef4727347520d0d5715719bac1e0cd93caddf627ffa61`；
+  机器可读回执 SHA256
+  `5397a7a56f3d5a853c931463d8d38bcb0986604d9fabe320ee276615939e64a6`。
+  该开关只移动测试临时根，不改变执行侧低盘准入或测试选集以外的产品行为。
+- 最终无筛选全量命令
+  `TMPDIR=/Volumes/Date/tianshu-v35-tmp.kiJxww TIANSHU_TEST_TMP_ROOT=/Volumes/Date/tianshu-v35-tmp.kiJxww uv run --frozen pytest`
+  实际退出 0；动态总计与跳过原因以日志为准，日志 SHA256
+  `0eaca6235ea2ab724398bae7c9b0869a00b83c26a50d3e5568e2d96110d37850`。
+  同一冻结非文档代码树上的 lock、Ruff、两份 diff 与本地链接检查也均退出 0。
 
 回填仅改文档，须核非文档清单不变并重新通过静态与本地链接检查。
 最终提交及新完整 hosted CI 的 head/base/合成 merge、全部 job 与原始报告验收，

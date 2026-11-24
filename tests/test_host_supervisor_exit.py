@@ -22,7 +22,20 @@ from tianshu import host
 def _child_env():
     # Child protocols and the Host banner must not depend on the Windows OEM
     # code page inherited by a CI runner.
-    return {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    if os.name == "nt":
+        env["PYTHONPATH"] = os.pathsep.join(sys.path)
+    return env
+
+
+def _test_interpreter() -> str:
+    return sys._base_executable if os.name == "nt" else sys.executable
+
+
+def test_native_windows_test_interpreter_keeps_project_imports(monkeypatch):
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "name", "nt")
+        assert _child_env()["PYTHONPATH"] == os.pathsep.join(sys.path)
 
 
 @pytest.fixture
@@ -44,6 +57,108 @@ def held_child():
         finally:
             if child.stdout is not None:
                 child.stdout.close()
+
+
+@pytest.mark.parametrize(
+    ("argv", "windows", "bypass"),
+    [
+        (["python", "custom-daemon.py"], True, True),
+        (["python", "custom-daemon.py"], False, False),
+        (["python", "-m", "tianshu", "daemon"], False, True),
+        (["custom-daemon"], True, False),
+    ],
+)
+def test_owned_python_command_bypasses_only_a_windows_launcher(
+    tmp_path, monkeypatch, argv, windows, bypass,
+):
+    executable = tmp_path / "venv" / "python.exe"
+    base_executable = tmp_path / "base" / "python.exe"
+    argv = [str(executable) if item == "python" else item for item in argv]
+    with monkeypatch.context() as patch:
+        patch.setattr(sys, "executable", str(executable))
+        patch.setattr(sys, "_base_executable", str(base_executable))
+        command, env = host._owned_process_command(argv, windows=windows)
+    assert command[0] == (str(base_executable) if bypass else argv[0])
+    assert command[1:] == argv[1:]
+    if bypass:
+        assert env is not None
+        assert env["PYTHONPATH"] == os.pathsep.join(sys.path)
+    else:
+        assert env is None
+
+
+@pytest.mark.parametrize("alias", ["dot", "parent", "relative"])
+def test_owned_python_command_normalizes_a_launcher_alias(
+    tmp_path, monkeypatch, alias,
+):
+    executable = tmp_path / "venv" / "python.exe"
+    if alias == "dot":
+        command = f"{executable.parent}{os.sep}.{os.sep}python.exe"
+    elif alias == "parent":
+        command = f"{executable.parent}{os.sep}missing{os.sep}..{os.sep}python.exe"
+    else:
+        monkeypatch.chdir(tmp_path)
+        command = os.path.relpath(executable, tmp_path)
+    with monkeypatch.context() as patch:
+        patch.setattr(sys, "executable", str(executable))
+        patch.setattr(sys, "_base_executable", str(tmp_path / "base" / "python.exe"))
+        selected, env = host._owned_process_command(
+            [command, "custom-daemon.py"], windows=True,
+        )
+    assert selected == [str(tmp_path / "base" / "python.exe"), "custom-daemon.py"]
+    assert env is not None and env["PYTHONPATH"] == os.pathsep.join(sys.path)
+
+
+@pytest.mark.parametrize("configure_utf8", [True, False])
+def test_direct_host_child_sets_utf8_before_chinese_failure(tmp_path, configure_utf8):
+    configure = "_force_utf8_streams()" if configure_utf8 else "pass"
+    script = f"""
+import sys
+from pathlib import Path
+from tianshu import host
+from tianshu.cli import _force_utf8_streams
+{configure}
+def fail(self):
+    raise host.HostError("受控启动失败")
+host.DaemonSupervisor.ensure = fail
+raise SystemExit(host.run_host(
+    Path(sys.argv[1]), ui_dir=Path(sys.argv[1]) / "ui",
+    daemon_command=[], supervise=False,
+))
+"""
+    env = {**os.environ, "PYTHONIOENCODING": "cp1252", "PYTHONUTF8": "0"}
+    result = subprocess.run(
+        [sys.executable, "-u", "-c", script, str(tmp_path)],
+        capture_output=True, env=env, timeout=20, check=False,
+    )
+    if configure_utf8:
+        assert result.returncode == 1
+        assert "启动守护进程失败：受控启动失败" in result.stderr.decode("utf-8")
+    else:
+        assert result.returncode == 1
+        assert b"\\u542f\\u52a8" in result.stderr
+        assert "启动守护进程失败" not in result.stderr.decode("utf-8")
+
+
+@pytest.mark.parametrize("same_executable", [True, False])
+def test_owned_python_command_checks_a_windows_path_launcher(
+    tmp_path, monkeypatch, same_executable,
+):
+    executable = tmp_path / "venv" / "python.exe"
+    resolved = executable if same_executable else tmp_path / "other" / "python.exe"
+    with monkeypatch.context() as patch:
+        patch.setattr(sys, "executable", str(executable))
+        patch.setattr(sys, "_base_executable", str(tmp_path / "base" / "python.exe"))
+        patch.setattr(host.shutil, "which", lambda name: str(resolved))
+        command, env = host._owned_process_command(
+            ["python", "custom-daemon.py"], windows=True,
+        )
+    if same_executable:
+        assert command == [str(tmp_path / "base" / "python.exe"), "custom-daemon.py"]
+        assert env is not None and env["PYTHONPATH"] == os.pathsep.join(sys.path)
+    else:
+        assert command == ["python", "custom-daemon.py"]
+        assert env is None
 
 
 def test_stop_waits_for_owned_child_after_endpoint_is_gone(
@@ -219,7 +334,192 @@ def test_stop_records_owned_process_wait_facts(tmp_path, held_child, capsys, mon
     assert type(records[-1]["monotonic_ns"]) is int
 
 
-def test_monitor_cannot_spawn_after_stop_was_requested(tmp_path, monkeypatch):
+def test_stop_failure_restores_monitor_without_unconfirmed_shutdown(tmp_path, monkeypatch):
+    supervisor = host.DaemonSupervisor(tmp_path, [])
+    monkeypatch.setattr(supervisor, "alive", lambda: True)
+    supervisor.start_monitor()
+    try:
+        assert supervisor._thread is not None and supervisor._thread.is_alive()
+
+        def fail_shutdown(**_kwargs):
+            supervisor._shutdown_unconfirmed = False
+            raise host.HostError("controlled stop failure")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(supervisor, "_shutdown_daemon", fail_shutdown)
+            with pytest.raises(host.HostError, match="controlled stop failure"):
+                supervisor.stop(timeout=0.1)
+        assert not supervisor._stop.is_set()
+        assert supervisor._thread.is_alive()
+    finally:
+        supervisor.stop_monitor()
+
+
+def test_stop_lock_contention_does_not_cancel_monitor(tmp_path, monkeypatch):
+    supervisor = host.DaemonSupervisor(tmp_path, [])
+    monkeypatch.setattr(supervisor, "alive", lambda: True)
+    supervisor.start_monitor()
+    try:
+        assert supervisor._stop_lock.acquire(blocking=False)
+        try:
+            with pytest.raises(host.HostError, match="停止核验"):
+                supervisor.stop(timeout=0.01)
+        finally:
+            supervisor._stop_lock.release()
+        assert not supervisor._stop.is_set()
+        assert supervisor._thread is not None and supervisor._thread.is_alive()
+    finally:
+        supervisor.stop_monitor()
+
+
+def test_spawn_and_wait_does_not_start_after_stop(tmp_path, monkeypatch):
+    supervisor = host.DaemonSupervisor(tmp_path, [sys._base_executable, "-c", "pass"])
+    supervisor._stop.set()
+    opened = []
+    monkeypatch.setattr(supervisor, "_open_log", lambda: opened.append(True))
+    supervisor._spawn_and_wait()
+    assert not opened
+    assert supervisor._process is None
+
+
+def test_monitor_loop_rejects_stale_generation_before_waiting(tmp_path, monkeypatch):
+    supervisor = host.DaemonSupervisor(tmp_path, [])
+    supervisor._monitor_generation = 1
+
+    def forbidden_wait(_timeout):
+        raise AssertionError("过期监控代在等待前未退出")
+
+    monkeypatch.setattr(supervisor._stop, "wait", forbidden_wait)
+    supervisor._monitor_loop(0)
+
+
+def test_monitor_loop_rejects_generation_change_during_wait(tmp_path, monkeypatch):
+    supervisor = host.DaemonSupervisor(tmp_path, [])
+    alive_calls = []
+
+    def replace_generation(_timeout):
+        supervisor._monitor_generation = 1
+        return False
+
+    monkeypatch.setattr(supervisor._stop, "wait", replace_generation)
+    monkeypatch.setattr(supervisor, "alive", lambda: alive_calls.append(True) or False)
+    supervisor._monitor_loop(0)
+    assert not alive_calls
+
+
+def test_resume_monitor_replaces_a_live_old_generation(tmp_path, monkeypatch):
+    supervisor = host.DaemonSupervisor(tmp_path, [])
+    entered = threading.Event()
+    release = threading.Event()
+    alive = threading.Event()
+
+    def held_spawn():
+        entered.set()
+        assert release.wait(timeout=10)
+
+    monkeypatch.setattr(supervisor, "alive", alive.is_set)
+    monkeypatch.setattr(supervisor, "_spawn_and_wait", held_spawn)
+    monkeypatch.setattr(host, "RESTART_BACKOFF_S", (0,))
+    supervisor.start_monitor()
+    old = supervisor._thread
+    try:
+        assert old is not None and entered.wait(timeout=10)
+        alive.set()
+        supervisor._resume_monitor()
+        current = supervisor._thread
+        assert current is not None and current is not old and current.is_alive()
+        release.set()
+        old.join(timeout=10)
+        assert not old.is_alive()
+        assert supervisor._thread is current and current.is_alive()
+    finally:
+        release.set()
+        supervisor.stop_monitor()
+
+
+def test_stop_monitor_waits_for_inflight_popen_before_stopping(tmp_path, monkeypatch):
+    supervisor = host.DaemonSupervisor(
+        tmp_path, [sys._base_executable, "-u", "-c", "pass"],
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    popen = host.subprocess.Popen
+
+    def paused_popen(*args, **kwargs):
+        entered.set()
+        assert release.wait(timeout=10)
+        return popen(*args, **kwargs)
+
+    monkeypatch.setattr(host.subprocess, "Popen", paused_popen)
+    supervisor.start_monitor()
+    errors = []
+
+    def stop_monitor():
+        try:
+            supervisor.stop_monitor()
+        except BaseException as exc:
+            errors.append(exc)
+
+    stopper = threading.Thread(target=stop_monitor)
+    try:
+        assert entered.wait(timeout=10)
+        stopper.start()
+        stopper.join(timeout=0.05)
+        assert stopper.is_alive()
+        assert not supervisor._stop.is_set()
+        release.set()
+        stopper.join(timeout=10)
+        assert not stopper.is_alive() and not errors
+        assert supervisor._stop.is_set()
+        assert supervisor._thread is not None and not supervisor._thread.is_alive()
+    finally:
+        release.set()
+        stopper.join(timeout=10)
+        if supervisor._thread is not None:
+            supervisor._thread.join(timeout=10)
+        if supervisor._process is not None:
+            supervisor._process.wait(timeout=10)
+        supervisor._close_log()
+
+
+def test_spawn_rechecks_stop_before_popen(tmp_path, monkeypatch):
+    supervisor = host.DaemonSupervisor(
+        tmp_path, [sys._base_executable, "-u", "-c", "pass"],
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    open_log = supervisor._open_log
+    popen_calls = []
+
+    def paused_open_log():
+        entered.set()
+        assert release.wait(timeout=10)
+        open_log()
+
+    def forbidden_popen(*_args, **_kwargs):
+        popen_calls.append(True)
+        raise AssertionError("Popen started after the final stop check")
+
+    monkeypatch.setattr(supervisor, "_open_log", paused_open_log)
+    monkeypatch.setattr(host.subprocess, "Popen", forbidden_popen)
+    supervisor.start_monitor()
+    try:
+        assert entered.wait(timeout=10)
+        supervisor._stop.set()
+        release.set()
+        assert supervisor._thread is not None
+        supervisor._thread.join(timeout=10)
+        assert not supervisor._thread.is_alive()
+        assert not popen_calls
+        assert supervisor._process is None
+    finally:
+        release.set()
+        if supervisor._thread is not None:
+            supervisor._thread.join(timeout=10)
+        supervisor._close_log()
+
+
+def test_stop_confirms_monitor_exit_before_returning(tmp_path, monkeypatch):
     script = (
         "import sys,threading; from pathlib import Path; root=Path(sys.argv[1]); "
         "(root/'ready').touch()\n"
@@ -248,6 +548,46 @@ def test_monitor_cannot_spawn_after_stop_was_requested(tmp_path, monkeypatch):
         assert entered.wait(timeout=10)
         with pytest.raises(host.HostError, match="监控"):
             supervisor.stop(timeout=0.1)
+    finally:
+        supervisor._stop.set()
+        release.set()
+        assert supervisor._thread is not None
+        supervisor._thread.join(timeout=10)
+        supervisor._close_log()
+    assert not supervisor._thread.is_alive()
+    assert not (tmp_path / "ready").exists()
+    assert supervisor._process is None
+
+
+def test_monitor_cannot_spawn_after_stop_was_requested(tmp_path, monkeypatch):
+    script = (
+        "import sys,threading; from pathlib import Path; root=Path(sys.argv[1]); "
+        "(root/'ready').touch()\n"
+        "while not (root/'release').exists(): threading.Event().wait(0.01)\n"
+    )
+    supervisor = host.DaemonSupervisor(
+        tmp_path, [sys._base_executable, "-u", "-c", script, str(tmp_path)],
+    )
+    entered = threading.Event()
+    release = threading.Event()
+    spawn = supervisor._spawn_and_wait
+
+    def held_spawn():
+        entered.set()
+        assert release.wait(timeout=10)
+        spawn()
+
+    monkeypatch.setattr(supervisor, "alive", (tmp_path / "ready").exists)
+    monkeypatch.setattr(host.ipc, "probe_result", lambda *a, **kw: host.ipc.ProbeResult(
+        False, "controlled-endpoint", "absent", errno.ENOENT, False,
+    ))
+    monkeypatch.setattr(supervisor, "_spawn_and_wait", held_spawn)
+    monkeypatch.setattr(host, "RESTART_BACKOFF_S", (0,))
+    supervisor.start_monitor()
+    try:
+        assert entered.wait(timeout=10)
+        with pytest.raises(host.HostError, match="监控"):
+            supervisor.stop_monitor()
     finally:
         release.set()
         assert supervisor._thread is not None
@@ -549,6 +889,8 @@ while True:
 import sys
 from pathlib import Path
 from tianshu import host
+from tianshu.cli import _force_utf8_streams
+_force_utf8_streams()
 root = Path(sys.argv[1])
 children = []
 popen = host.subprocess.Popen
@@ -573,7 +915,8 @@ raise SystemExit(result)
         )
         proc = None
         try:
-            assert server.stdout is not None and server.stdout.readline() == b"ready\n"
+            assert server.stdout is not None
+            assert server.stdout.readline() in {b"ready\n", b"ready\r\n"}
             assert ipc.probe(root, timeout=0.1)
             proc = subprocess.Popen(
                 [sys.executable, "-u", "-c", host_script, str(root)],
@@ -626,7 +969,7 @@ supervisor = host.DaemonSupervisor(root, [], start_timeout_s=2)
 supervisor.ensure()
 (root / "stall").touch()
 try:
-    supervisor.stop(timeout=0.3)
+    supervisor.stop(timeout=5.0)
 except host.HostError:
     assert (root / "entered").exists(), "request never reached authentication"
     assert all(child.poll() is not None for child in children), "helper was not reaped"
@@ -652,10 +995,12 @@ else:
                 [sys.executable, "-u", "-c", supervisor_script, str(root)],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=_child_env(),
             )
+            started = time.monotonic()
             try:
-                stdout, stderr = proc.communicate(timeout=5)
+                stdout, stderr = proc.communicate(timeout=15)
             except subprocess.TimeoutExpired:
                 pytest.fail("Host remained blocked in shutdown authentication after readiness")
+            assert time.monotonic() - started < 14, "shutdown authentication exceeded its bound"
             assert proc.returncode == 0 and b"bounded-stop" in stdout, stderr
         finally:
             for child in (proc, daemon_proc):
@@ -719,6 +1064,83 @@ def test_monitor_retains_a_live_root_instead_of_spawning_the_next_generation(
     assert held_child.returncode == 0 and supervisor._process is None
 
 
+def test_bridge_failure_is_not_masked_by_host_cleanup_error(
+    tmp_path, monkeypatch, capsys,
+):
+    bridge_error = OSError(errno.EADDRINUSE, "bridge occupied")
+    cleanup_error = PermissionError(errno.EACCES, "host lock held")
+    original_clear = host.clear_host_info
+
+    def fail_bridge(config):
+        raise bridge_error
+
+    def fail_clear(*args, **kwargs):
+        raise cleanup_error
+
+    monkeypatch.setattr(host.DaemonSupervisor, "ensure", lambda self: None)
+    monkeypatch.setattr(host, "UiBridge", fail_bridge)
+    monkeypatch.setattr(host, "clear_host_info", fail_clear)
+    try:
+        with pytest.raises(OSError) as raised:
+            host.run_host(
+                tmp_path, ui_dir=tmp_path / "ui", daemon_command=[], supervise=False,
+            )
+        assert raised.value is bridge_error
+        assert "清理 Host 信息失败" in capsys.readouterr().err
+    finally:
+        original_clear(tmp_path)
+
+
+def test_publish_failure_reaps_owned_root_despite_updated_port():
+    from tianshu import daemon, ipc
+
+    script = r"""
+import sys
+from pathlib import Path
+from tianshu import host
+from tianshu.cli import _force_utf8_streams
+_force_utf8_streams()
+root = Path(sys.argv[1])
+original_write = host._write_host_info
+writes = []
+def fail_second(data_root, info, *, expected=None):
+    writes.append(info.port)
+    if len(writes) == 2:
+        raise host.HostError("controlled publish failure")
+    return original_write(data_root, info, expected=expected)
+host._write_host_info = fail_second
+original_stop = host.DaemonSupervisor.stop
+def fail_start_cleanup(self, *args, **kwargs):
+    if kwargs.get("reason") == "host-start-failure":
+        raise host.HostError("controlled start cleanup failure")
+    return original_stop(self, *args, **kwargs)
+host.DaemonSupervisor.stop = fail_start_cleanup
+raise SystemExit(host.run_host(
+    root, ui_dir=root / "ui",
+    daemon_command=[sys.executable, "-m", "tianshu", "daemon", "--model", "scripted"],
+    port=0, supervise=False,
+))
+"""
+    with tempfile.TemporaryDirectory(
+        prefix="tsh-publishfail-", dir=None if os.name == "nt" else "/tmp",
+    ) as directory:
+        root = Path(directory)
+        result = subprocess.run(
+            [_test_interpreter(), "-u", "-c", script, str(root)],
+            capture_output=True, timeout=30, check=False, env=_child_env(),
+        )
+        assert result.returncode == 1, result.stderr.decode("utf-8", "replace")
+        assert "发布 Host 实例失败" in result.stderr.decode("utf-8")
+        assert not host.host_lock_path(root).exists()
+        deadline = time.monotonic() + 5
+        while daemon.lock_path(root).exists() and time.monotonic() < deadline:
+            threading.Event().wait(0.02)
+        assert not daemon.lock_path(root).exists(), "publish failure leaked its Daemon lock"
+        detail = ipc.probe_result(root, timeout=0.2)
+        assert not detail.ok and detail.errno == errno.ENOENT
+        assert not detail.endpoint_exists
+
+
 @pytest.mark.parametrize("owned", [True, False])
 def test_post_readiness_bridge_bind_failure_reaps_only_owned_root(owned):
     import socket
@@ -729,7 +1151,14 @@ def test_post_readiness_bridge_bind_failure_reaps_only_owned_root(owned):
 import sys
 from pathlib import Path
 from tianshu import host
+from tianshu.cli import _force_utf8_streams
+_force_utf8_streams()
 root = Path(sys.argv[1])
+original_stop = host.DaemonSupervisor.stop
+def observed_stop(self, *args, **kwargs):
+    (root / "bridge-stop").write_text(kwargs.get("reason", "user"), encoding="utf-8")
+    return original_stop(self, *args, **kwargs)
+host.DaemonSupervisor.stop = observed_stop
 raise SystemExit(host.run_host(
     root, ui_dir=root / "ui",
     daemon_command=[sys.executable, "-m", "tianshu", "daemon", "--model", "scripted"],
@@ -766,6 +1195,7 @@ raise SystemExit(host.run_host(
             assert result.returncode == 1, result.stderr.decode("utf-8", "replace")
             assert not host.host_lock_path(root).exists()
             if owned:
+                assert (root / "bridge-stop").read_text(encoding="utf-8") == "host-start-failure"
                 deadline = time.monotonic() + 5
                 while daemon.lock_path(root).exists() and time.monotonic() < deadline:
                     threading.Event().wait(0.02)
@@ -774,6 +1204,7 @@ raise SystemExit(host.run_host(
                 assert not detail.ok and detail.errno == errno.ENOENT
                 assert not detail.endpoint_exists
             else:
+                assert not (root / "bridge-stop").exists()
                 assert daemon_proc is not None and daemon_proc.poll() is None
                 assert daemon.lock_path(root).read_bytes() == attached_snapshot
                 assert ipc.probe(root, timeout=0.2)
@@ -798,6 +1229,603 @@ raise SystemExit(host.run_host(
                     daemon_proc.wait(timeout=10)
 
 
+@pytest.mark.parametrize("replacement_stop_fails", [False, True])
+def test_takeover_bridge_failure_reaps_the_previous_owned_daemon(replacement_stop_fails):
+    import errno
+    import socket
+
+    from tianshu import daemon, ipc
+
+    first_script = r"""
+import sys,time
+from pathlib import Path
+from tianshu import host
+from tianshu.cli import _force_utf8_streams
+_force_utf8_streams()
+root = Path(sys.argv[1])
+original = host.UiBridge.serve_forever
+def paused(self):
+    (root / "first-serving").touch()
+    deadline = time.monotonic() + 20
+    while not (root / "first-release").exists():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    return original(self)
+host.UiBridge.serve_forever = paused
+raise SystemExit(host.run_host(
+    root, ui_dir=root / "ui",
+    daemon_command=[sys.executable, "-m", "tianshu", "daemon", "--model", "scripted"],
+    port=0, supervise=False,
+))
+"""
+    second_script = r"""
+import sys
+from pathlib import Path
+from tianshu import host
+from tianshu.cli import _force_utf8_streams
+_force_utf8_streams()
+root = Path(sys.argv[1])
+if sys.argv[3] == "fail":
+    def refuse_stop(self, *args, **kwargs):
+        raise host.HostError("controlled replacement cleanup failure")
+    host.DaemonSupervisor.stop = refuse_stop
+raise SystemExit(host.run_host(
+    root, ui_dir=root / "ui",
+    daemon_command=[sys.executable, "-m", "tianshu", "daemon", "--model", "scripted"],
+    port=int(sys.argv[2]), supervise=False,
+))
+"""
+    with tempfile.TemporaryDirectory(
+        prefix="tsh-takeover-fail-", dir=None if os.name == "nt" else "/tmp",
+    ) as directory:
+        root = Path(directory)
+        first = None
+        try:
+            with (root / "first.stderr").open("wb") as err:
+                first = subprocess.Popen(
+                    [_test_interpreter(), "-u", "-c", first_script, str(root)],
+                    stdout=subprocess.DEVNULL, stderr=err, env=_child_env(),
+                )
+                deadline = time.monotonic() + 30
+                while not (root / "first-serving").exists():
+                    assert first.poll() is None and time.monotonic() < deadline
+                    threading.Event().wait(0.02)
+                starting = host.read_host_info(root)
+                assert starting is not None and starting.pid == first.pid
+                assert starting.port == 0
+                assert daemon.lock_path(root).exists()
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as reserved:
+                    reserved.bind(("127.0.0.1", 0))
+                    reserved.listen(1)
+                    second = subprocess.run(
+                        [_test_interpreter(), "-u", "-c", second_script, str(root),
+                         str(reserved.getsockname()[1]),
+                         "fail" if replacement_stop_fails else "stop"],
+                        capture_output=True, timeout=30, check=False, env=_child_env(),
+                    )
+                assert second.returncode == 1, second.stderr.decode("utf-8", "replace")
+                assert daemon.lock_path(root).exists() is replacement_stop_fails
+                (root / "first-release").touch()
+                assert first.wait(timeout=15) == 1
+            assert not host.host_lock_path(root).exists()
+            assert not daemon.lock_path(root).exists(), "failed takeover leaked the shared Daemon"
+            detail = ipc.probe_result(root, timeout=0.2)
+            assert not detail.ok and detail.errno == errno.ENOENT
+            assert not detail.endpoint_exists
+        finally:
+            (root / "first-release").touch()
+            if first is not None and first.poll() is None:
+                first.kill()
+                first.wait(timeout=10)
+            lock_path = daemon.lock_path(root)
+            snapshot = lock_path.read_bytes() if lock_path.exists() else None
+            if snapshot is not None:
+                identity = json.loads(snapshot)
+                daemon.request_shutdown(
+                    root, expected_instance_id=identity["instance_id"], timeout=3,
+                )
+                deadline = time.monotonic() + 5
+                while ipc.probe(root, timeout=0.1) and time.monotonic() < deadline:
+                    threading.Event().wait(0.05)
+                if ipc.probe(root, timeout=0.1) and lock_path.read_bytes() == snapshot:
+                    host.DaemonSupervisor._terminate(identity["pid"], timeout=3)
+
+
+def test_takeover_health_failure_reaps_the_adopted_daemon():
+    import socket
+
+    from tianshu import daemon, ipc
+
+    script = r"""
+import sys
+from pathlib import Path
+from tianshu import host
+from tianshu.cli import _force_utf8_streams
+_force_utf8_streams()
+def fail_health(self, *, timeout):
+    raise host.HostError("CONTROLLED_BRIDGE_UNHEALTHY")
+host.UiBridge.wait_until_healthy = fail_health
+raise SystemExit(host.run_host(
+    Path(sys.argv[1]), ui_dir=Path(sys.argv[1]) / "ui",
+    daemon_command=[sys.executable, "-m", "tianshu", "daemon", "--model", "scripted"],
+    port=0, supervise=False,
+))
+"""
+    with tempfile.TemporaryDirectory(
+        prefix="tsh-health-fail-", dir=None if os.name == "nt" else "/tmp",
+    ) as directory:
+        root = Path(directory)
+        daemon_proc = None
+        try:
+            with (root / "daemon.stderr").open("wb") as err:
+                daemon_proc = subprocess.Popen(
+                    [_test_interpreter(), "-m", "tianshu", "daemon", "--model", "scripted",
+                     "--data-root", str(root)],
+                    stdout=subprocess.DEVNULL, stderr=err, env=_child_env(),
+                )
+            deadline = time.monotonic() + 20
+            while not ipc.probe(root, timeout=0.1):
+                assert daemon_proc.poll() is None and time.monotonic() < deadline
+                threading.Event().wait(0.02)
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as reserved:
+                reserved.bind(("127.0.0.1", 0))
+                stale_port = reserved.getsockname()[1]
+            host.write_host_info(root, host.HostInfo(
+                pid=os.getpid(), port=stale_port, token="stale-host", started_at=1,
+            ))
+            result = subprocess.run(
+                [_test_interpreter(), "-u", "-c", script, str(root)],
+                capture_output=True, timeout=30, check=False, env=_child_env(),
+            )
+            assert result.returncode == 1, result.stderr.decode("utf-8", "replace")
+            assert not host.host_lock_path(root).exists()
+            assert not daemon.lock_path(root).exists(), (
+                "unhealthy replacement leaked adopted Daemon"
+            )
+            detail = ipc.probe_result(root, timeout=0.2)
+            assert not detail.ok and detail.errno == errno.ENOENT
+            assert not detail.endpoint_exists
+        finally:
+            if daemon_proc is not None and daemon_proc.poll() is None:
+                daemon_proc.kill()
+                daemon_proc.wait(timeout=10)
+            lock_path = daemon.lock_path(root)
+            snapshot = lock_path.read_bytes() if lock_path.exists() else None
+            if snapshot is not None:
+                identity = json.loads(snapshot)
+                daemon.request_shutdown(
+                    root, expected_instance_id=identity["instance_id"], timeout=3,
+                )
+                deadline = time.monotonic() + 5
+                while ipc.probe(root, timeout=0.1) and time.monotonic() < deadline:
+                    threading.Event().wait(0.05)
+                if ipc.probe(root, timeout=0.1) and lock_path.read_bytes() == snapshot:
+                    host.DaemonSupervisor._terminate(identity["pid"], timeout=3)
+
+
+@pytest.mark.parametrize("serialize_disappeared_owner", [False, True])
+def test_shutdown_cannot_stop_a_daemon_after_another_host_took_over(
+    serialize_disappeared_owner,
+):
+    from tianshu import daemon, ipc
+
+    first_script = r"""
+import sys,threading,time
+from contextlib import contextmanager
+from pathlib import Path
+from tianshu import host
+from tianshu.cli import _force_utf8_streams
+_force_utf8_streams()
+root = Path(sys.argv[1])
+original_guard = host._host_info_guard
+@contextmanager
+def observed_guard(data_root):
+    with original_guard(data_root) as lock:
+        yield lock
+    if (
+        (root / "pause-after-stop-guard").exists()
+        and threading.current_thread() is not threading.main_thread()
+    ):
+        (root / "stop-guard-released").touch()
+        marker = "second-read-existing" if sys.argv[2] == "1" else "second-published"
+        deadline = time.monotonic() + 10
+        while not (root / marker).exists():
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+host._host_info_guard = observed_guard
+original_clear = host.clear_host_info
+def observed_clear(data_root, **kwargs):
+    original_clear(data_root, **kwargs)
+    (root / "first-cleared").touch()
+host.clear_host_info = observed_clear
+original_get = host._Handler.do_GET
+def blocked_get(self):
+    if self.path == "/health" and (root / "block-health").exists():
+        deadline = time.monotonic() + 20
+        while not (root / "release-health").exists():
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+    return original_get(self)
+host._Handler.do_GET = blocked_get
+original_stop = host.DaemonSupervisor.stop
+def paused_stop(self, *args, **kwargs):
+    if not getattr(self, "test_stop_paused", False):
+        self.test_stop_paused = True
+        (root / "shutdown-stop-entered").touch()
+        deadline = time.monotonic() + 20
+        while not (root / "release-stop").exists():
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+    return original_stop(self, *args, **kwargs)
+host.DaemonSupervisor.stop = paused_stop
+raise SystemExit(host.run_host(
+    root, ui_dir=root / "ui",
+    daemon_command=[sys.executable, "-m", "tianshu", "daemon", "--model", "scripted"],
+    port=0, supervise=False,
+))
+"""
+    second_script = r"""
+import os,sys,time
+from contextlib import contextmanager
+from pathlib import Path
+from tianshu import host
+from tianshu.cli import _force_utf8_streams
+_force_utf8_streams()
+root = Path(sys.argv[1])
+original_read = host.read_host_info
+def observed_read(data_root):
+    result = original_read(data_root)
+    if result is not None and result.pid != os.getpid():
+        (root / "second-read-existing").touch()
+    return result
+host.read_host_info = observed_read
+original_guard = host._host_info_guard
+@contextmanager
+def observed_guard(data_root):
+    (root / "second-guard").touch()
+    if (
+        sys.argv[2] == "1"
+        and (root / "second-read-existing").exists()
+        and not (root / "first-cleared").exists()
+    ):
+        deadline = time.monotonic() + 10
+        while not (root / "first-cleared").exists():
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+    with original_guard(data_root):
+        yield
+host._host_info_guard = observed_guard
+original_write = host._write_host_info
+def observed_write(data_root, info, *, expected=None):
+    original_write(data_root, info, expected=expected)
+    if info.pid == os.getpid() and info.port > 0:
+        (root / "second-published").touch()
+host._write_host_info = observed_write
+raise SystemExit(host.run_host(
+    root, ui_dir=root / "ui",
+    daemon_command=[sys.executable, "-m", "tianshu", "daemon", "--model", "scripted"],
+    port=0, supervise=False,
+))
+"""
+    with tempfile.TemporaryDirectory(
+        prefix="tsh-stop-takeover-", dir=None if os.name == "nt" else "/tmp",
+    ) as directory:
+        root = Path(directory)
+        first = second = None
+        first_err = second_err = None
+        requester = None
+        request_errors = []
+        request_responses = []
+        try:
+            first_err = (root / "first.stderr").open("wb")
+            first = subprocess.Popen(
+                [_test_interpreter(), "-u", "-c", first_script, str(root),
+                 str(int(serialize_disappeared_owner))],
+                stdout=subprocess.DEVNULL, stderr=first_err, env=_child_env(),
+            )
+            deadline = time.monotonic() + 30
+            while True:
+                first_info = host.read_host_info(root)
+                if (
+                    first_info is not None and first_info.pid == first.pid
+                    and first_info.port > 0 and host._http_alive(first_info)
+                ):
+                    break
+                assert first.poll() is None and time.monotonic() < deadline
+                threading.Event().wait(0.02)
+            original_daemon = daemon.lock_path(root).read_bytes()
+            original_host = host.host_lock_path(root).read_bytes()
+            (root / "block-health").touch()
+
+            def request_shutdown():
+                try:
+                    request_responses.append(host._http_post(
+                        first_info.port, "/shutdown", first_info.token, timeout=20,
+                    ))
+                except OSError as exc:
+                    request_errors.append(exc)
+
+            requester = threading.Thread(target=request_shutdown)
+            requester.start()
+            while not (root / "shutdown-stop-entered").exists():
+                assert first.poll() is None and time.monotonic() < deadline
+                threading.Event().wait(0.02)
+            second_err = (root / "second.stderr").open("wb")
+            second = subprocess.Popen(
+                [_test_interpreter(), "-u", "-c", second_script, str(root),
+                 str(int(serialize_disappeared_owner))],
+                stdout=subprocess.DEVNULL, stderr=second_err, env=_child_env(),
+            )
+            while not (root / "second-guard").exists():
+                assert second.poll() is None and time.monotonic() < deadline
+                threading.Event().wait(0.02)
+            publish_deadline = time.monotonic() + 0.5
+            while (
+                not (root / "second-published").exists()
+                and time.monotonic() < publish_deadline
+            ):
+                threading.Event().wait(0.01)
+            assert not (root / "second-published").exists(), (
+                "replacement Host took over while the old Host was stopping its Daemon"
+            )
+            assert host.host_lock_path(root).read_bytes() == original_host
+            (root / "pause-after-stop-guard").touch()
+            (root / "release-stop").touch()
+            requester.join(timeout=25)
+            assert not requester.is_alive() and not request_errors
+            assert request_responses and b"200" in request_responses[0]
+            assert first.wait(timeout=15) == 0
+            while True:
+                winner = host.read_host_info(root)
+                if (
+                    winner is not None and winner.pid == second.pid
+                    and winner.port > 0 and host._http_alive(winner)
+                ):
+                    break
+                assert second.poll() is None and time.monotonic() < deadline, (
+                    root / "second.stderr"
+                ).read_bytes()
+                threading.Event().wait(0.02)
+            assert daemon.lock_path(root).read_bytes() != original_daemon
+            assert ipc.probe(root, timeout=0.2)
+            (root / "release-health").touch()
+            assert host.stop_host(root, timeout=15) == 0
+            assert second.wait(timeout=15) == 0
+            assert not daemon.lock_path(root).exists()
+        finally:
+            (root / "release-stop").touch()
+            (root / "release-health").touch()
+            if requester is not None:
+                requester.join(timeout=25)
+            for proc, stream in ((first, first_err), (second, second_err)):
+                if proc is not None:
+                    if proc.poll() is None:
+                        proc.kill()
+                    proc.wait(timeout=10)
+                if stream is not None:
+                    stream.close()
+            lock_path = daemon.lock_path(root)
+            snapshot = lock_path.read_bytes() if lock_path.exists() else None
+            if snapshot is not None:
+                identity = json.loads(snapshot)
+                daemon.request_shutdown(
+                    root, expected_instance_id=identity["instance_id"], timeout=3,
+                )
+                deadline = time.monotonic() + 5
+                while ipc.probe(root, timeout=0.1) and time.monotonic() < deadline:
+                    threading.Event().wait(0.05)
+                if ipc.probe(root, timeout=0.1) and lock_path.read_bytes() == snapshot:
+                    host.DaemonSupervisor._terminate(identity["pid"], timeout=3)
+
+
+    from tianshu import daemon, ipc
+
+    first_script = r"""
+import sys,time
+from pathlib import Path
+from tianshu import host
+from tianshu.cli import _force_utf8_streams
+_force_utf8_streams()
+root = Path(sys.argv[1])
+original = host._Handler.do_GET
+def blocked(self):
+    if self.path == "/health" and (root / "block-health").exists():
+        deadline = time.monotonic() + 20
+        while not (root / "release-health").exists():
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+    return original(self)
+host._Handler.do_GET = blocked
+raise SystemExit(host.run_host(
+    root, ui_dir=root / "ui",
+    daemon_command=[sys.executable, "-m", "tianshu", "daemon", "--model", "scripted"],
+    port=0, supervise=False,
+))
+"""
+    second_script = r"""
+import sys
+from pathlib import Path
+from tianshu import host
+from tianshu.cli import _force_utf8_streams
+_force_utf8_streams()
+root = Path(sys.argv[1])
+raise SystemExit(host.run_host(
+    root, ui_dir=root / "ui",
+    daemon_command=[sys.executable, "-m", "tianshu", "daemon", "--model", "scripted"],
+    port=0, supervise=False,
+))
+"""
+    with tempfile.TemporaryDirectory(
+        prefix="tsh-published-takeover-", dir=None if os.name == "nt" else "/tmp",
+    ) as directory:
+        root = Path(directory)
+        first = second = None
+        first_err = second_err = None
+        try:
+            first_err = (root / "first.stderr").open("wb")
+            first = subprocess.Popen(
+                [_test_interpreter(), "-u", "-c", first_script, str(root)],
+                stdout=subprocess.DEVNULL, stderr=first_err, env=_child_env(),
+            )
+            deadline = time.monotonic() + 30
+            while True:
+                info = host.read_host_info(root)
+                if info is not None and info.pid == first.pid and info.port > 0:
+                    break
+                assert first.poll() is None and time.monotonic() < deadline
+                threading.Event().wait(0.02)
+            assert host._http_alive(info)
+            attached_snapshot = daemon.lock_path(root).read_bytes()
+            (root / "block-health").touch()
+            second_err = (root / "second.stderr").open("wb")
+            second = subprocess.Popen(
+                [_test_interpreter(), "-u", "-c", second_script, str(root)],
+                stdout=subprocess.DEVNULL, stderr=second_err, env=_child_env(),
+            )
+            while True:
+                winner = host.read_host_info(root)
+                if (
+                    winner is not None
+                    and winner.pid == second.pid
+                    and winner.port > 0
+                    and host._http_alive(winner)
+                ):
+                    break
+                assert second.poll() is None and time.monotonic() < deadline
+                threading.Event().wait(0.02)
+            assert first.wait(timeout=15) == 1
+            (root / "release-health").touch()
+            assert second.poll() is None
+            assert host.read_host_info(root) == winner
+            assert daemon.lock_path(root).read_bytes() == attached_snapshot
+            assert ipc.probe(root, timeout=0.2)
+            assert host.stop_host(root, timeout=15) == 0
+            assert second.wait(timeout=15) == 0
+            assert not daemon.lock_path(root).exists()
+        finally:
+            (root / "release-health").touch()
+            for proc, stream in ((first, first_err), (second, second_err)):
+                if proc is not None:
+                    if proc.poll() is None:
+                        proc.kill()
+                    proc.wait(timeout=10)
+                if stream is not None:
+                    stream.close()
+            lock_path = daemon.lock_path(root)
+            snapshot = lock_path.read_bytes() if lock_path.exists() else None
+            if snapshot is not None:
+                identity = json.loads(snapshot)
+                daemon.request_shutdown(
+                    root, expected_instance_id=identity["instance_id"], timeout=3,
+                )
+                deadline = time.monotonic() + 5
+                while ipc.probe(root, timeout=0.1) and time.monotonic() < deadline:
+                    threading.Event().wait(0.05)
+                if ipc.probe(root, timeout=0.1) and lock_path.read_bytes() == snapshot:
+                    host.DaemonSupervisor._terminate(identity["pid"], timeout=3)
+
+
+def test_bridge_failure_does_not_stop_a_daemon_already_attached_by_another_host():
+    import socket
+
+    from tianshu import daemon, ipc
+
+    first_script = r"""
+import sys,time
+from pathlib import Path
+from tianshu import host
+from tianshu.cli import _force_utf8_streams
+_force_utf8_streams()
+root = Path(sys.argv[1])
+original = host.UiBridge
+def delayed(config):
+    (root / "first-bridge-pending").touch()
+    deadline = time.monotonic() + 20
+    while not (root / "second-ready").exists():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    return original(config)
+host.UiBridge = delayed
+raise SystemExit(host.run_host(
+    root, ui_dir=root / "ui",
+    daemon_command=[sys.executable, "-m", "tianshu", "daemon", "--model", "scripted"],
+    port=int(sys.argv[2]), supervise=False,
+))
+"""
+    second_script = r"""
+import sys
+from pathlib import Path
+from tianshu import host
+from tianshu.cli import _force_utf8_streams
+_force_utf8_streams()
+root = Path(sys.argv[1])
+raise SystemExit(host.run_host(
+    root, ui_dir=root / "ui",
+    daemon_command=[sys.executable, "-m", "tianshu", "daemon", "--model", "scripted"],
+    port=0, supervise=False,
+))
+"""
+    with tempfile.TemporaryDirectory(
+        prefix="tsh-bridge-takeover-", dir=None if os.name == "nt" else "/tmp",
+    ) as directory:
+        root = Path(directory)
+        first = second = None
+        first_err = second_err = None
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as reserved:
+                reserved.bind(("127.0.0.1", 0))
+                reserved.listen(1)
+                first_err = (root / "first.stderr").open("wb")
+                first = subprocess.Popen(
+                    [_test_interpreter(), "-u", "-c", first_script, str(root),
+                     str(reserved.getsockname()[1])],
+                    stdout=subprocess.DEVNULL, stderr=first_err, env=_child_env(),
+                )
+                deadline = time.monotonic() + 30
+                while not (root / "first-bridge-pending").exists():
+                    assert first.poll() is None and time.monotonic() < deadline
+                    threading.Event().wait(0.02)
+                attached_snapshot = daemon.lock_path(root).read_bytes()
+                second_err = (root / "second.stderr").open("wb")
+                second = subprocess.Popen(
+                    [_test_interpreter(), "-u", "-c", second_script, str(root)],
+                    stdout=subprocess.DEVNULL, stderr=second_err, env=_child_env(),
+                )
+                while True:
+                    info = host.read_host_info(root)
+                    if info is not None and info.pid == second.pid and info.port > 0:
+                        break
+                    assert second.poll() is None and time.monotonic() < deadline
+                    threading.Event().wait(0.02)
+                assert ipc.probe(root, timeout=0.2)
+                (root / "second-ready").touch()
+                assert first.wait(timeout=15) == 1
+            assert second.poll() is None, "first Host cleanup stopped the replacement Host"
+            assert daemon.lock_path(root).read_bytes() == attached_snapshot
+            assert ipc.probe(root, timeout=0.2), "first Host stopped the attached Daemon"
+        finally:
+            (root / "second-ready").touch()
+            for proc, stream in ((first, first_err), (second, second_err)):
+                if proc is not None:
+                    if proc.poll() is None:
+                        proc.kill()
+                    proc.wait(timeout=10)
+                if stream is not None:
+                    stream.close()
+            lock_path = daemon.lock_path(root)
+            snapshot = lock_path.read_bytes() if lock_path.exists() else None
+            if snapshot is not None:
+                identity = json.loads(snapshot)
+                daemon.request_shutdown(
+                    root, expected_instance_id=identity["instance_id"], timeout=3,
+                )
+                deadline = time.monotonic() + 5
+                while ipc.probe(root, timeout=0.1) and time.monotonic() < deadline:
+                    threading.Event().wait(0.05)
+                if ipc.probe(root, timeout=0.1) and lock_path.read_bytes() == snapshot:
+                    host.DaemonSupervisor._terminate(identity["pid"], timeout=3)
+
+
 def test_exit_cleanup_holds_host_identity_until_owned_root_is_reaped():
     import socket
 
@@ -807,7 +1835,12 @@ def test_exit_cleanup_holds_host_identity_until_owned_root_is_reaped():
 import sys,time
 from pathlib import Path
 from tianshu import host
+from tianshu.cli import _force_utf8_streams
+_force_utf8_streams()
 root=Path(sys.argv[1])
+def refuse_graceful_stop(self, *args, **kwargs):
+    raise host.HostError("controlled cleanup fallback")
+host.DaemonSupervisor.stop = refuse_graceful_stop
 original=host.DaemonSupervisor._abort_start
 def paused(self,proc):
     (root/'cleanup-paused').write_text(str(proc.pid))
@@ -827,6 +1860,8 @@ raise SystemExit(host.run_host(
 import sys
 from pathlib import Path
 from tianshu import host
+from tianshu.cli import _force_utf8_streams
+_force_utf8_streams()
 root=Path(sys.argv[1])
 raise SystemExit(host.run_host(
     root,ui_dir=root/'ui',
@@ -852,7 +1887,7 @@ raise SystemExit(host.run_host(
                 reserved.listen(1)
                 with (root / "first.stderr").open("wb") as err:
                     first = subprocess.Popen(
-                        [sys.executable, "-u", "-c", first_script, str(root),
+                        [_test_interpreter(), "-u", "-c", first_script, str(root),
                          str(reserved.getsockname()[1])],
                         stdout=subprocess.DEVNULL, stderr=err, env=_child_env(),
                     )
@@ -865,7 +1900,7 @@ raise SystemExit(host.run_host(
                 assert first_info is not None
                 with (root / "second.stderr").open("wb") as err:
                     second = subprocess.Popen(
-                        [sys.executable, "-u", "-c", second_script, str(root)],
+                        [_test_interpreter(), "-u", "-c", second_script, str(root)],
                         stdout=subprocess.DEVNULL, stderr=err, env=_child_env(),
                     )
                 deadline = time.monotonic() + 2
@@ -1058,6 +2093,119 @@ def test_attached_stop_cannot_treat_an_unknown_endpoint_as_exited(
         supervisor.stop(timeout=0.2)
     assert held_child.poll() is None
     assert supervisor._shutdown_unconfirmed
+
+
+def test_attached_stop_failure_keeps_monitoring_and_can_stop_a_later_owned_root():
+    from tianshu import daemon, ipc
+
+    script = r"""
+import sys,time
+from pathlib import Path
+from tianshu import host
+from tianshu.cli import _force_utf8_streams
+_force_utf8_streams()
+root = Path(sys.argv[1])
+original = host.DaemonSupervisor._request_shutdown
+original_spawn = host.DaemonSupervisor._spawn_and_wait
+def fail_once(self, **kwargs):
+    with (root / "shutdown-requested").open("a") as marker:
+        marker.write(f"{kwargs.get('instance_id')}\n")
+    if not (root / "failed-stop").exists():
+        (root / "failed-stop").touch()
+        return False
+    return original(self, **kwargs)
+def observe_spawn(self):
+    original_spawn(self)
+    if (root / "failed-stop").exists() and self._process is not None:
+        (root / "spawn-ready").touch()
+host.DaemonSupervisor._request_shutdown = fail_once
+host.DaemonSupervisor._spawn_and_wait = observe_spawn
+raise SystemExit(host.run_host(
+    root, ui_dir=root / "ui",
+    daemon_command=[sys.executable, "-m", "tianshu", "daemon", "--model", "scripted"],
+    port=0, supervise=True,
+))
+"""
+    with tempfile.TemporaryDirectory(
+        prefix="tsh-resume-monitor-", dir=None if os.name == "nt" else "/tmp",
+    ) as directory:
+        root = Path(directory)
+        daemon_proc = proc = None
+        try:
+            with (root / "external.stderr").open("wb") as err:
+                daemon_proc = subprocess.Popen(
+                    [_test_interpreter(), "-m", "tianshu", "daemon", "--model", "scripted",
+                     "--data-root", str(root)],
+                    stdout=subprocess.DEVNULL, stderr=err, env=_child_env(),
+                )
+            deadline = time.monotonic() + 20
+            while not ipc.probe(root, timeout=0.1):
+                assert daemon_proc.poll() is None and time.monotonic() < deadline
+                threading.Event().wait(0.02)
+            original_lock = daemon.lock_path(root).read_bytes()
+            with (root / "host.stderr").open("wb") as err:
+                proc = subprocess.Popen(
+                    [_test_interpreter(), "-u", "-c", script, str(root)],
+                    stdout=subprocess.DEVNULL, stderr=err, env=_child_env(),
+                )
+            while True:
+                info = host.read_host_info(root)
+                if info is not None and info.port > 0 and host._http_alive(info):
+                    break
+                assert proc.poll() is None and time.monotonic() < deadline
+                threading.Event().wait(0.02)
+            assert host.stop_host(root, timeout=1) == 1
+            assert (root / "failed-stop").exists()
+            assert proc.poll() is None
+            assert host.read_host_info(root) == info
+            assert host._http_alive(info)
+            assert ipc.probe(root, timeout=0.2)
+
+            daemon_proc.kill()
+            daemon_proc.wait(timeout=10)
+            deadline = time.monotonic() + 30
+            while True:
+                current_lock = daemon.lock_path(root).read_bytes()
+                if current_lock != original_lock and ipc.probe(root, timeout=0.1):
+                    break
+                assert proc.poll() is None and time.monotonic() < deadline, (
+                    "monitor did not restart the Daemon after an unconfirmed attached stop"
+                )
+                threading.Event().wait(0.05)
+            new_owner = json.loads(current_lock)
+            deadline = time.monotonic() + 10
+            while not (root / "spawn-ready").exists():
+                assert proc.poll() is None and time.monotonic() < deadline
+                threading.Event().wait(0.01)
+            requests_path = root / "shutdown-requested"
+            requests_before = requests_path.read_text()
+            assert host.stop_host(root, timeout=15) == 0
+            requests_after = requests_path.read_text()
+            assert requests_after != requests_before
+            assert new_owner["instance_id"] in requests_after.splitlines()
+            returncode = proc.wait(timeout=20)
+            assert returncode == 0, (root / "host.stderr").read_bytes()
+            assert not host.host_lock_path(root).exists()
+            assert not daemon.lock_path(root).exists()
+        finally:
+            if proc is not None and proc.poll() is None:
+                proc.kill()
+                proc.wait(timeout=10)
+            if daemon_proc is not None and daemon_proc.poll() is None:
+                daemon_proc.kill()
+                daemon_proc.wait(timeout=10)
+            lock_path = daemon.lock_path(root)
+            snapshot = lock_path.read_bytes() if lock_path.exists() else None
+            if snapshot is not None:
+                identity = json.loads(snapshot)
+                daemon.request_shutdown(
+                    root, expected_instance_id=identity["instance_id"], timeout=3,
+                )
+                deadline = time.monotonic() + 5
+                while ipc.probe(root, timeout=0.1) and time.monotonic() < deadline:
+                    threading.Event().wait(0.05)
+                if ipc.probe(root, timeout=0.1) and lock_path.read_bytes() == snapshot:
+                    host.DaemonSupervisor._terminate(identity["pid"], timeout=3)
 
 
 @pytest.mark.parametrize("replace_after_failure", [False, True])
