@@ -428,12 +428,21 @@ def test_late_real_host_cannot_replace_the_running_owner_or_stop_its_daemon() ->
     """A 真 ensure 后暂停，B 真启动；A 必须非零退出，B 与共享 Daemon 仍可用。"""
     with tempfile.TemporaryDirectory(prefix="hstop-", dir=None if os.name == "nt" else "/tmp") as d:
         root = Path(d)
+        daemon_snapshot = None
+        daemon_process_identity = None
         try:
             with _peer(root, "host:first") as first:
                 assert first.receive() == {"ensured": True}
                 assert ipc.probe(root, timeout=1)
                 initial = host.read_host_info(root)
                 assert initial is not None and initial.pid == first.pid and initial.port == 0
+                daemon_snapshot = daemon.lock_path(root).read_bytes()
+                from tianshu.execution_admission import process_birth_identity
+
+                daemon_pid = int(json.loads(daemon_snapshot)["pid"])
+                daemon_process_identity = (
+                    daemon_pid, process_birth_identity(daemon_pid),
+                )
                 with _peer(root, "host:second") as second:
                     assert second.receive() == {"ready": True}
                     winner = _wait_published(root, second.pid)
@@ -454,7 +463,13 @@ def test_late_real_host_cannot_replace_the_running_owner_or_stop_its_daemon() ->
                     assert not ipc.probe(root, timeout=0.5)
                     assert host.read_host_info(root) is None
         finally:
-            shutdown_daemon_and_wait(root, reason="test_cleanup", timeout=5)
+            shutdown_daemon_and_wait(
+                root,
+                reason="test_cleanup",
+                timeout=5,
+                snapshot=daemon_snapshot,
+                process_identity=daemon_process_identity,
+            )
 
 
 def test_daemon_cleanup_waits_for_original_os_process(monkeypatch, tmp_path: Path) -> None:

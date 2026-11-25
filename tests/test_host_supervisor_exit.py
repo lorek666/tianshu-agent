@@ -74,6 +74,73 @@ def test_shutdown_daemon_and_wait_waits_for_observed_process_exit(tmp_path, monk
     assert requests[0]["timeout"] > 0
 
 
+def test_shutdown_daemon_and_wait_uses_frozen_snapshot_after_lock_removal(tmp_path, monkeypatch):
+    from tianshu import daemon, execution_admission, leases
+
+    lock_path = tmp_path / "daemon.lock"
+    lock_path.write_text(json.dumps({"instance_id": "daemon-a", "pid": 123}), encoding="utf-8")
+    snapshot = lock_path.read_bytes()
+    lock_path.unlink()
+    monkeypatch.setattr(daemon, "lock_path", lambda _root: lock_path)
+    requests = []
+    monkeypatch.setattr(
+        daemon, "request_shutdown",
+        lambda *_a, **kwargs: requests.append(kwargs) or True,
+    )
+    monkeypatch.setattr(
+        execution_admission, "process_birth_identity", lambda _pid: "reused-birth",
+    )
+    monkeypatch.setattr(leases, "pid_alive", lambda _pid: True)
+
+    shutdown_daemon_and_wait(
+        tmp_path,
+        timeout=0,
+        snapshot=snapshot,
+        process_identity=(123, "original-birth"),
+    )
+
+    assert len(requests) == 1
+    assert requests[0]["expected_instance_id"] == "daemon-a"
+
+
+def test_shutdown_daemon_and_wait_preserves_frozen_unknown_birth(tmp_path, monkeypatch):
+    from tianshu import daemon, execution_admission, leases
+
+    lock_path = tmp_path / "daemon.lock"
+    lock_path.write_text(json.dumps({"instance_id": "daemon-a", "pid": 123}), encoding="utf-8")
+    snapshot = lock_path.read_bytes()
+    lock_path.unlink()
+    monkeypatch.setattr(daemon, "lock_path", lambda _root: lock_path)
+    monkeypatch.setattr(daemon, "request_shutdown", lambda *_a, **_k: True)
+    monkeypatch.setattr(
+        execution_admission, "process_birth_identity",
+        lambda _pid: pytest.fail("frozen unknown birth must not be resampled"),
+    )
+    monkeypatch.setattr(leases, "pid_alive", lambda _pid: False)
+
+    shutdown_daemon_and_wait(
+        tmp_path, snapshot=snapshot, process_identity=(123, None),
+    )
+
+
+def test_shutdown_daemon_and_wait_rejects_mismatched_frozen_pid(tmp_path, monkeypatch):
+    from tianshu import daemon
+
+    lock_path = tmp_path / "daemon.lock"
+    lock_path.write_text(json.dumps({"instance_id": "daemon-a", "pid": 123}), encoding="utf-8")
+    snapshot = lock_path.read_bytes()
+    monkeypatch.setattr(daemon, "lock_path", lambda _root: lock_path)
+    monkeypatch.setattr(
+        daemon, "request_shutdown",
+        lambda *_a, **_k: pytest.fail("identity mismatch must fail before shutdown"),
+    )
+
+    with pytest.raises(ValueError, match="PID 不一致"):
+        shutdown_daemon_and_wait(
+            tmp_path, snapshot=snapshot, process_identity=(456, None),
+        )
+
+
 def test_shutdown_daemon_and_wait_times_out_without_signalling(tmp_path, monkeypatch):
     from tianshu import daemon, execution_admission, host, leases
 
@@ -972,6 +1039,139 @@ def test_windows_owned_termination_failure_has_no_command_or_pid_fallback(monkey
     assert host.DaemonSupervisor._terminate(OwnedProcess()) == {
         "outcome": "os_error", "errno": 5,
     }
+
+
+def test_attached_stop_waits_for_process_after_endpoint_and_lock_are_gone(
+    tmp_path, monkeypatch, held_child,
+):
+    from tianshu import ipc
+
+    lock = ipc.run_dir(tmp_path) / "daemon.lock"
+    lock.parent.mkdir(parents=True)
+    snapshot = json.dumps({
+        "pid": held_child.pid, "started_at": 1, "instance_id": "attached-owner",
+    }).encode()
+    lock.write_bytes(snapshot)
+    supervisor = host.DaemonSupervisor(tmp_path, [])
+    supervisor._attached_snapshot = snapshot
+    clock = [0.0]
+
+    def request_shutdown(**_kwargs):
+        lock.unlink()
+        return True
+
+    def exit_during_wait(seconds):
+        assert held_child.poll() is None
+        assert held_child.stdin is not None
+        held_child.stdin.write(b"G")
+        held_child.stdin.flush()
+        assert held_child.wait(timeout=10) == 0
+        clock[0] += seconds
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("an attached PID is not an owned process handle")
+
+    monkeypatch.setattr(supervisor, "_request_shutdown", request_shutdown)
+    monkeypatch.setattr(supervisor, "_terminate", forbidden)
+    monkeypatch.setattr(host.ipc, "probe_result", lambda *a, **kw: ipc.ProbeResult(
+        False, "controlled-endpoint", "absent", errno.ENOENT, False,
+    ))
+    monkeypatch.setattr(host, "time", SimpleNamespace(
+        monotonic=lambda: clock[0],
+        monotonic_ns=lambda: round(clock[0] * 1e9),
+        sleep=exit_during_wait,
+    ))
+
+    supervisor.stop(timeout=0.2)
+
+    assert held_child.returncode == 0
+    assert not lock.exists()
+    assert not supervisor._shutdown_unconfirmed
+
+
+def test_attached_stop_cannot_confirm_exit_without_process_identity(
+    tmp_path, monkeypatch, held_child,
+):
+    from tianshu import ipc
+
+    lock = ipc.run_dir(tmp_path) / "daemon.lock"
+    lock.parent.mkdir(parents=True)
+    snapshot = json.dumps({
+        "pid": held_child.pid, "started_at": 1, "instance_id": "attached-owner",
+    }).encode()
+    lock.write_bytes(snapshot)
+    supervisor = host.DaemonSupervisor(tmp_path, [])
+    supervisor._attached_snapshot = snapshot
+    clock = [0.0]
+
+    def request_shutdown(**_kwargs):
+        lock.unlink()
+        return True
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("an attached PID is not an owned process handle")
+
+    monkeypatch.setattr(supervisor, "_request_shutdown", request_shutdown)
+    monkeypatch.setattr(supervisor, "_terminate", forbidden)
+    monkeypatch.setattr(host.ipc, "probe_result", lambda *a, **kw: ipc.ProbeResult(
+        False, "controlled-endpoint", "absent", errno.ENOENT, False,
+    ))
+    monkeypatch.setattr(host, "process_birth_identity", lambda _pid: None, raising=False)
+    monkeypatch.setattr(host, "pid_alive", lambda _pid: True)
+    monkeypatch.setattr(host, "_unreaped_child_state", lambda _pid: "running")
+    monkeypatch.setattr(host, "time", SimpleNamespace(
+        monotonic=lambda: clock[0],
+        monotonic_ns=lambda: round(clock[0] * 1e9),
+        sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+    ))
+
+    with pytest.raises(host.HostError, match="进程退出"):
+        supervisor.stop(timeout=0.2)
+
+    assert held_child.poll() is None
+    assert supervisor._shutdown_unconfirmed
+
+
+def test_attached_process_observation_accepts_pid_reuse_as_original_exit(
+    tmp_path, monkeypatch,
+):
+    supervisor = host.DaemonSupervisor(tmp_path, [])
+    supervisor._shutdown_process_identity = (123, "original-birth")
+    monkeypatch.setattr(host, "process_birth_identity", lambda _pid: "reused-birth")
+    monkeypatch.setattr(
+        host, "pid_alive",
+        lambda _pid: pytest.fail("PID reuse must be decided by frozen birth identity"),
+    )
+
+    assert supervisor._attached_process_exited(123)
+
+
+def test_attached_process_observation_checks_windows_wait_when_birth_is_queryable(
+    tmp_path, monkeypatch,
+):
+    supervisor = host.DaemonSupervisor(tmp_path, [])
+    supervisor._shutdown_process_identity = (123, "original-birth")
+    monkeypatch.setattr(host, "process_birth_identity", lambda _pid: "original-birth")
+    monkeypatch.setattr(host, "os", SimpleNamespace(name="nt"))
+    observations = []
+    monkeypatch.setattr(host, "pid_alive", lambda pid: observations.append(pid) or False)
+
+    assert supervisor._attached_process_exited(123)
+    assert observations == [123]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="zombie observation is POSIX-specific")
+def test_attached_process_observation_accepts_an_exited_non_child_zombie(
+    tmp_path, monkeypatch,
+):
+    supervisor = host.DaemonSupervisor(tmp_path, [])
+    supervisor._shutdown_process_identity = (123, "original-birth")
+    monkeypatch.setattr(host, "process_birth_identity", lambda _pid: "original-birth")
+    monkeypatch.setattr(host, "pid_alive", lambda _pid: True)
+    monkeypatch.setattr(host, "_unreaped_child_state", lambda _pid: "unknown")
+    monkeypatch.setattr(host, "_pid_is_zombie", lambda _pid: True)
+
+    assert supervisor._attached_process_exited(123)
 
 
 def test_attached_escalation_never_signals_a_bare_pid(tmp_path, monkeypatch, held_child):

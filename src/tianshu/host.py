@@ -54,6 +54,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from . import ipc
 from .errors import TianshuError
+from .execution_admission import process_birth_identity
 from .fsutil import atomic_write_bytes
 from .leases import GuardTimeout, execution_guard, pid_alive
 
@@ -106,6 +107,23 @@ def _unreaped_child_state(pid: int) -> str:
         return "running" if info.pid == 0 else "exited"
     except (AttributeError, OSError, ValueError):
         return "unknown"
+
+
+def _pid_is_zombie(pid: int) -> bool:
+    """Recognize an exited non-child process whose PID is not reusable yet."""
+    if os.name != "posix":
+        return False
+    try:
+        if sys.platform.startswith("linux"):
+            state = Path(f"/proc/{pid}/stat").read_bytes().rsplit(b")", 1)[1].split()[0]
+            return state in {b"Z", b"X"}
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "stat="],
+            capture_output=True, text=True, timeout=1, check=False,
+        )
+        return result.stdout.strip().startswith(("Z", "X"))
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return False
 
 
 # --------------------------------------------------------------------------- 锁
@@ -636,6 +654,7 @@ class DaemonSupervisor:
         self._owned_cleanup_attempted = False
         self._shutdown_snapshot_taken = False
         self._shutdown_snapshot: bytes | None = None
+        self._shutdown_process_identity: tuple[int, str | None] | None = None
         self._shutdown_unconfirmed = False
         self._thread: threading.Thread | None = None
         self._monitor_generation = 0
@@ -815,13 +834,18 @@ class DaemonSupervisor:
                         identity = _daemon_lock_identity(snapshot) if snapshot is not None else None
                         try:
                             unchanged = (ipc.run_dir(self.data_root) / "daemon.lock").read_bytes()
-                        except OSError:
+                        except FileNotFoundError:
                             unchanged = None
-                        if identity is None or unchanged != snapshot:
+                        except OSError as exc:
+                            raise HostError("无法核验附着 Daemon 的实例锁") from exc
+                        if identity is None or (unchanged is not None and unchanged != snapshot):
                             raise HostError("Daemon 实例已变更，无法确认原实例退出")
-                        while not self._endpoint_absent():
+                        while (
+                            not self._endpoint_absent()
+                            or not self._attached_process_exited(identity[0])
+                        ):
                             if time.monotonic() >= deadline:
-                                raise HostError("无法确认附着 Daemon 端点退出，请重试同一实例")
+                                raise HostError("无法确认附着 Daemon 进程退出，请重试同一实例")
                             time.sleep(0.05)
                         self._shutdown_unconfirmed = False
                     elif self._shutdown_unconfirmed:
@@ -1111,12 +1135,18 @@ class DaemonSupervisor:
             if not self._shutdown_unconfirmed:
                 self._shutdown_unconfirmed = not self._endpoint_absent()
             return False
+        if self._shutdown_process_identity is None:
+            self._shutdown_process_identity = (
+                identity[0], process_birth_identity(identity[0]),
+            )
         self._shutdown_unconfirmed = True
         try:
             if lock_path.read_bytes() != snapshot:
                 return False
         except FileNotFoundError:
-            self._shutdown_unconfirmed = not self._endpoint_absent()
+            if self._endpoint_absent():
+                return self._process is None
+            self._shutdown_unconfirmed = True
             return False
         except OSError:
             return False
@@ -1128,18 +1158,35 @@ class DaemonSupervisor:
             return False
         while time.monotonic() < deadline:
             if self._endpoint_absent():
-                self._shutdown_unconfirmed = False
-                return False
+                return self._process is None
             time.sleep(0.05)
         # 超时只终止发起请求时已核实的同一实例；新实例出现时绝不能拿当前
         # daemon.lock 的 PID 去杀它。
         try:
             current = lock_path.read_bytes()
+        except FileNotFoundError:
+            return self._process is None
         except OSError:
             return False
         if current != snapshot:
             return False
         return True
+
+    def _attached_process_exited(self, pid: int) -> bool:
+        frozen = self._shutdown_process_identity
+        if frozen is None or frozen[0] != pid:
+            return False
+        current = process_birth_identity(pid)
+        if frozen[1] is not None and current is not None and current != frozen[1]:
+            return True
+        if not pid_alive(pid):
+            return True
+        if os.name != "posix":
+            return False
+        return (
+            _unreaped_child_state(pid) == "exited"
+            or _pid_is_zombie(pid)
+        )
 
     def _endpoint_absent(self) -> bool:
         detail = self.probe_detail()

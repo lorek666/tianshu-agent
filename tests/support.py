@@ -59,6 +59,8 @@ def shutdown_daemon_and_wait(
     reason: str = "test_cleanup",
     timeout: float = 5.0,
     terminate: Callable[..., object] | None = None,
+    snapshot: bytes | None = None,
+    process_identity: tuple[int, str | None] | None = None,
 ) -> None:
     """等待原 Daemon OS 进程退出，避免 Windows 日志句柄阻止临时目录清理。"""
     from tianshu import daemon
@@ -66,30 +68,39 @@ def shutdown_daemon_and_wait(
     from tianshu.leases import pid_alive
 
     lock_path = daemon.lock_path(data_root)
-    try:
-        snapshot = lock_path.read_bytes()
-    except FileNotFoundError:
-        return
+    if snapshot is None:
+        try:
+            snapshot = lock_path.read_bytes()
+        except FileNotFoundError:
+            return
     identity = json.loads(snapshot)
     pid = int(identity["pid"])
-    birth = process_birth_identity(pid)
+    if process_identity is None:
+        birth = process_birth_identity(pid)
+    else:
+        if process_identity[0] != pid:
+            raise ValueError("冻结进程身份与 Daemon 锁快照的 PID 不一致")
+        birth = process_identity[1]
 
     def same_process() -> bool:
-        current = process_birth_identity(pid)
-        return birth is not None and current is not None and current == birth
-
-    def exited() -> bool:
         if birth is None:
             return False
         current = process_birth_identity(pid)
-        if current is not None and current != birth:
+        return current is not None and current == birth
+
+    def exited() -> bool:
+        current = process_birth_identity(pid) if birth is not None else None
+        if birth is not None and current is not None and current != birth:
             return True
         if not pid_alive(pid):
             return True
         if os.name == "posix":
-            from tianshu.host import _unreaped_child_state
+            from tianshu.host import _pid_is_zombie, _unreaped_child_state
 
-            return _unreaped_child_state(pid) == "exited"
+            return (
+                _unreaped_child_state(pid) == "exited"
+                or _pid_is_zombie(pid)
+            )
         return False
 
     def wait_until_exited() -> bool:
