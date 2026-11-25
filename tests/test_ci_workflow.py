@@ -344,6 +344,7 @@ def _assert_windows_independent_shards(workflow):
     assert "ref: ${{ github.sha }}" in workers
     assert "continue-on-error" not in workers + summary
     assert "--ci-pair-" not in workers
+    assert "CI_SHARD_INDEX: ${{ matrix.shard }}" in workers
     assert "CI_SHARD_REPORT: ${{ runner.temp }}/windows-ci/shard.json" in workers
     assert (
         "TIANSHU_SLO_DIAGNOSTICS_DIR: ${{ runner.temp }}/windows-ci/slo-diagnostics"
@@ -400,6 +401,10 @@ def test_windows_independent_runners_isolate_slo_and_keep_required_gates():
     ),
     ("timeout-minutes: 25", "timeout-minutes: 30"),
     ("--stack-timeout=60", "--stack-timeout=0"),
+    (
+        "CI_SHARD_INDEX: ${{ matrix.shard }}",
+        "CI_SHARD_INDEX: 0",
+    ),
     (
         "TIANSHU_SLO_DIAGNOSTICS_DIR: ${{ runner.temp }}/windows-ci/slo-diagnostics",
         'TIANSHU_SLO_DIAGNOSTICS_DIR: ""',

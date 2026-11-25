@@ -257,6 +257,7 @@ jobs:
       - name: Pytest Windows 分片
         env:
           PYTEST_ADDOPTS: ""
+          CI_SHARD_INDEX: ${{ matrix.shard }}
           CI_SHARD_REPORT: ${{ runner.temp }}/windows-ci/shard.json
           TIANSHU_SLO_DIAGNOSTICS_DIR: ${{ runner.temp }}/windows-ci/slo-diagnostics
         # 保留原 wrapper/fatal handler/60秒 Python 线程栈；C 扩展长期持有 GIL

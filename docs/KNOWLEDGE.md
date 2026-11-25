@@ -188,6 +188,10 @@
   JSON 仍可读取。两个平台均以 `always()` 上传，工件名绑定 run/attempt/shard，缺件只告警且
   不覆盖原退出码。该证据机制随后原样保留到 Windows 四独立 runner，没有改阈值、25 分钟
   上限、60 秒栈诊断或四个 required 名称；见[增量记录](changelog/2026-11-26-pr229-state-pressure-evidence.md)。
+  Windows Pytest step 必须同时显式传入 `CI_SHARD_INDEX: ${{ matrix.shard }}`：run
+  `45717065320` 的四 runner SLO 已通过，但 shard 1 因漏传该 env 在写诊断 JSON 时失败，
+  汇总按上游失败正确拒绝。修复后以缺 index 的真实诊断 RED、设置 index 的 GREEN 和
+  workflow 契约负控绑定，不能把诊断缺件伪装成测试通过。
 - **失败作业重跑不能沿用汇总 job 的当前 attempt（2026-11-26）**：`--failed` 只重跑
   失败 job 时，成功分片仍保留旧 attempt 工件，汇总却已进入新 attempt。macOS/Windows
   汇总改为从本 run API 为每个精确 shard 解析最新未过期工件，并用同一结果生成下载名和

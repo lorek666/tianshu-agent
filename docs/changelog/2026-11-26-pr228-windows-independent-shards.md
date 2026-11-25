@@ -47,25 +47,64 @@ verifier 语义或四个 required 名称。四个分片仍从同一 checkout 做
   `--ci-pair-*` 或 `--reports-per-artifact` 兼容入口。
 - `CONTRIBUTING.md` 与 `docs/KNOWLEDGE.md` 同步当前拓扑、失败教训和边界。
 
+## Hosted 验证与诊断索引修复
+
+四 runner 候选 `d360dd1a51f2520ce6eb51102777609f85abc079` 的 hosted run
+[45717065320](https://github.com/lorek666/tianshu-agent/actions/runs/45717065320)
+使用合成 merge SHA `ed3ac08a8340c8e70ae3c0ace5e669486a1f69ad`，base 为
+`28dc2b9567131af5015e71ecd6248b055da0c076`。四份报告来自同一完整 collection，
+selected/finished 均完整；shard 0/2/3 成功，shard 3 的冷启动 p95 为
+`1838.809ms`、daemon 内部冷启动 p50 为 `399.091ms`，SLO 与 soak 均 PASS，未出现
+旧双 worker 拓扑的阈值失败或 orphan。
+
+但 shard 1 的真实 state-pressure 子进程在写诊断 JSON 时失败：
+`ValueError: state-pressure diagnostics require an explicit CI shard index`。
+根因是 Windows Pytest step 已启用 `TIANSHU_SLO_DIAGNOSTICS_DIR`，却漏传
+`CI_SHARD_INDEX`。汇总按上游 failure 正确拒绝，不能把该 run 写成通过。修复为在
+Windows step 显式传入 `CI_SHARD_INDEX: ${{ matrix.shard }}`，并增加 workflow
+契约断言与固定为 `0` 的负控；不改变诊断阈值、报告路径或上传策略。
+
 ## 验证
 
 - 新契约先在旧实现上得到真实 RED：workflow 只有两个分片，verifier 拒绝四独立目录。
+- 对 hosted 根因做直接复现：启用 diagnostics 目录但不设 shard index 时，真实
+  state-pressure 测试 exit 1；设置 `CI_SHARD_INDEX=1` 后 exit 0。新增 workflow
+  契约在漏传 env 时真实 RED，修复后 GREEN；`actionlint` 与 `git diff --check`
+  exit 0。原始日志 `/tmp/pr228-state-pressure-red.log` 与
+  `/tmp/pr228-shard-index-green.log` 保留在本地证据区。
+- 独立第二读者对索引增量结论 PASS，P0/P1/P2 均无；在私有副本复现删除 env 的
+  workflow RED、恢复 GREEN，以及缺 shard index 的真实诊断 RED、设置 index 后
+  GREEN。证据清单 `/Volumes/Date/pr228-second-reader-d360dd1-evidence/SHA256SUMS`
+  的 SHA256 为 `446c14800b50c3103017338c10ba89335d50725582bdf5e1c91327997e058fa0`。
 - 定向 workflow/artifact/verifier/wrapper 套件 exit 0；workflow 负控覆盖退回
   pair、减少 runner/分片、丢失 `actions: read`、放宽 timeout/stack 和改动上传路径。
 - `uv lock --check`、`uv run --frozen ruff check .`、staged/unstaged
   `git diff --check` 与 `actionlint .github/workflows/ci.yml` 均 exit 0；静态日志
   `/tmp/pr228-four-runner-static.log` 的 SHA256 为
   `16782f9d4d66930967c32618f3f639a9029881e1096333ed4b017e19d48a35ba`。
-- 同一冻结代码树在 `/Volumes/Date/tianshu-pr228-four-runner.Vx8I4V` 隔离测试根运行
+  索引修复后最终静态门禁重新 exit 0，日志
+  `/tmp/pr228-shard-index-static-final.log` 的 SHA256 为
+  `0f7184230f3fef0d31e2dd6780ae4659ab900133d0896aa027f1e5ca45388906`。
+- 上一四-runner 候选 `d360dd1` 的同一冻结代码树在
+  `/Volumes/Date/tianshu-pr228-four-runner.Vx8I4V` 隔离测试根运行
   无筛选 `uv run --frozen pytest -o addopts="" -q -rs`，exit 0；`-rs` 保留全部跳过
-  原因。日志 `/tmp/pr228-four-runner-full-pytest.log` 的 SHA256 为
+  原因。该全量属于索引修复前对象，不替代修复后候选。日志
+  `/tmp/pr228-four-runner-full-pytest.log` 的 SHA256 为
   `a3cdb930493f47283c028f95a3d4ac1ef4a9251d15ecff8b0a50b11d84116809`。
-- 规范树（`src/`、`tests/`、`scripts/`）SHA256 为
+- 上一候选的规范树（`src/`、`tests/`、`scripts/`）SHA256 为
   `422651cbd277cc87156079fe29067ad60e94747507a9fb5901fcc50c35285056`；含
   `.github/workflows/ci.yml` 的最终复审树 SHA256 为
   `377b25aec12eb60935c2b3818da95c212b1142f065eb9e7101fed8c93b10663c`。
+  索引修复后的规范树 SHA256 为
+  `cd8bfacfe1e4fe60cd7a2c91362a2bebef66a0171e0a67737c0f28eea258f322`，复审树为
+  `7f6bfe24f02c4f1515b9511c2d555444f11b2e90502e1eda372f32170a1873e9`。
   哈希口径为按仓库相对 UTF-8 路径排序，逐文件写入
   `UTF8(path) + NUL + hex(SHA256(file bytes)) + NUL`。
+- 索引修复后的同一冻结代码树在
+  `/Volumes/Date/tianshu-pr228-shard-index.am8Qlu` 隔离测试根运行无筛选
+  `uv run --frozen pytest -o addopts="" -q -rs`，exit 0，保留全部跳过原因。日志
+  `/tmp/pr228-shard-index-full-pytest.log` 的 SHA256 为
+  `03c921a0e9818d1140ac01c32c0e08d47ae052b4d812de3b2e83c5910e39f800`。
 - 独立第二读者结论为 `fixed`，P0/P1/P2 均无；三类有效变异均先真实 RED、按冻结字节
   恢复后 GREEN，私有副本最终树逐字节恢复。原报告、机器证据与仅注释增量重绑的 SHA256
   分别为 `1e40b61ee05da46a3ad32dde397b4e2212c93b8d62c2d90d2a8a605040b318ed`、
