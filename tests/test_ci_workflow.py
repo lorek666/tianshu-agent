@@ -216,3 +216,97 @@ def test_pr_template_records_the_candidate_freeze_contract():
         "required CI 记录 head/base 和 event merge SHA",
     ):
         assert required in template
+
+
+def _assert_windows_independent_shards(workflow):
+    workers = _job_block(workflow, "windows_shards")
+    summary = _job_block(workflow, "windows_summary")
+    assert "runs-on: windows-latest" in workers
+    assert "shard: [0, 1, 2, 3]" in workers
+    assert "timeout-minutes: 25" in workers
+    assert "fail-fast: false" in workers
+    assert "ref: ${{ github.sha }}" in workers
+    assert "continue-on-error" not in workers + summary
+    assert "--ci-pair-" not in workers
+    assert "CI_SHARD_REPORT: ${{ runner.temp }}/windows-ci/shard.json" in workers
+    assert (
+        "uv run --frozen python scripts/pytest_with_stacks.py -p pytest_ci_shards\n"
+        "          --ci-shard-index=${{ matrix.shard }} --ci-shard-count=4\n"
+        "          --ci-shard-report=\"$CI_SHARD_REPORT\""
+    ) in workers
+    assert '--stack-timeout=60' in workers
+    assert "path: ${{ runner.temp }}/windows-ci/shard.json\n" in workers
+    assert "if-no-files-found: error" in workers
+    assert "needs: [windows_shards, desktop_windows]" in summary
+    assert "permissions:\n      contents: read\n      actions: read" in summary
+    assert "id: shard_artifacts" in summary
+    assert "GITHUB_TOKEN: ${{ github.token }}" in summary
+    assert "uv run --frozen python scripts/ci_artifacts.py" in summary
+    assert '--repository "$GITHUB_REPOSITORY"' in summary
+    assert '--run-id "$GITHUB_RUN_ID"' in summary
+    assert "--prefix windows-pytest --indices 0 1 2 3" in summary
+    assert "--reports-per-artifact" not in summary
+    assert '--github-output "$GITHUB_OUTPUT"' in summary
+    assert "--run-attempts '${{ steps.shard_artifacts.outputs.attempts }}'" in summary
+    assert "--count 4 --indices 0 1 2 3" in summary
+    for index in range(4):
+        assert (
+            "name: ${{ steps.shard_artifacts.outputs.shard_"
+            f"{index}_name }}}}\n          path: "
+            "${{ runner.temp }}/windows-ci-shards/" + str(index)
+        ) in summary
+    assert (
+        "name: windows-pytest-${{ github.run_id }}-${{ github.run_attempt }}-"
+    ) not in summary
+
+
+def test_windows_independent_runners_isolate_slo_and_keep_required_gates():
+    _assert_windows_independent_shards(_workflow())
+
+
+@pytest.mark.parametrize("old,new", [
+    ("--count 4 --indices 0 1 2 3", "--count 2 --indices 0 1"),
+    ("windows-ci-shards/1", "windows-ci-shards/0"),
+    ("shard: [0, 1, 2, 3]", "shard: [0, 1]"),
+    ("--ci-shard-count=4", "--ci-shard-count=2"),
+    ("--prefix windows-pytest --indices 0 1 2 3", "--prefix windows-pytest --indices 0 1"),
+    (
+        "permissions:\n      contents: read\n      actions: read",
+        "permissions:\n      contents: read",
+    ),
+    (
+        "--ci-shard-report=\"$CI_SHARD_REPORT\"",
+        "--ci-pair-index=${{ matrix.shard }} --ci-pair-root=\"$CI_SHARD_REPORT\"",
+    ),
+    ("timeout-minutes: 25", "timeout-minutes: 30"),
+    ("--stack-timeout=60", "--stack-timeout=0"),
+    ("      actions: read\n", ""),
+])
+def test_windows_independent_runner_guard_rejects_weakened_workflow(old, new):
+    workflow = _workflow()
+    assert old in workflow
+    with pytest.raises(AssertionError):
+        _assert_windows_independent_shards(workflow.replace(old, new))
+
+
+@pytest.mark.parametrize("old,new", [
+    (
+        "--run-attempts '${{ steps.shard_artifacts.outputs.attempts }}'",
+        '--run-attempt "$GITHUB_RUN_ATTEMPT"',
+    ),
+    (
+        "name: ${{ steps.shard_artifacts.outputs.shard_0_name }}",
+        "name: windows-pytest-${{ github.run_id }}-${{ github.run_attempt }}-0",
+    ),
+    (
+        "name: ${{ steps.shard_artifacts.outputs.shard_1_name }}\n"
+        "          path: ${{ runner.temp }}/windows-ci-shards/1",
+        "name: windows-pytest-${{ github.run_id }}-${{ github.run_attempt }}-1\n"
+        "          path: ${{ runner.temp }}/windows-ci-shards/1",
+    ),
+])
+def test_windows_summary_rejects_current_attempt_artifact_assumption(old, new):
+    workflow = _workflow()
+    assert old in workflow
+    with pytest.raises(AssertionError):
+        _assert_windows_independent_shards(workflow.replace(old, new, 1))
