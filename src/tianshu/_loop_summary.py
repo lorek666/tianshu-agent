@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -49,6 +50,7 @@ from .summaries import (
 from .summaries import (
     PENDING as SUMMARY_PENDING,
 )
+from .summary_telemetry import begin_call, finish_call
 from .tasks import Task, TaskStore
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -448,13 +450,25 @@ class _LoopSummaryMixin:
             self._fail_summary(record, f"预算配置错误：{exc}")
             return None
 
+        messages = [{"role": "user", "content": prompt_for(material)}]
+        try:
+            begin_call(
+                self._log, record, messages=messages, identity=identity_of(self._model),
+                policy=getattr(self._model, "cache_policy", None),
+            )
+        except (TianshuError, sqlite3.Error) as exc:
+            # 尚未发送，沿既有未发送释放路径只释放本次预占。
+            if self._budget is not None and reservation is not None:
+                self._budget.abandon_unsent(
+                    reservation.reservation_id, reason="摘要调用遥测写入失败（未发送）",
+                )
+            self._fail_summary(record, f"摘要调用遥测写入失败（未发送）：{exc}")
+            return None
         # 一次摘要调用就是一次真实模型调用：attempts 与 tokens 都要如实加，
         # 否则"这个 Run 到底打出去几次模型"会少算（PRD §5.6 第 4 条）。
         progress.model_attempts += 1
         try:
-            resp = self._model.complete(
-                [{"role": "user", "content": prompt_for(material)}], []
-            )
+            resp = self._model.complete(messages, [])
         except Exception as exc:  # noqa: BLE001 - 摘要失败一律回落
             progress.unknown_usage_calls += 1
             progress.unknown_cost_calls += 1
@@ -466,6 +480,12 @@ class _LoopSummaryMixin:
         self._absorb_summary_usage(progress, resp)
         self._settle_summary(reservation, resp)
         cost = self._summary_cost(resp)
+        try:
+            finish_call(self._log, record.summary_id, usage=resp.usage, cost=cost)
+        except (TianshuError, sqlite3.Error) as exc:
+            # 已返回用量先按既有路径结算；旁路失败不得使实际消耗消失。
+            self._fail_summary(record, f"摘要用量遥测写入失败：{exc}")
+            return None
         try:
             return self._summaries.complete(
                 record,

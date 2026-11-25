@@ -1,0 +1,139 @@
+# Prompt Cache：配置与观测
+
+缓存策略位于三个模型 adapter 的请求边界；不会改变工具授权、任务目标、上下文预算、
+重试次数或 Responses 的 `store:false`。当前交付的是可配置策略和观测链路，
+尚未执行真实付费端点的命中率及任务质量对照实验。
+
+## 选择策略
+
+环境变量 `TIANSHU_PROMPT_CACHE_POLICY` 在 adapter 构造时读取。程序调用可以传
+`cache_policy=` 覆盖环境变量。当前没有设置面板里的持久化缓存开关。
+
+- `auto`：默认。官方 HTTPS OpenAI 端点使用稳定前缀 key 和固定工具投影；
+  Anthropic、非官方端点关闭显式缓存。
+- `off`：不添加缓存参数，保留原请求形状。供应商自身的隐式缓存未必能由客户端关闭。
+- `prefix-v1`：主动确认端点支持相应协议。Anthropic 添加最多四个 ephemeral 断点，
+  使用其默认短 TTL；OpenAI Chat/Responses 添加稳定的 `prompt_cache_key`。
+- `responses-explicit-v1`：仅用于已核实支持新版显式缓存字段的 Responses 模型。
+  发送显式模式与 `30m` TTL，在普通输入文本处放断点，不修改 opaque reasoning/
+  compaction/output items。不能用于 Chat 或 Anthropic，也不会按模型名称猜兼容性。
+
+例如，在已确认兼容的 Anthropic 端点上主动启用：
+
+```bash
+TIANSHU_PROMPT_CACHE_POLICY=prefix-v1 \
+  uv run --frozen tianshu run --help
+```
+
+上例只显示帮助，不会发起模型调用。实际运行 `run` / `worker` / `daemon` 时，
+让对应进程继承该环境变量即可；已运行的桌面进程不会因终端变量变化而更新配置。
+非官方端点需要自己的真实验证，启用策略不构成兼容性证明。
+显式缓存可能产生写入费用；不自动 prewarm、不增加试探调用、不在参数拒绝后偷偷重发。
+
+## 稳定区与易变区
+
+开头连续 system、工具定义及其对象键顺序保持稳定。工具投影按内置目录顺序，
+再按动态工具名排序；schema 内的数组、消息、工具往返和提示正文不重排。
+路由 key 只含策略/端点/模型/稳定材料的摘要，不放明文任务、路径或凭据。
+
+Anthropic 断点位于工具定义末尾、system 末尾、初始用户任务块和动态尾部之前的历史块。
+原始记忆检索结果仍以工具结果追加；不在每轮把它们重新插进 system。时间和流式预览
+也不会新加入稳定区。Responses 隐式策略继续发送完整历史前缀；显式策略只标记
+普通输入文本，完整保留原来的加密续接。显式模式最多选择四处：开头最后一条 system、
+确知的初始任务，以及动态末条消息之前最近两处用户历史文本。相邻轮保留重叠历史断点，
+避免上一轮写入的历史在新请求中失去查找边界；压缩后的最新补充不冒充初始任务。
+
+`/compact`、语义摘要和 Responses 压缩都可能改变历史前缀。这些操作有信息损失，
+缓存策略不会为了命中率而自动关掉摘要、扩大预算或保留无关历史。
+
+## 保存真实缓存用量
+
+Chat 的 `prompt_tokens_details` 与 Responses 的 `input_tokens_details` 中：
+
+- `cached_tokens` → `cache_read_input_tokens`
+- `cache_write_tokens` → `cache_creation_input_tokens`
+
+Anthropic 使用其原生同名字段。最终 JSON/SSE usage 沿既有
+`model.result` / `run.model_turn` 精确 payload v2 保存；重放不重新调用供应商。
+缺失仍为未知，显式 null 保留；SSE 累计值只取最终快照，不逐帧相加。
+非法缓存计数或原生读写之和超过已知 OpenAI 总输入时拒绝该回执。
+第三方 Chat 端点仍检查数值类型与扁平/嵌套别名冲突，但不套官方输入包含语义；
+空或无关的 details 对象不改变同一份计数的接受结果，报告分母仍为未知。
+
+OpenAI 输入总数已经包含缓存读写；Anthropic 总输入是原生输入加缓存读取和创建。
+这是观测分母，不改变既有预算语义。当前价目表没有缓存倍率，缓存读写为正值或未知时，
+成本继续如实显示未知，不用普通输入单价冒充缓存费用。
+
+## 与任务质量一起查看
+
+`evaluate --cache-report PATH` 在原有 C5 报告之外另存一份
+`tianshu.prompt-cache.v1` 报告。它复用同一次 `SuiteRun` 的观察与判据，
+不增加模型调用，也不改 C5 的安全否决或可比性规则。
+
+离线冒烟例子：
+
+```bash
+cache_workdir="$(mktemp -d "${TMPDIR:-/tmp}/tianshu-cache-eval.XXXXXX")"
+uv run --frozen tianshu evaluate \
+  --model scripted --case N1 --repeat 3 \
+  --workdir "$cache_workdir" \
+  --cache-report "${cache_workdir}-report.json" --json
+```
+
+工作根必须为空；重复执行需换一个新目录。子集只证明冒烟，不是完整评测。
+示例将工作根放在系统临时目录，避开现有 [#204](https://github.com/lorek666/tianshu-agent/issues/204)
+的保留名祖先路径限制；本轮没有修复该限制。报告输出不作为数据库工作根，可另存项目内。
+旁路输出必须是不存在的新文件；与工作根、主报告或基线存在相同文件、硬链接或父子路径
+冲突时，在模型构造前拒绝。写盘使用二进制独占创建，UTF-8 编码并保留 LF，
+前置检查后出现的文件也不会被截断。
+尚未创建的路径也按完整路径组件生成保守比较键：Unicode 统一为 NFC，
+macOS/Windows 再折叠大小写，拒绝等价拼写及其父子路径冲突。
+脚本模型报告标记为 `offline`，缓存命中率为未知，不能据此声称真实缓存改善。
+真实模型仍通过原有 `--model openai-compatible --provider ... --model-name ...`
+选择；只有实际执行这些线上评测才会产生供应商调用和费用。
+
+报告分别提供：
+
+- 每次请求的 usage、provider/adapter/model、来源 seq/hash、上下文条件；
+- 按 provider 和条件分组的 token 加权命中率与请求命中率，连同可观测/未知分母；
+- 每项任务的 C5 `scope`、成功、失败、安全失败、无效、未具备能力与耗时/成本原事实；
+- 未配对的 intent、重复 result 和缺少缓存遥测的辅助调用；
+- suite、fixture、主报告 SHA256 与本次主模型策略配置。
+
+主调用仅统计 `model.result`，不再把同一调用的 `run.model_turn` 算一次。
+未知厂商的兼容端点保留原始计数，分母未知；没有回执的调用不算零用量或未命中。
+策略配置不是历史事件中逐请求的策略证明。
+质量分组保持 `scope × 上下文条件`；脚本恢复任务的通过不能计入被评测模型的任务成功率。
+
+上下文分组包括 `memory`、`semantic_summary`、`trimmed`、`compact`、
+`compact_generation`、`responses_compact`，多种变换并存时保留组合标签。
+无已记录变换标为 `baseline_or_spilled`：现有 intent 没有独立 spill 标记，
+不能由此断言发出的是完全原始上下文。一个任务跨多种条件时标 `mixed`，
+不会把最终成功归因于其中某一次请求。
+
+这是一份观测报告，不能自动证明因果。真实对照需固定模型/端点/任务/工具/判据，
+分别收集原始、压缩、记忆和语义摘要条件，每条件至少三次，并保留冷/热顺序及间隔。
+语义摘要辅助调用的缓存明细保存在同库的追加式 `summary_model_calls` /
+`summary_model_usage`，绑定摘要、材料、Run、attempt、模型身份、消息哈希和调用方策略。
+发送前提交调用身份，返回后保存最终 usage；正文不合格仍保留实际用量。
+模型异常或返回结果持久化前中断保持未知，不重发。记录不含 prompt 正文或凭据。
+这些记录不进入主对话事件，不改变回放消息和共享预算结算。
+
+`requests` / `usage` / `usage_by_provider_condition` 继续仅表示主调用；新增
+`auxiliary_requests` / `auxiliary_usage` / `auxiliary_usage_by_provider_condition`
+单列摘要生成开销，`all_usage` 合并两类已记录调用。辅助调用条件明确标为
+`semantic_summary_generation`，不混进摘要应用后的质量归因。相同摘要取证去重，
+无回执的辅助调用计入未知覆盖；旧库仍可能缺少遥测，报告保留缺口字段。
+旁路取证损坏单列 `auxiliary_telemetry_error`，不能把 C5 安全失败变成无效样本。
+评测器关库前收集同库根、子和 followup 证据，并复用产品共享预算装配。
+总调用、总费用以 C5 和账本为准，不得只报压缩后请求命中率来掩盖摘要/压缩开销。
+
+这补齐了观测链路，尚未完成付费 A/B。当前 `evaluate` 默认关闭模型摘要，也没有
+自动组织固定任务的原始/compact/记忆/语义摘要随机对照；启用摘要与控制实验条件
+仍需要显式实验装配。实际端点、模型、可用凭据与最高花费明确后才能开展付费实验。
+未取得相应实测结果前，命中率、成本和质量的改善均为未验证。
+
+设计与验收依据见[spec](superpowers/specs/2026-11-22-prompt-cache-design.md)，
+摘要遥测增量见[补充 spec](superpowers/specs/2026-11-23-summary-cache-telemetry.md)，
+实施状态见[变更记录](changelog/2026-11-22-prompt-cache.md)与
+[摘要遥测记录](changelog/2026-11-23-summary-cache-telemetry.md)。

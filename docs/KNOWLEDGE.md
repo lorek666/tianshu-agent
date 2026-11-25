@@ -373,6 +373,23 @@
 - **目录发布采用可恢复 rename journal，不冒充跨平台原子 swap**：先持久化 output/staging/backup 身份，再移动目录；启动时按现场完成新发布或恢复旧 output。失败仍非零，Windows/macOS x64 的真实 rename 行为须原生验证。
 - **跨文件系统可移植性要求 casefold 去重**：Git tree 规范路径阶段以 `casefold()` 拒绝 `ss.py`/`ß.py` 这类在默认 APFS/Windows 上会折叠为同一名称的输入，避免静默只留一份。
 
+### Prompt Cache 本地策略与观测（2026-11-22）
+
+- **策略与观测候选**：既有 usage v2 和 Responses 续接不重复实现。
+  新增 adapter-local `auto/off/prefix-v1/responses-explicit-v1`，仅改 wire 副本；保留内置
+  manifest 目录次序、schema 数组和历史消息。官方 OpenAI 默认稳定 key，Anthropic 与新版
+  Responses 显式模式须主动开启。原生缓存读取/写入沿既有事件 v2 保存；`evaluate
+  --cache-report` 复用 C5 判据，按 provider 分母、未知覆盖和 `scope × 上下文条件` 分组；
+  报告须是工作根外的新文件，调用前拒绝路径冲突，二进制独占创建防止截断已有证据。候选的
+  最终门禁与未验证范围见[记录](changelog/2026-11-22-prompt-cache.md)，不套用上一批 PASS。
+- **辅助摘要遥测增量（2026-11-23）**：同库新增追加式调用身份与最终 usage 表，
+  发送前提交身份、无回执保持未知；不作为主对话 `model.result`，不重复结算。
+  旁路报告分别显示主调用、辅助摘要及合并的用量覆盖，旧库缺口和取证错误仍明确保留。
+  评测根/followup 装配补传产品共享预算，避免辅助摘要因缺账本而无法启用。
+  `RU-D1` 的离线子脚本显式声明测试 usage 并升级 `1.0.1`，保持原限额及判据，
+  不再依赖缺失父预算掩盖未知预占；旧任务分母不可直接比较。
+  本轮冻结与门禁见[记录](changelog/2026-11-23-summary-cache-telemetry.md)。
+
 ## 5. 踩坑教训（别再踩）
 
 - **CI 观测须绑定真实阶段与实例（2026-11-23）**：Windows venv launcher
@@ -545,7 +562,7 @@
 - **重建必须区分保存点与其后的事实（2026-11-21）**：Responses 的恢复计数由最后保存的游标加其后 `model.intent` 得到；控制面尚未写首个 `run.cursor` 时，以 `run.start` 的初始进度作为保存点，不能先吸收 intent 再让恢复入口重复补计。等待子任务的事务先清空 `model_turn`、保存游标，再追加 `job.parked`；重建需识别相邻、同 Run、同 claim 的 `waiting_children` 事件对后核对原摘要，不能删掉哈希校验。连续真实崩溃、保留/删除/重建投影，以及父任务重复挂起与 Worker 唤醒均须覆盖，见[独立复审原件](evidence/openai-responses-2026-11-21/README.md)。
 
 - **目录 metadata 不等于递归内容闭包（2026-11-20）**：旧材料树在下降后新增孙项时，父级只重核 child stat 可能因平台元数据延迟而漏检。每次调用保存已观察目录，最后逐目录做一次真实直接子项复核，保留前后身份/state、名称闭包及链接/未知/不可读拒绝；不能在每层再递归整棵树。真实 late-file + 冻结 child stat 与列举计数区分这两类错误。它仍是有界协作式观察，不是原子快照或同 uid 物理隔离。
-- **只读 SQLite 检查后要重核干净离线前提（2026-11-20）**：只读备份检查可能留下 WAL/SHM。后续静态 GC 以 companions 优先报 `incompatible` 是正确拒绝，不能为测试期望改产品错误优先级。夹具仅经正常 RW recovery/close 并严格断言无 WAL/SHM/journal；不能手工删除 companions，也不能把局部无目录同步能力投影称作 Windows 原生验证。
+- **只读 SQLite 检查后要重核干净离线前提（2026-11-20）**：只读备份检查可能留下 WAL/SHM。后续静态 GC 以 companions 优先报 `incompatible` 是正确拒绝，不能为测试期望改产品错误优先级。夹具仅经正常 RW recovery/close 并严格断言无 WAL/SHM/journal；不能手工删除 companions，也不能把局部无目录同步能力投影称作 Windows 原生验证。preview 和 approved 应分开覆盖，POSIX 仅测 approved 会漏掉 preview 的离线前提；辅助摘要候选的 Windows 原生红与跨平台夹具修正见[记录](changelog/2026-11-23-summary-cache-telemetry.md)。
 - **测试 shell 的工具传输必须匹配生产 runner（2026-11-20）**：生产 Ubuntu asset-list shell 与 Windows Git Bash 的原生 jq 文本输出不同；测试 helper 仅在 Windows 请求 jq `--binary` 提供 LF，不 strip JSON/资产名。使用实际 shell、真实 jq 的受控 CRLF/LF 正负控，原 CR/LF 非法名及额外文件仍拒绝；生产 release workflow/白名单不因此改动。
 - **完整职责拆分不能变成 required 空绿（2026-11-20）**：macOS Rust 与完整 Python 曾共用25分钟触发真实超时；拆为各25分钟原生作业后，原 required 名由 `always()` + 原 draft gate 汇总，显式要求两个上游均 `success`，failure/cancelled/skipped 均拒绝，并绑定同一 exact checkout。保留全部原命令与 release all-jobs-success；拆预算不保证新 runner 一定及时完成。证据见[本轮修复记录](changelog/2026-11-20-integration-ci-repair.md)。
 
@@ -767,6 +784,12 @@
   文件观察为协作式检查，不是同 uid 攻击隔离。浏览器验收使用临时 Home、数据根、
   独立凭据服务名与脚本模型；不代表真实付费模型质量、系统输入法实机、
   Windows 文件语义或正式桌面发行验收。远端 CI 尚未运行。
+
+- **缓存效果尚未线上验证（2026-11-23）**：本地候选没有付费端点的冷/热及任务质量对照；
+  不宣称收益。既有事件未单列 spill 与逐请求缓存策略，旁路报告分别标
+  `baseline_or_spilled` 和当次主模型配置；新增摘要遥测不补造旧库缺失回执，也不关闭
+  真实实验前置条件。当前评测默认关闭摘要，没有自动四条件随机实验；
+  不能用已观测请求的比例冒充所有调用或实测收益。详见[缓存说明](prompt-cache.md)。
 
 - **旧预览的原生封套失败仍为失败（2026-11-20）**：旧 `0.1.0` 下载资产在本机 codesign/spctl 均因缺失资源封套失败；后者是操作失败，不能解读成 Gatekeeper 放行或拒绝的有效策略结论。独立实验副本和本轮 tiny-C 结构回归不改写旧资产，也不等于新产品 build、真实安装或原生 runtime 通过。本次 roundtrip 的 fd-relative 无链接提取仅约束私有新目录；源树扫描/归档的同 uid TOCTOU 与原有 runtime provenance 边界仍保留。未做 Intel Mac、其他 macOS 版本或 Windows 用户设备验证。
 
