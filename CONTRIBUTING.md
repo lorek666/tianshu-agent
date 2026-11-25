@@ -101,6 +101,13 @@ PYTHONPATH=scripts PYTEST_ADDOPTS="" uv run --frozen pytest -o addopts="" -q -rs
 `shard.json`，不包含缓存或测试数据。两个具名 artifact 分别下载到汇总目录的
 `0/`、`1/` 后，以原严格 verifier 核对 count2 全集和上游 job 成功。
 保留直接 pytest 及原生 fatal handler，不新增 macOS watchdog 线程。
+
+macOS 与每个 Windows worker 把 state 背压诊断写入严格报告树之外的
+`TIANSHU_SLO_DIAGNOSTICS_DIR/state-pressure/<shard>.json`。测试在首次断言前原子发布
+完整 D7 脱敏 JSON，并用真实子进程在首个失败谓词后硬退，证明 pytest 日志被截断时文件仍可
+恢复。macOS 与 Windows 均以 `always()` step 上传，工件名绑定 run ID、attempt 和 shard；
+缺件只告警，不改变原 pytest/包装器退出码，也不改变分片、并发、阈值或 required 名称。
+
 Windows
 在两个独立 `windows-latest` runner 上使用原包装器，每台启动两个独立 pytest worker，
 执行以下命令（`INDEX` 为 0 或 1，`REPORT_ROOT` 为 runner 临时目录下的新绝对目录）。完整命令以

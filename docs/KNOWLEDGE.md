@@ -182,6 +182,12 @@
   PR #228 的精确对象及原始报告单独证明，本机绿不替代托管 runner 验收。
   见[修复设计](superpowers/specs/2026-11-23-macos-ci-shards-design.md)与
   [增量记录](changelog/2026-11-23-macos-ci-shards.md)。
+- **取消后的 state 诊断必须独立于 pytest 日志（2026-11-26）**：在 #228 的
+  macOS count2 与 Windows「两台 runner × 每台两 worker / count4」拓扑上，首次断言前
+  将完整 D7 脱敏报告原子写入严格报告树之外的 `state-pressure/<shard>.json`；真实子进程
+  在首个失败谓词后硬退，验证日志不完整时 JSON 仍可读取。两个平台均以 `always()` 上传，
+  工件名绑定 run/attempt/shard，缺件只告警且不覆盖原退出码。没有改 runner 数量、并发、
+  阈值、25 分钟上限、60 秒栈诊断或四个 required 名称；见[增量记录](changelog/2026-11-26-pr229-state-pressure-evidence.md)。
 
 ### 收尾轮实现决策（2026-11-11，PR #66–#72）
 

@@ -184,6 +184,66 @@ def test_macos_required_summary_shell_rejects_any_unsuccessful_upstream(
     assert (result.returncode == 0) is (python_result == desktop_result == "success")
 
 
+def _assert_state_pressure_uploads(workflow):
+    for job, upload_name, artifact, diagnostics in (
+        (
+            "macos_python",
+            "上传 state 背压诊断证据",
+            "macos-slo-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}",
+            "${{ runner.temp }}/macos-slo-diagnostics",
+        ),
+        (
+            "windows_shards",
+            "上传 Windows SLO 原始样本与失败诊断",
+            "windows-slo-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}",
+            "${{ runner.temp }}/windows-ci/slo-diagnostics",
+        ),
+    ):
+        block = _job_block(workflow, job)
+        assert f"TIANSHU_SLO_DIAGNOSTICS_DIR: {diagnostics}" in block
+        upload = re.search(
+            rf"(?ms)^      - name: {re.escape(upload_name)}\n(?P<body>.*?)(?=^      - |\Z)",
+            block,
+        )
+        assert upload, f"{job} must upload state-pressure evidence"
+        body = upload["body"]
+        assert "if: always()" in body
+        assert "uses: actions/upload-artifact@v4" in body
+        assert f"name: {artifact}" in body
+        assert f"path: {diagnostics}" in body
+        assert "if-no-files-found: warn" in body
+
+
+def test_state_pressure_evidence_is_uploaded_even_when_pytest_fails():
+    _assert_state_pressure_uploads(_workflow())
+
+
+@pytest.mark.parametrize("old,new", [
+    (
+        "      - name: 上传 state 背压诊断证据\n        if: always()",
+        "      - name: 上传 state 背压诊断证据\n        if: success()",
+    ),
+    (
+        "          path: ${{ runner.temp }}/macos-slo-diagnostics",
+        "          path: ${{ runner.temp }}/macos-ci",
+    ),
+    (
+        "          name: macos-slo-${{ github.run_id }}-${{ github.run_attempt }}-"
+        "${{ matrix.shard }}",
+        "          name: macos-slo-${{ github.run_id }}-${{ github.run_attempt }}",
+    ),
+    (
+        "          path: ${{ runner.temp }}/windows-ci/slo-diagnostics",
+        "          path: ${{ runner.temp }}/windows-ci/reports",
+    ),
+])
+def test_state_pressure_upload_regressions_are_rejected(old, new):
+    workflow = _workflow()
+    assert old in workflow
+    with pytest.raises(AssertionError):
+        _assert_state_pressure_uploads(workflow.replace(old, new, 1))
+
+
 def test_main_push_ci_is_not_made_cancellable_or_draft_gated():
     workflow = _workflow()
     assert re.search(r"(?m)^  push:\n    branches: \[main\]$", workflow)
