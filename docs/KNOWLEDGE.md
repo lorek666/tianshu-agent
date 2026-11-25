@@ -380,7 +380,10 @@
   不能只发终止请求就丢弃对象。监控线程尚未退出或进程退出未确认时，
   保留 Host、桥、锁和对象供重试，重试不得换用新锁 owner。诊断写失败不能
   改写已确认的退出事实。附着快照须与同一连接的握手身份一致；自有快照还须
-  在启动就绪时匹配原生根 PID，不在停止时采用后来出现的锁。认证与停止请求
+  在启动就绪时匹配原生根 PID，不在停止时采用后来出现的锁。附着停止目标在首次
+  停止时冻结，重试不得采用后来出现的锁。所有自有进程的 `poll`/`wait`/强制终止
+  由每个 supervisor 的 `_process_lock` 串行，`waitid(WNOWAIT)` 身份观察与发信号
+  不会被并发回收插入。认证与停止请求
   由限时且回收的原生辅助进程执行；旧根未确认退出时不能启动下一代。
   Daemon 就绪后的 Host 启动失败也须回收仍由本监督器持有的根，但身份核验与回收
   必须处于同一 Host 元数据临界区；只先读锁再停止仍会留下接管窗口。已被替代 Host
@@ -390,6 +393,26 @@
   wait 结果，但独立 PID 查询不是原子句柄证明，launcher 退出也不证明任意后代退出。
   v10b 完整 CI 的 Windows 残留现场原因仍未知，见
   [Host 停止与实例证据修复](changelog/2026-11-23-host-stop-instance-evidence.md)。
+
+- **启动失败回收不能依赖被强杀进程的 `finally`（2026-11-24）**：
+  Windows `TerminateProcess` 不执行 Daemon 的 Python 收尾。已 ready 的自有根须先
+  按就绪快照与同一 IPC 会话身份请求优雅退出；失败后只回收自有 `Popen`，确认退出
+  再清理完全一致的锁字节。Daemon 锁的创建、陈旧接管与身份核对删除共享独立的
+  `daemon.lock.guard`，不能复用 Host 元数据守卫或业务 `execution.guard`：Host 可能
+  持元数据守卫等待自有 Daemon 退出，复用会死锁。初始或最终锁已替换、不可读时保留新实例；清理失败不能
+  丢弃可供重试的自有身份。认证阻塞测试先由 `ensure()` 完成真实握手，再开启阻塞
+  并让 shutdown helper 自己进入认证；helper 冷启动仍计入原有停止预算，探针不能
+  提前占住 accept 线程。评测负控先钉住真实观测形状，避免残缺观测因零副作用而
+  假红。停止升级只接收自有 `Popen`：POSIX 先用不回收子进程的 `waitid(WNOWAIT)`
+  确认仍未运行，macOS 通过完整 SDK `siginfo_t` 调用 libc；Windows 只通过保留的
+  原进程句柄调用 `TerminateProcess`，绝不回退到裸 PID、`OpenProcess(PID)` 或
+  `taskkill /PID`。附着实例没有自有句柄，只能等待同一端点消失，不能强杀。
+  普通重试须先完成已保留旧进程的等待和精确锁清理，才能启动下一代。
+  Windows 强杀因此只保证自有 Daemon 根退出，不保留旧 `taskkill /T` 的树清理，
+  也不证明 Daemon 执行后代退出；完整进程树监管仍由
+  [#224](https://github.com/lorek666/tianshu-agent/issues/224) 跟踪。
+  Windows 红、定向红绿与独立复审见
+  [PR #228 跟进修复](changelog/2026-11-24-pr228-windows-followup.md)。
 
 - **CI 插件须验证真实测试模块的收集兼容性（2026-11-23）**：
   模块级参数化 fixture 会触发 pytest 内建收集重排。小型无参数夹具通过、

@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import shutil
 import subprocess
 import sys
@@ -28,6 +29,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from support import HangupPeer, stack_for, write_exact
@@ -988,7 +990,9 @@ def test_unlink_lock_retries_transient_windows_read_contention(
             raise PermissionError(13, "file is busy", str(path))
         return original_unlink(path, *args, **kwargs)
 
-    monkeypatch.setattr(module.os, "name", "nt")
+    # Simulate only this module's platform branch. Mutating the shared os.name
+    # would also make pathlib construct WindowsPath on a POSIX test host.
+    monkeypatch.setattr(module, "os", SimpleNamespace(name="nt"))
     monkeypatch.setattr(Path, "unlink", transiently_busy)
     monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
 
@@ -1022,7 +1026,9 @@ def test_unlink_lock_rechecks_identity_before_each_retry(root, monkeypatch) -> N
             raise PermissionError(13, "file is busy", str(path))
         return original_unlink(path, *args, **kwargs)
 
-    monkeypatch.setattr(module.os, "name", "nt")
+    # Simulate only this module's platform branch. Mutating the shared os.name
+    # would also make pathlib construct WindowsPath on a POSIX test host.
+    monkeypatch.setattr(module, "os", SimpleNamespace(name="nt"))
     monkeypatch.setattr(Path, "unlink", replace_then_report_busy)
     monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
 
@@ -1059,7 +1065,9 @@ def test_unlink_lock_persistent_windows_contention_uses_exact_budget(
         sleeps.append(seconds)
         now[0] += seconds
 
-    monkeypatch.setattr(module.os, "name", "nt")
+    # Simulate only this module's platform branch. Mutating the shared os.name
+    # would also make pathlib construct WindowsPath on a POSIX test host.
+    monkeypatch.setattr(module, "os", SimpleNamespace(name="nt"))
     monkeypatch.setattr(Path, "unlink", always_busy)
     monkeypatch.setattr(module.time, "monotonic", lambda: now[0])
     monkeypatch.setattr(module.time, "sleep", advance)
@@ -1071,6 +1079,97 @@ def test_unlink_lock_persistent_windows_contention_uses_exact_budget(
     assert max(sleeps) <= daemon.LOCK_DELETE_RETRY_INTERVAL_S
     assert sum(sleeps) == pytest.approx(daemon.LOCK_DELETE_RETRY_BUDGET_S)
     assert lock_path.exists()
+
+
+def test_unlink_lock_serializes_identity_check_with_real_takeover(root, monkeypatch) -> None:
+    """A real acquirer cannot replace the lock between identity check and unlink."""
+    lock_path = daemon.lock_path(root)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "pid": os.getpid(),
+        "started_at": 1,
+        "instance_id": "daemon_owned",
+        "daemon_version": daemon.DAEMON_VERSION,
+    }
+    lock_path.write_text(json.dumps(payload), encoding="utf-8")
+    lock = daemon.DaemonLock(lock_path, "daemon_owned", 1)
+    child_script = r"""
+import sys
+from pathlib import Path
+from tianshu import daemon, leases
+original_try_lock = leases._try_lock
+announced = False
+def observed_try_lock(fd):
+    global announced
+    try:
+        return original_try_lock(fd)
+    except OSError:
+        if not announced:
+            announced = True
+            print("blocked", flush=True)
+        raise
+leases._try_lock = observed_try_lock
+print("ready", flush=True)
+assert sys.stdin.buffer.read(1) == b"G"
+acquired = daemon.acquire_lock(Path(sys.argv[1]))
+try:
+    print("acquired " + acquired.instance_id, flush=True)
+    sys.stdin.buffer.read(1)
+finally:
+    daemon._unlink_lock(acquired)
+"""
+    child = subprocess.Popen(
+        [sys._base_executable, "-u", "-c", child_script, str(root)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        env={**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONPATH": os.pathsep.join(sys.path)},
+    )
+    lines: queue.Queue[str] = queue.Queue()
+
+    def read_lines():
+        assert child.stdout is not None
+        for raw in child.stdout:
+            lines.put(raw.decode("utf-8").strip())
+
+    reader = threading.Thread(target=read_lines, daemon=True)
+    reader.start()
+    original_read_lock = daemon._read_lock
+    observation = []
+
+    def read_then_release_acquirer(path):
+        observed = original_read_lock(path)
+        if path == lock_path and not observation:
+            assert child.stdin is not None
+            child.stdin.write(b"G")
+            child.stdin.flush()
+            observation.append(lines.get(timeout=15))
+        return observed
+
+    try:
+        assert lines.get(timeout=15) == "ready"
+        monkeypatch.setattr(daemon, "_read_lock", read_then_release_acquirer)
+        daemon._unlink_lock(lock)
+        assert observation == ["blocked"]
+        assert not lock_path.exists()
+
+        acquired_line = lines.get(timeout=15)
+        assert acquired_line.startswith("acquired "), acquired_line
+        acquired_id = acquired_line.removeprefix("acquired ")
+        assert json.loads(lock_path.read_text(encoding="utf-8"))["instance_id"] == acquired_id
+        assert child.stdin is not None
+        child.stdin.write(b"X")
+        child.stdin.flush()
+        assert child.wait(timeout=15) == 0
+        assert not lock_path.exists()
+    finally:
+        if child.stdin is not None:
+            child.stdin.close()
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=15)
+        reader.join(timeout=5)
+        if child.stdout is not None:
+            child.stdout.close()
 
 
 def test_unlink_lock_does_not_retry_posix_permission_error(

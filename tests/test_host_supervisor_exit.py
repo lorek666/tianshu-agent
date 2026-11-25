@@ -32,6 +32,33 @@ def _test_interpreter() -> str:
     return sys._base_executable if os.name == "nt" else sys.executable
 
 
+def _shutdown_test_daemon(root: Path) -> None:
+    from tianshu import daemon
+
+    lock_path = daemon.lock_path(root)
+    try:
+        snapshot = lock_path.read_bytes()
+    except FileNotFoundError:
+        return
+    identity = json.loads(snapshot)
+    daemon.request_shutdown(
+        root, expected_instance_id=identity["instance_id"], timeout=3,
+    )
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            current = lock_path.read_bytes()
+        except FileNotFoundError:
+            return
+        if current != snapshot:
+            return
+        threading.Event().wait(0.05)
+    raise AssertionError(
+        "test Daemon retained its identity after graceful shutdown; "
+        "refusing to terminate an unowned PID"
+    )
+
+
 def test_native_windows_test_interpreter_keeps_project_imports(monkeypatch):
     with monkeypatch.context() as patch:
         patch.setattr(os, "name", "nt")
@@ -51,7 +78,10 @@ def held_child():
         yield child
     finally:
         if child.stdin is not None:
-            child.stdin.close()
+            try:
+                child.stdin.close()
+            except BrokenPipeError:
+                pass
         try:
             child.wait(timeout=10)
         finally:
@@ -161,6 +191,24 @@ def test_owned_python_command_checks_a_windows_path_launcher(
         assert env is None
 
 
+@pytest.fixture
+def ready_owned_root(tmp_path, held_child):
+    from tianshu import daemon
+
+    supervisor = host.DaemonSupervisor(tmp_path, [])
+    supervisor._process = held_child
+    snapshot = json.dumps({
+        "pid": held_child.pid,
+        "started_at": 1,
+        "instance_id": "owned-ready",
+        "daemon_version": daemon.DAEMON_VERSION,
+    }).encode("utf-8")
+    supervisor._owned_snapshot = snapshot
+    daemon.lock_path(tmp_path).parent.mkdir(parents=True, exist_ok=True)
+    daemon.lock_path(tmp_path).write_bytes(snapshot)
+    return supervisor, snapshot
+
+
 def test_stop_waits_for_owned_child_after_endpoint_is_gone(
     tmp_path, monkeypatch, held_child,
 ):
@@ -184,7 +232,7 @@ def test_stop_waits_for_owned_child_after_endpoint_is_gone(
             events.put("stopped")
 
     monkeypatch.setattr(held_child, "wait", observed_wait)
-    monkeypatch.setattr(supervisor, "_terminate", lambda pid, **kw: terminated.append(pid))
+    monkeypatch.setattr(supervisor, "_terminate", lambda proc, **kw: terminated.append(proc.pid))
     stopper = threading.Thread(target=stop)
     stopper.start()
     try:
@@ -209,9 +257,9 @@ def test_stop_reaps_owned_child_after_termination(tmp_path, monkeypatch, held_ch
     supervisor._process = held_child
     terminated = []
 
-    def terminate(pid, **kwargs):
-        assert pid == held_child.pid
-        terminated.append(pid)
+    def terminate(proc, **kwargs):
+        assert proc is held_child
+        terminated.append(proc.pid)
         held_child.terminate()
 
     monkeypatch.setattr(supervisor, "_terminate", terminate)
@@ -227,7 +275,7 @@ def test_stop_retains_owned_child_when_exit_cannot_be_confirmed(
     supervisor = host.DaemonSupervisor(tmp_path, [])
     supervisor._process = held_child
     terminated = []
-    monkeypatch.setattr(supervisor, "_terminate", lambda pid, **kw: terminated.append(pid))
+    monkeypatch.setattr(supervisor, "_terminate", lambda proc, **kw: terminated.append(proc.pid))
     with pytest.raises(host.HostError, match="退出"):
         supervisor.stop(timeout=0.05)
     assert terminated == [held_child.pid]
@@ -239,6 +287,316 @@ def test_stop_retains_owned_child_when_exit_cannot_be_confirmed(
     held_child.wait(timeout=10)
     supervisor.stop(timeout=0.05)
     assert supervisor._process is None
+
+
+def test_failed_start_gracefully_reaps_ready_owned_root_and_clears_lock(
+    tmp_path, monkeypatch, ready_owned_root,
+):
+    from tianshu import daemon
+
+    supervisor, snapshot = ready_owned_root
+    held_child = supervisor._process
+    requests = []
+
+    def graceful_shutdown(*, reason, instance_id, timeout):
+        requests.append((reason, instance_id, timeout))
+        assert held_child is not None and held_child.stdin is not None
+        held_child.stdin.write(b"G")
+        held_child.stdin.flush()
+        return True
+
+    def forbidden_terminate(*args, **kwargs):
+        raise AssertionError("graceful shutdown must not force-terminate the owned root")
+
+    monkeypatch.setattr(supervisor, "_request_shutdown", graceful_shutdown)
+    monkeypatch.setattr(held_child, "terminate", forbidden_terminate)
+    supervisor._abort_start(held_child)
+    assert requests and requests[0][0:2] == ("startup_abort", "owned-ready")
+    assert held_child.returncode == 0
+    assert supervisor._process is None
+    assert supervisor._owned_snapshot is None
+    assert not daemon.lock_path(tmp_path).exists()
+
+
+def test_failed_start_force_reaps_owned_root_after_graceful_failure(
+    tmp_path, monkeypatch, ready_owned_root,
+):
+    from tianshu import daemon
+
+    supervisor, _snapshot = ready_owned_root
+    held_child = supervisor._process
+    requests = []
+
+    def failed_shutdown(*, reason, instance_id, timeout):
+        requests.append((reason, instance_id, timeout))
+        return False
+
+    monkeypatch.setattr(supervisor, "_request_shutdown", failed_shutdown)
+    supervisor._abort_start(held_child)
+    assert requests and requests[0][0:2] == ("startup_abort", "owned-ready")
+    assert held_child.returncode is not None
+    assert supervisor._process is None
+    assert supervisor._owned_snapshot is None
+    assert not daemon.lock_path(tmp_path).exists()
+
+
+def test_failed_start_preserves_owned_identity_when_lock_is_initially_replaced(
+    tmp_path, monkeypatch, ready_owned_root,
+):
+    from tianshu import daemon
+
+    supervisor, snapshot = ready_owned_root
+    held_child = supervisor._process
+    replacement = json.dumps({
+        "pid": held_child.pid + 1,
+        "started_at": 2,
+        "instance_id": "replacement",
+        "daemon_version": daemon.DAEMON_VERSION,
+    }).encode("utf-8")
+    daemon.lock_path(tmp_path).write_bytes(replacement)
+
+    def forbidden_shutdown(**kwargs):
+        raise AssertionError("a replacement lock must not receive a shutdown request")
+
+    def forbidden_external_terminate(*args, **kwargs):
+        raise AssertionError("a replacement lock PID must never be signalled by command")
+
+    real_kill = os.kill
+
+    def checked_signal(pid, sig):
+        assert pid == held_child.pid, "signalled the replacement lock PID"
+        return real_kill(pid, sig)
+
+    monkeypatch.setattr(supervisor, "_request_shutdown", forbidden_shutdown)
+    monkeypatch.setattr(host.subprocess, "run", forbidden_external_terminate)
+    if os.name != "nt":
+        monkeypatch.setattr(host.os, "kill", checked_signal)
+    with pytest.raises(host.HostError, match="锁实例已变更"):
+        supervisor._abort_start(held_child)
+    assert held_child.returncode is not None
+    assert supervisor._process is held_child
+    assert supervisor._owned_snapshot == snapshot
+    assert daemon.lock_path(tmp_path).read_bytes() == replacement
+
+    supervisor._abort_start(held_child)
+    assert supervisor._process is None
+    assert supervisor._owned_snapshot is None
+    assert daemon.lock_path(tmp_path).read_bytes() == replacement
+
+
+def test_failed_start_preserves_owned_identity_when_lock_replacement_is_late(
+    tmp_path, monkeypatch, ready_owned_root,
+):
+    from tianshu import daemon
+
+    supervisor, snapshot = ready_owned_root
+    held_child = supervisor._process
+    replacement = json.dumps({
+        "pid": held_child.pid + 1,
+        "started_at": 2,
+        "instance_id": "replacement",
+        "daemon_version": daemon.DAEMON_VERSION,
+    }).encode("utf-8")
+
+    def shutdown_then_replace(*, reason, instance_id, timeout):
+        assert held_child.stdin is not None
+        held_child.stdin.write(b"G")
+        held_child.stdin.flush()
+        daemon.lock_path(tmp_path).write_bytes(replacement)
+        return True
+
+    monkeypatch.setattr(supervisor, "_request_shutdown", shutdown_then_replace)
+    with pytest.raises(host.HostError, match="锁实例已变更"):
+        supervisor._abort_start(held_child)
+    assert held_child.returncode == 0
+    assert supervisor._process is held_child
+    assert supervisor._owned_snapshot == snapshot
+    assert daemon.lock_path(tmp_path).read_bytes() == replacement
+
+    # Retry observes the replacement before cleanup and only drops the dead
+    # owned handle; it must not send another request or unlink the replacement.
+    supervisor._abort_start(held_child)
+    assert supervisor._process is None
+    assert supervisor._owned_snapshot is None
+    assert daemon.lock_path(tmp_path).read_bytes() == replacement
+
+
+def test_failed_start_serializes_cleanup_with_real_lock_takeover(
+    tmp_path, monkeypatch, ready_owned_root,
+):
+    """A real acquirer cannot replace the lock between Host read and unlink."""
+    from tianshu import daemon
+
+    supervisor, _snapshot = ready_owned_root
+    held_child = supervisor._process
+    lock_path = daemon.lock_path(tmp_path)
+    replacement_script = r"""
+import sys
+from pathlib import Path
+from tianshu import daemon, leases
+root = Path(sys.argv[1])
+original_try_lock = leases._try_lock
+announced = False
+def observed_try_lock(fd):
+    global announced
+    try:
+        return original_try_lock(fd)
+    except OSError:
+        if not announced:
+            announced = True
+            print("blocked", flush=True)
+        raise
+leases._try_lock = observed_try_lock
+print("ready", flush=True)
+assert sys.stdin.buffer.read(1) == b"G"
+lock = None
+try:
+    lock = daemon.acquire_lock(root)
+    print("acquired " + lock.instance_id, flush=True)
+    sys.stdin.buffer.read(1)
+finally:
+    if lock is not None:
+        daemon._unlink_lock(lock)
+"""
+    replacement = subprocess.Popen(
+        [sys._base_executable, "-u", "-c", replacement_script, str(tmp_path)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        env={**_child_env(), "PYTHONPATH": os.pathsep.join(sys.path)},
+    )
+    lines: queue.Queue[str] = queue.Queue()
+
+    def read_lines():
+        assert replacement.stdout is not None
+        for raw in replacement.stdout:
+            lines.put(raw.decode("utf-8").strip())
+
+    reader = threading.Thread(target=read_lines, daemon=True)
+    reader.start()
+    try:
+        assert lines.get(timeout=15) == "ready"
+        original_read_bytes = Path.read_bytes
+        lock_reads = 0
+        takeover_observation = []
+
+        def graceful_shutdown(*, reason, instance_id, timeout):
+            assert held_child is not None and held_child.stdin is not None
+            held_child.stdin.write(b"G")
+            held_child.stdin.flush()
+            return True
+
+        def read_then_release_acquirer(path):
+            nonlocal lock_reads
+            raw = original_read_bytes(path)
+            if path == lock_path:
+                lock_reads += 1
+                if lock_reads == 2:
+                    # Host now owns daemon.lock.guard. The fixed acquirer must
+                    # report that it is blocked; an unguarded takeover reports
+                    # "acquired" here and makes the assertion below fail.
+                    assert replacement.stdin is not None
+                    replacement.stdin.write(b"G")
+                    replacement.stdin.flush()
+                    takeover_observation.append(lines.get(timeout=15))
+            return raw
+
+        monkeypatch.setattr(supervisor, "_request_shutdown", graceful_shutdown)
+        monkeypatch.setattr(Path, "read_bytes", read_then_release_acquirer)
+        try:
+            supervisor._abort_start(held_child)
+        finally:
+            monkeypatch.setattr(Path, "read_bytes", original_read_bytes)
+        assert takeover_observation == ["blocked"]
+        assert not lock_path.exists()
+
+        # Once Host releases the guard, the same real acquirer may create its lock.
+        acquired = lines.get(timeout=15)
+        assert acquired.startswith("acquired "), acquired
+        replacement_id = acquired.removeprefix("acquired ")
+        assert json.loads(lock_path.read_bytes())["instance_id"] == replacement_id
+        assert replacement.stdin is not None
+        replacement.stdin.write(b"X")
+        replacement.stdin.flush()
+        assert replacement.wait(timeout=15) == 0
+        assert not lock_path.exists()
+        assert supervisor._process is None
+        assert supervisor._owned_snapshot is None
+    finally:
+        if replacement.stdin is not None:
+            replacement.stdin.close()
+        if replacement.poll() is None:
+            replacement.kill()
+        replacement.wait(timeout=15)
+        if replacement.stdout is not None:
+            replacement.stdout.close()
+        reader.join(timeout=5)
+
+
+def test_failed_start_retains_owned_identity_after_lock_cleanup_error(
+    tmp_path, monkeypatch, ready_owned_root,
+):
+    from tianshu import daemon
+
+    supervisor, snapshot = ready_owned_root
+    held_child = supervisor._process
+    lock_path = daemon.lock_path(tmp_path)
+    original_unlink = Path.unlink
+
+    def graceful_shutdown(*, reason, instance_id, timeout):
+        assert held_child.stdin is not None
+        held_child.stdin.write(b"G")
+        held_child.stdin.flush()
+        return True
+
+    def controlled_unlink(path, *args, **kwargs):
+        if path == lock_path:
+            raise PermissionError("controlled lock cleanup failure")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(supervisor, "_request_shutdown", graceful_shutdown)
+    monkeypatch.setattr(Path, "unlink", controlled_unlink)
+    with pytest.raises(host.HostError, match="清理原实例锁失败"):
+        supervisor._abort_start(held_child)
+    assert held_child.returncode == 0
+    assert supervisor._process is held_child
+    assert supervisor._owned_snapshot == snapshot
+    assert lock_path.read_bytes() == snapshot
+
+    monkeypatch.setattr(Path, "unlink", original_unlink)
+    supervisor._abort_start(held_child)
+    assert supervisor._process is None
+    assert supervisor._owned_snapshot is None
+    assert not lock_path.exists()
+
+
+def test_failed_start_retains_owned_identity_after_lock_read_error(
+    tmp_path, monkeypatch, ready_owned_root,
+):
+    from tianshu import daemon
+
+    supervisor, snapshot = ready_owned_root
+    held_child = supervisor._process
+    lock_path = daemon.lock_path(tmp_path)
+    original_read_bytes = Path.read_bytes
+
+    def controlled_read(path):
+        if path == lock_path:
+            raise PermissionError("controlled lock read failure")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", controlled_read)
+    with pytest.raises(host.HostError, match="无法核验其锁"):
+        supervisor._abort_start(held_child)
+    monkeypatch.setattr(Path, "read_bytes", original_read_bytes)
+    assert held_child.returncode is not None
+    assert supervisor._process is held_child
+    assert supervisor._owned_snapshot == snapshot
+    assert lock_path.read_bytes() == snapshot
+
+    supervisor._abort_start(held_child)
+    assert supervisor._process is None
+    assert supervisor._owned_snapshot is None
+    assert not lock_path.exists()
 
 
 def test_stop_never_signals_an_already_reaped_child(tmp_path, monkeypatch, held_child):
@@ -255,6 +613,373 @@ def test_stop_never_signals_an_already_reaped_child(tmp_path, monkeypatch, held_
     monkeypatch.setattr(supervisor, "_terminate", forbidden)
     supervisor.stop(timeout=0.05)
     assert supervisor._process is None
+
+
+def test_stop_does_not_signal_a_child_that_exits_at_the_wait_boundary(
+    tmp_path, monkeypatch, held_child,
+):
+    supervisor = host.DaemonSupervisor(tmp_path, [])
+    supervisor._process = held_child
+    real_wait = held_child.wait
+    waits = 0
+
+    def exit_then_report_timeout(*args, **kwargs):
+        nonlocal waits
+        waits += 1
+        if waits == 1:
+            assert held_child.stdin is not None
+            held_child.stdin.write(b"G")
+            held_child.stdin.flush()
+            assert real_wait(timeout=10) == 0
+            raise subprocess.TimeoutExpired("owned-daemon", 0.01)
+        return real_wait(*args, **kwargs)
+
+    def forbidden_signal(*args, **kwargs):
+        raise AssertionError("a reaped child PID must never be signalled")
+
+    monkeypatch.setattr(held_child, "wait", exit_then_report_timeout)
+    monkeypatch.setattr(host.os, "kill", forbidden_signal)
+    supervisor.stop(timeout=0.01)
+    assert waits >= 2
+    assert held_child.returncode == 0
+    assert supervisor._process is None
+
+
+def test_host_exit_does_not_bypass_owned_process_lifecycle_lock():
+    import ast
+
+    tree = ast.parse(Path(host.__file__).read_text(encoding="utf-8"))
+    bypasses = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr not in {"poll", "wait", "terminate", "kill"}:
+            continue
+        owner = node.func.value
+        if isinstance(owner, ast.Attribute) and owner.attr == "_process":
+            bypasses.append((node.lineno, node.func.attr))
+    assert not bypasses, f"owned process lifecycle bypasses: {bypasses}"
+
+
+def test_owned_process_lifecycle_serializes_poll_wait_and_terminate(tmp_path, monkeypatch):
+    """No owned wait/poll can run concurrently with termination's identity check."""
+    supervisor = host.DaemonSupervisor(tmp_path, [])
+    release = threading.Event()
+    operation_started = threading.Event()
+    terminate_entered = threading.Event()
+    poll_entered = threading.Event()
+    errors = []
+
+    class OwnedProcess:
+        returncode = None
+        pid = 4321
+
+        def poll(self):
+            poll_entered.set()
+            return None
+
+        def wait(self, timeout=None):
+            operation_started.set()
+            assert release.wait(timeout=10)
+            return 0
+
+    proc = OwnedProcess()
+
+    def terminate_owned(*args, **kwargs):
+        terminate_entered.set()
+
+    def run(operation):
+        try:
+            operation()
+        except BaseException as exc:
+            errors.append(exc)
+
+    monkeypatch.setattr(supervisor, "_terminate", terminate_owned)
+    waiter = threading.Thread(
+        target=run, args=(lambda: supervisor._wait_owned(proc, timeout=10),),
+    )
+    waiter.start()
+    threads = [waiter]
+    try:
+        assert operation_started.wait(timeout=10), "owned wait did not start"
+        terminator = threading.Thread(
+            target=run, args=(lambda: supervisor._terminate_owned(proc),),
+        )
+        poller = threading.Thread(
+            target=run, args=(lambda: supervisor._poll_owned(proc),),
+        )
+        threads.extend((terminator, poller))
+        terminator.start()
+        poller.start()
+        assert not terminate_entered.wait(
+            timeout=0.05
+        ), "terminate bypassed the process lifecycle lock"
+        assert not poll_entered.wait(
+            timeout=0.05
+        ), "poll bypassed the process lifecycle lock"
+    finally:
+        release.set()
+        for thread in threads:
+            thread.join(timeout=10)
+    assert not any(thread.is_alive() for thread in threads)
+    assert not errors
+    assert terminate_entered.is_set() and poll_entered.is_set()
+
+
+def test_stop_force_reaps_owned_root_and_clears_exact_lock(
+    tmp_path, monkeypatch, ready_owned_root,
+):
+    from tianshu import daemon
+
+    supervisor, snapshot = ready_owned_root
+    held_child = supervisor._process
+    lock_path = daemon.lock_path(tmp_path)
+
+    def force_exit(proc, *, force=False):
+        assert proc is held_child
+        os.kill(proc.pid, 9)
+        return {"outcome": "signal_sent"}
+
+    monkeypatch.setattr(supervisor, "_terminate", force_exit)
+    supervisor.stop(timeout=0.01)
+    assert held_child.returncode is not None
+    assert supervisor._process is None
+    assert supervisor._owned_snapshot is None
+    assert not lock_path.exists()
+
+
+def test_stop_fails_closed_when_replacement_appears_during_forced_cleanup(
+    tmp_path, monkeypatch, ready_owned_root,
+):
+    from contextlib import contextmanager
+
+    from tianshu import daemon
+
+    supervisor, _snapshot = ready_owned_root
+    held_child = supervisor._process
+    lock_path = daemon.lock_path(tmp_path)
+    replacement = json.dumps({
+        "pid": held_child.pid + 1,
+        "started_at": 2,
+        "instance_id": "replacement-during-force-cleanup",
+        "daemon_version": daemon.DAEMON_VERSION,
+    }).encode("utf-8")
+
+    def failed_shutdown(**kwargs):
+        return False
+
+    def force_exit(proc, *, force=False):
+        assert proc is held_child
+        os.kill(proc.pid, 9)
+        return {"outcome": "signal_sent"}
+
+    real_guard = daemon.daemon_lock_guard
+
+    @contextmanager
+    def replacing_guard(*args, **kwargs):
+        with real_guard(*args, **kwargs):
+            lock_path.write_bytes(replacement)
+            yield
+
+    monkeypatch.setattr(supervisor, "_request_shutdown", failed_shutdown)
+    monkeypatch.setattr(supervisor, "_terminate", force_exit)
+    monkeypatch.setattr(daemon, "daemon_lock_guard", replacing_guard)
+    with pytest.raises(host.HostError, match="锁实例已变更"):
+        supervisor.stop(timeout=0.01)
+    assert held_child.returncode is not None
+    assert supervisor._process is held_child
+    assert supervisor._owned_snapshot is not None
+    assert lock_path.read_bytes() == replacement
+
+
+def test_owned_termination_detects_an_unreaped_exit_without_signalling(
+    tmp_path, monkeypatch, held_child,
+):
+    supervisor = host.DaemonSupervisor(tmp_path, [])
+    assert held_child.stdin is not None
+    held_child.stdin.write(b"G")
+    held_child.stdin.flush()
+    deadline = time.monotonic() + 10
+    while host._unreaped_child_state(held_child.pid) != "exited":
+        assert time.monotonic() < deadline, "child did not exit"
+        threading.Event().wait(0.01)
+    assert held_child.returncode is None, "identity check must not reap the child"
+
+    def forbidden_signal(*args, **kwargs):
+        raise AssertionError("an exited unreaped child must not be signalled")
+
+    monkeypatch.setattr(host.os, "kill", forbidden_signal)
+    assert supervisor._terminate(held_child) == {"outcome": "not_running"}
+    assert held_child.wait(timeout=10) == 0
+
+
+def test_windows_owned_termination_uses_the_retained_process_handle(monkeypatch):
+    import ctypes
+
+    calls = []
+
+    class Terminate:
+        argtypes = None
+        restype = None
+
+        def __call__(self, handle, exit_code):
+            calls.append((handle, exit_code))
+            return 1
+
+    kernel32 = SimpleNamespace(TerminateProcess=Terminate())
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **kw: kernel32, raising=False)
+    monkeypatch.setattr(host, "os", SimpleNamespace(name="nt"))
+
+    class OwnedProcess:
+        returncode = None
+        _handle = 4321
+
+        @property
+        def pid(self):
+            raise AssertionError("Windows termination must not use the reusable PID")
+
+    assert host.DaemonSupervisor._terminate(OwnedProcess()) == {
+        "outcome": "process_terminated",
+    }
+    assert calls == [(4321, 1)]
+
+
+def test_windows_owned_termination_fails_closed_without_a_handle(monkeypatch):
+    import ctypes
+
+    def forbidden_dll(*args, **kwargs):
+        raise AssertionError("a missing process handle must not trigger a PID fallback")
+
+    monkeypatch.setattr(ctypes, "WinDLL", forbidden_dll, raising=False)
+    monkeypatch.setattr(host, "os", SimpleNamespace(name="nt"))
+
+    class OwnedProcess:
+        returncode = None
+        _handle = None
+
+        @property
+        def pid(self):
+            raise AssertionError("Windows termination must not use the reusable PID")
+
+    assert host.DaemonSupervisor._terminate(OwnedProcess()) == {
+        "outcome": "handle_unavailable",
+    }
+
+
+def test_windows_owned_termination_failure_has_no_command_or_pid_fallback(monkeypatch):
+    import ctypes
+
+    class Terminate:
+        argtypes = None
+        restype = None
+
+        def __call__(self, handle, exit_code):
+            assert (handle, exit_code) == (4321, 1)
+            return 0
+
+    kernel32 = SimpleNamespace(
+        TerminateProcess=Terminate(), GetLastError=lambda: 5,
+    )
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **kw: kernel32, raising=False)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 5, raising=False)
+    monkeypatch.setattr(host, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(
+        host.subprocess, "run",
+        lambda *a, **kw: pytest.fail("Windows termination must not invoke taskkill"),
+    )
+
+    class OwnedProcess:
+        returncode = None
+        _handle = 4321
+
+        @property
+        def pid(self):
+            raise AssertionError("Windows termination must not use the reusable PID")
+
+    assert host.DaemonSupervisor._terminate(OwnedProcess()) == {
+        "outcome": "os_error", "errno": 5,
+    }
+
+
+def test_attached_escalation_never_signals_a_bare_pid(tmp_path, monkeypatch, held_child):
+    from tianshu import ipc
+
+    lock = ipc.run_dir(tmp_path) / "daemon.lock"
+    lock.parent.mkdir(parents=True)
+    lock.write_text(json.dumps({
+        "pid": held_child.pid, "started_at": 1, "instance_id": "attached-owner",
+    }))
+    supervisor = host.DaemonSupervisor(tmp_path, [])
+    supervisor._attached_snapshot = lock.read_bytes()
+    clock = [0.0]
+    monkeypatch.setattr(supervisor, "_request_shutdown", lambda *a, **kw: True)
+    monkeypatch.setattr(host.ipc, "probe_result", lambda *a, **kw: ipc.ProbeResult(
+        True, "controlled-endpoint", "still serving", None, True,
+    ))
+    monkeypatch.setattr(host, "time", SimpleNamespace(
+        monotonic=lambda: clock[0],
+        monotonic_ns=lambda: round(clock[0] * 1e9),
+        sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
+    ))
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("an attached PID is not an owned process handle")
+
+    monkeypatch.setattr(supervisor, "_terminate", forbidden)
+    monkeypatch.setattr(host.os, "kill", forbidden)
+    with pytest.raises(host.HostError, match="退出"):
+        supervisor.stop(timeout=0.2)
+    assert held_child.poll() is None
+    assert lock.read_text() == supervisor._attached_snapshot.decode()
+
+
+def test_normal_ensure_retry_finishes_retained_lock_cleanup_before_spawn(
+    tmp_path, monkeypatch, ready_owned_root,
+):
+    from tianshu import daemon
+
+    supervisor, snapshot = ready_owned_root
+    held_child = supervisor._process
+    lock_path = daemon.lock_path(tmp_path)
+    real_unlink = Path.unlink
+
+    def graceful_shutdown(*, reason, instance_id, timeout):
+        assert held_child is not None and held_child.stdin is not None
+        held_child.stdin.write(b"G")
+        held_child.stdin.flush()
+        return True
+
+    def failed_unlink(path, *args, **kwargs):
+        if path == lock_path:
+            raise PermissionError("controlled lock cleanup failure")
+        return real_unlink(path, *args, **kwargs)
+
+    class SpawnAttempted(Exception):
+        pass
+
+    monkeypatch.setattr(supervisor, "alive", lambda: False)
+    monkeypatch.setattr(supervisor, "_request_shutdown", graceful_shutdown)
+    monkeypatch.setattr(supervisor, "_open_log", lambda: None)
+    monkeypatch.setattr(Path, "unlink", failed_unlink)
+    with pytest.raises(host.HostError, match="清理原实例锁失败"):
+        supervisor._abort_start(held_child)
+    assert held_child.returncode == 0
+    assert supervisor._process is held_child
+    assert supervisor._owned_snapshot == snapshot
+
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+
+    def checked_spawn(*args, **kwargs):
+        assert not lock_path.exists(), "retry spawned before old lock cleanup"
+        assert supervisor._process is None
+        assert supervisor._owned_snapshot is None
+        raise SpawnAttempted
+
+    monkeypatch.setattr(host.subprocess, "Popen", checked_spawn)
+    with pytest.raises(SpawnAttempted):
+        supervisor.ensure()
+    assert supervisor._process is None
+    assert supervisor._owned_snapshot is None
 
 
 def test_host_keeps_its_identity_and_accepts_retry_after_a_failed_stop():
@@ -330,7 +1055,10 @@ def test_stop_records_owned_process_wait_facts(tmp_path, held_child, capsys, mon
     assert records, "the owning supervisor must expose its actual wait result"
     assert records[-1]["pid"] == held_child.pid
     assert records[-1]["returncode"] == 0
-    assert records[-1]["action"] == "wait_exited"
+    assert any(
+        record["action"] == "wait_exited" and record["returncode"] == 0
+        for record in records
+    ), records
     assert type(records[-1]["monotonic_ns"]) is int
 
 
@@ -626,14 +1354,15 @@ def test_stop_preserves_the_full_grace_period(tmp_path, monkeypatch, held_child)
         sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
     ))
 
-    def terminate(pid, **kwargs):
+    def terminate(proc, **kwargs):
         raise AssertionError(f"graceful cleanup was interrupted at {clock[0]}s")
 
     def wait(*args, **kwargs):
         assert clock[0] >= 3
-        assert held_child.stdin is not None
-        held_child.stdin.write(b"G")
-        held_child.stdin.flush()
+        if held_child.returncode is None:
+            assert held_child.stdin is not None
+            held_child.stdin.write(b"G")
+            held_child.stdin.flush()
         return real_wait(*args, **kwargs)
 
     monkeypatch.setattr(supervisor, "_terminate", terminate)
@@ -645,7 +1374,7 @@ def test_stop_preserves_the_full_grace_period(tmp_path, monkeypatch, held_child)
         monkeypatch.setattr(held_child, "wait", real_wait)
 
 
-def test_reused_daemon_cannot_report_success_after_termination_timeout(
+def test_reused_daemon_cannot_report_success_after_shutdown_timeout(
     tmp_path, monkeypatch, held_child,
 ):
     from tianshu import ipc
@@ -658,25 +1387,28 @@ def test_reused_daemon_cannot_report_success_after_termination_timeout(
     })
     lock.write_text(snapshot)
     supervisor = host.DaemonSupervisor(tmp_path, [])
-    requested_budgets = []
-    monkeypatch.setattr(supervisor, "_request_shutdown", lambda *a, **kw: True)
+    requests = []
+
+    def request(*args, **kwargs):
+        requests.append((args, kwargs))
+        return True
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("an attached Daemon must never be force-signalled by PID")
+
+    monkeypatch.setattr(supervisor, "_request_shutdown", request)
+    monkeypatch.setattr(supervisor, "_terminate", forbidden)
     monkeypatch.setattr(host.ipc, "probe_result", lambda *a, **kw: ipc.ProbeResult(
         True, "controlled-endpoint", "still serving", None, True,
     ))
     monkeypatch.setattr(host, "time", SimpleNamespace(
         monotonic=lambda: clock[0],
+        monotonic_ns=lambda: round(clock[0] * 1e9),
         sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds),
     ))
-
-    def timeout(pid, *, timeout):
-        assert pid == held_child.pid
-        requested_budgets.append(timeout)
-        return {"outcome": "command_timeout"}
-
-    monkeypatch.setattr(supervisor, "_terminate", timeout)
     with pytest.raises(host.HostError, match="退出"):
-        supervisor.stop(timeout=5)
-    assert requested_budgets and requested_budgets[0] > 0.1
+        supervisor.stop(timeout=0.2)
+    assert len(requests) == 1
     assert held_child.poll() is None and lock.read_text() == snapshot
     replacement = json.dumps({
         "pid": os.getpid(), "started_at": 2, "instance_id": "replacement-owner",
@@ -688,8 +1420,8 @@ def test_reused_daemon_cannot_report_success_after_termination_timeout(
 
     monkeypatch.setattr(supervisor, "_request_shutdown", forbidden_request)
     with pytest.raises(host.HostError, match="退出"):
-        supervisor.stop(timeout=5)
-    assert len(requested_budgets) == 1
+        supervisor.stop(timeout=0.2)
+    assert len(requests) == 1
     assert held_child.poll() is None and lock.read_text() == replacement
 
 
@@ -967,11 +1699,13 @@ def observed(*args, **kwargs):
 host.subprocess.Popen = observed
 supervisor = host.DaemonSupervisor(root, [], start_timeout_s=2)
 supervisor.ensure()
+# ensure() has already completed a real authentication handshake. Leave the
+# accept loop free so the shutdown helper, not a warm-up probe, enters the stall.
 (root / "stall").touch()
 try:
     supervisor.stop(timeout=5.0)
 except host.HostError:
-    assert (root / "entered").exists(), "request never reached authentication"
+    assert (root / "entered").exists(), "shutdown helper never reached authentication"
     assert all(child.poll() is not None for child in children), "helper was not reaped"
     print("bounded-stop", flush=True)
 else:
@@ -1219,8 +1953,6 @@ raise SystemExit(host.run_host(
                 deadline = time.monotonic() + 5
                 while ipc.probe(root, timeout=0.1) and time.monotonic() < deadline:
                     threading.Event().wait(0.05)
-                if ipc.probe(root, timeout=0.1) and lock_path.read_bytes() == snapshot:
-                    host.DaemonSupervisor._terminate(identity["pid"], timeout=3)
             if daemon_proc is not None:
                 try:
                     daemon_proc.wait(timeout=10)
@@ -1317,18 +2049,7 @@ raise SystemExit(host.run_host(
             if first is not None and first.poll() is None:
                 first.kill()
                 first.wait(timeout=10)
-            lock_path = daemon.lock_path(root)
-            snapshot = lock_path.read_bytes() if lock_path.exists() else None
-            if snapshot is not None:
-                identity = json.loads(snapshot)
-                daemon.request_shutdown(
-                    root, expected_instance_id=identity["instance_id"], timeout=3,
-                )
-                deadline = time.monotonic() + 5
-                while ipc.probe(root, timeout=0.1) and time.monotonic() < deadline:
-                    threading.Event().wait(0.05)
-                if ipc.probe(root, timeout=0.1) and lock_path.read_bytes() == snapshot:
-                    host.DaemonSupervisor._terminate(identity["pid"], timeout=3)
+            _shutdown_test_daemon(root)
 
 
 def test_takeover_health_failure_reaps_the_adopted_daemon():
@@ -1389,18 +2110,7 @@ raise SystemExit(host.run_host(
             if daemon_proc is not None and daemon_proc.poll() is None:
                 daemon_proc.kill()
                 daemon_proc.wait(timeout=10)
-            lock_path = daemon.lock_path(root)
-            snapshot = lock_path.read_bytes() if lock_path.exists() else None
-            if snapshot is not None:
-                identity = json.loads(snapshot)
-                daemon.request_shutdown(
-                    root, expected_instance_id=identity["instance_id"], timeout=3,
-                )
-                deadline = time.monotonic() + 5
-                while ipc.probe(root, timeout=0.1) and time.monotonic() < deadline:
-                    threading.Event().wait(0.05)
-                if ipc.probe(root, timeout=0.1) and lock_path.read_bytes() == snapshot:
-                    host.DaemonSupervisor._terminate(identity["pid"], timeout=3)
+            _shutdown_test_daemon(root)
 
 
 @pytest.mark.parametrize("serialize_disappeared_owner", [False, True])
@@ -1604,18 +2314,7 @@ raise SystemExit(host.run_host(
                     proc.wait(timeout=10)
                 if stream is not None:
                     stream.close()
-            lock_path = daemon.lock_path(root)
-            snapshot = lock_path.read_bytes() if lock_path.exists() else None
-            if snapshot is not None:
-                identity = json.loads(snapshot)
-                daemon.request_shutdown(
-                    root, expected_instance_id=identity["instance_id"], timeout=3,
-                )
-                deadline = time.monotonic() + 5
-                while ipc.probe(root, timeout=0.1) and time.monotonic() < deadline:
-                    threading.Event().wait(0.05)
-                if ipc.probe(root, timeout=0.1) and lock_path.read_bytes() == snapshot:
-                    host.DaemonSupervisor._terminate(identity["pid"], timeout=3)
+            _shutdown_test_daemon(root)
 
 
     from tianshu import daemon, ipc
@@ -1711,18 +2410,7 @@ raise SystemExit(host.run_host(
                     proc.wait(timeout=10)
                 if stream is not None:
                     stream.close()
-            lock_path = daemon.lock_path(root)
-            snapshot = lock_path.read_bytes() if lock_path.exists() else None
-            if snapshot is not None:
-                identity = json.loads(snapshot)
-                daemon.request_shutdown(
-                    root, expected_instance_id=identity["instance_id"], timeout=3,
-                )
-                deadline = time.monotonic() + 5
-                while ipc.probe(root, timeout=0.1) and time.monotonic() < deadline:
-                    threading.Event().wait(0.05)
-                if ipc.probe(root, timeout=0.1) and lock_path.read_bytes() == snapshot:
-                    host.DaemonSupervisor._terminate(identity["pid"], timeout=3)
+            _shutdown_test_daemon(root)
 
 
 def test_bridge_failure_does_not_stop_a_daemon_already_attached_by_another_host():
@@ -1812,18 +2500,7 @@ raise SystemExit(host.run_host(
                     proc.wait(timeout=10)
                 if stream is not None:
                     stream.close()
-            lock_path = daemon.lock_path(root)
-            snapshot = lock_path.read_bytes() if lock_path.exists() else None
-            if snapshot is not None:
-                identity = json.loads(snapshot)
-                daemon.request_shutdown(
-                    root, expected_instance_id=identity["instance_id"], timeout=3,
-                )
-                deadline = time.monotonic() + 5
-                while ipc.probe(root, timeout=0.1) and time.monotonic() < deadline:
-                    threading.Event().wait(0.05)
-                if ipc.probe(root, timeout=0.1) and lock_path.read_bytes() == snapshot:
-                    host.DaemonSupervisor._terminate(identity["pid"], timeout=3)
+            _shutdown_test_daemon(root)
 
 
 def test_exit_cleanup_holds_host_identity_until_owned_root_is_reaped():
@@ -1948,8 +2625,6 @@ raise SystemExit(host.run_host(
                 deadline = time.monotonic() + 5
                 while ipc.probe(root, timeout=0.1) and time.monotonic() < deadline:
                     threading.Event().wait(0.05)
-                if ipc.probe(root, timeout=0.1) and lock_path.read_bytes() == snapshot:
-                    host.DaemonSupervisor._terminate(identity["pid"], timeout=3)
 
 
 def test_failed_owned_readiness_reaps_the_started_root(monkeypatch):
@@ -2194,18 +2869,7 @@ raise SystemExit(host.run_host(
             if daemon_proc is not None and daemon_proc.poll() is None:
                 daemon_proc.kill()
                 daemon_proc.wait(timeout=10)
-            lock_path = daemon.lock_path(root)
-            snapshot = lock_path.read_bytes() if lock_path.exists() else None
-            if snapshot is not None:
-                identity = json.loads(snapshot)
-                daemon.request_shutdown(
-                    root, expected_instance_id=identity["instance_id"], timeout=3,
-                )
-                deadline = time.monotonic() + 5
-                while ipc.probe(root, timeout=0.1) and time.monotonic() < deadline:
-                    threading.Event().wait(0.05)
-                if ipc.probe(root, timeout=0.1) and lock_path.read_bytes() == snapshot:
-                    host.DaemonSupervisor._terminate(identity["pid"], timeout=3)
+            _shutdown_test_daemon(root)
 
 
 @pytest.mark.parametrize("replace_after_failure", [False, True])
