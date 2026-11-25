@@ -117,3 +117,143 @@ The affected Host/Daemon/SLO/process-identity domain exited 0; dynamic totals an
 The new independent Tier 1 reader returned `fixed` for the same normative tree after a private 17-test green run, a valid Windows-ordering mutation red, and restored green. The parent verified the receipt and all probe hashes, compared the four reviewed files byte-for-byte, recomputed the archive tree, and replayed the critical probes in a fresh private copy: green, intended mutation red, and restored green all matched. Review receipt SHA256: `82bcbb83570a10c24d9f2e62b4b3c7806c97c6d74bcc62958c3f5b729f6f9492`. Parent replay green/red/restored log SHA256 values are `a4835840358f59fd69453f15a3bad9641cd2cf0b3d31efa6e404619244987ad2`, `c5651d2e208900a551092f10fb4b7e8baec1ea961f62696f702039dde49d0e25`, and `b6c51b401d65a9c69435f8b86cecab752d65ded7188228aab3de3eb010990b60`.
 
 The unfiltered suite ran on this same normative tree with only `TMPDIR` and `TIANSHU_TEST_TMP_ROOT` moved to the high-space volume and exited 0; dynamic totals and platform/opt-in skip reasons remain in the log, whose SHA256 is `51820e400cf705d8fff48663f379bca642d1b2fda2b6154e9d6bcd7b827d8ba0`. Lock, Ruff, diff, and changed-document link gates also exited 0. Fresh hosted required CI remains pending. The stopped v42 full-suite run is not final evidence for this changed code/test tree, and the macOS review does not claim native Windows validation.
+
+## Hosted run 45608812868 and v44 SLO diagnostics (2026-11-25)
+
+Head `4a1e20b7d4fcce797f23edd99dc023e5a4047468` completed run
+[45608812868](https://github.com/lorek666/tianshu-agent/actions/runs/45608812868)
+as `completed/failure`. Its synthetic merge is
+`e666f5d1e8a2d7a154d94b7ee755ef4f841ea2dd`, attempt `1`, base
+`a755e2abf7d75b6baf36a1e47f47646142f0bc8d`. All downloaded pytest and restore
+ZIPs matched their GitHub artifact `digest`; both macOS shards, Windows indices
+0–2, and all non-Windows jobs had no failed reports. Windows index 3 had exactly
+one failed node:
+`tests/test_slo_and_soak.py::test_measure_slo_smoke_and_run_soak_real_subprocesses`.
+The Windows required summary failed as the derivative result.
+
+The failed measurement recorded cold-start `p50=1906.458ms`,
+`p95=2297.528ms`, `max=2297.528ms` against the frozen `2200.0ms` p95 limit. All
+other measured SLO dimensions passed, `orphan_pids=[]`, and no safety assertion
+failed. Three repeats use nearest-rank p95, so the p95 equals the maximum and a
+single slow sample rejects the gate. This is not a reproduced v43 lifecycle
+failure, but it remains a real red gate. The failed job log SHA256 is
+`5ef4e8647c3d8cdc2afa890dfe834cd95c2acbacdb9bece266fee32dbde210c9`, the
+Windows summary log SHA256 is
+`a64850b166037828cce39e8c4880376843ad5ea09af31d77016e6fe736193fff`, and the
+bound run record SHA256 is
+`e2b76f708b9a33bf0bac52e1464f906f4f2ca02c4963ed918a943db452afc0ec`.
+
+A timeline review does **not** establish same-job worker contention as the
+cause: the paired worker reported completion at `12:00:42Z`, while the SLO test
+began at `12:01:37Z`. Historical native runs show this node has passed far more
+often than it has failed, and no dedicated cold-start issue or prior repair was
+found. A speculative serial-pair mitigation was implemented and tested, then
+withdrawn before commit because it would not change that measured interval and
+could push the job toward its 25-minute limit. Its aborted full-suite run is not
+acceptance evidence; the saved patch SHA256 is
+`1818d449451d5454d477e0f3390a87ba3e3a2cb573b9f5732dc14403e10f586c`.
+
+v44 therefore changes observability, not the performance gate. The SLO CLI can
+write a separate `slo-samples-v1` document containing every raw numeric sample.
+The real smoke test publishes that document, the aggregated reports, soak
+materials, redacted stdout/stderr, return codes, timestamps, CPU count, platform,
+and shard index before evaluating assertions. Windows uploads these files from
+`slo-diagnostics/`, a sibling of the strict shard-report root, with `always()`;
+the verifier still accepts exactly the four original `shard.json` files. The
+pair runner supplies each worker's shard index through its private environment,
+and the existing real four-worker overlap regression checks that binding.
+
+The four whole-file shards, two independent runners, default concurrency,
+25-minute job limit, raw reports, 60-second stack diagnostics, strict aggregate
+verification, SLO thresholds, and existing assertions are unchanged. No retry,
+sample discard, threshold increase, or failure suppression was introduced.
+
+The real macOS SLO/soak smoke exited 0 and produced the expected diagnostic
+bundle (log SHA256 `423b1d0e014eb1eab96f4420f7b344c2615be505dd574b756ac884826ca74f2d`).
+The affected SLO/CI/Host lifecycle domain exited 0; dynamic totals and skip
+reasons remain in log SHA256
+`3191b63f848ac72062df85185af1c870d79c28cfee50c6a4e575d2f71dd204ce`.
+The v44 normative tree SHA256 is
+`4178264383f0b23cee3d98e2c9da52ebfe45c5bc6ba677c21bb551204e6ec927`.
+The independent reader ran 55 focused tests green, disabled raw-sample emission to
+produce a valid real-SLO `FileNotFoundError` red, and restored green. Its first
+report returned `partial_fixed` only because the Windows p95 root cause remains
+unrepaired, which is outside this diagnostics-only scope; the original report is
+retained. The parent independently replayed 55 green / intended sample-file red /
+restored green in a complete private copy. Parent log SHA256 values are
+`c5041d5adb8e17000848ce7d829f8ccffbdd3b77673d39964f1c88c6911796ee`,
+`7b5fe6b5cc32bbd7c4408df4618a10c7f3cb7438c5382555f1e5c7fda0a4903e`, and
+`d0ba8b40647c1d2e8e26d87409bbed6470da5e31fa71793922b7e74e7457939e`.
+Two earlier private-copy attempts omitted `.github` or `schemas/slo` and failed
+before the intended behavior; those are harness failures, not mutation evidence.
+
+Unfiltered local pytest on the same v44 code/test tree exited 0:
+`5718 passed, 15 skipped in 1075.51s` (log SHA256
+`3b0327cbe43ad23decdda0e00f23b7574af541ec1dd9dcfecd1ef3c55cff7055`), using
+isolated temporary root `/Volumes/Date/tianshu-pytest-v44.q4xiaz`. That invocation
+did not request `-rs`, so individual skip reasons were not emitted and are not
+reconstructed here. No low-disk guard or assertion was relaxed. Scope-bound
+independent rereview and fresh hosted required CI remain pending. This
+diagnostics change does not claim the Windows p95 root cause is fixed, and macOS
+results do not replace native Windows evidence.
+
+### v44b independent-review repairs (2026-11-25)
+
+The scope-bound second reader returned `partial_fixed` for tree `417826…` and
+found three concrete gaps: a child timeout escaped before diagnostics were
+published; raw-sample assertions compared only counts and extrema, so a changed
+p50 could pass; and the diagnostic upload's `always()` guard had no negative
+control. The report SHA256 is retained at
+`/tmp/pr228-v44-diagnostics-scope-review.md` with its external `.sha256` file.
+
+v44b converts `TimeoutExpired` into a distinct return code 124, preserves any
+captured stdout/stderr, records `timeouts` in `run-context.json`, publishes the
+bundle, and only then asserts failure. The real SLO test now reloads the frozen
+threshold configuration and recomputes the complete metric object from raw
+samples with `_summarize_samples()`, binding p50, p95, min/max, counts,
+thresholds, and pass state. The workflow test asserts the exact diagnostic
+upload step including `if: always()` and rejects a `success()` mutation.
+
+The repaired normative tree SHA256 is
+`44e96142792abda13e7280d4803e70d1bfd50378bdba7f288dee6ebf3594a6ae`.
+Focused diagnostics/CI tests exited 0 with 57 passes; the real SLO/soak smoke
+exited 0 (log SHA256
+`128e72c602e7d2e637831ad47924f5efed5047559922113c9b4ed483b19de307`).
+In a complete private copy, forcing a real SLO timeout returned 1 while
+preserving `timeouts.slo=true` and return code 124; changing a non-extreme raw
+sample returned 1 on the full metric comparison; changing the upload guard to
+`success()` returned 1. Restoring all files returned to green and tree
+`44e961…`. Probe log SHA256 values are
+`eb7ca38504e5762c281f5f17e1dd01c5bfe47cb19d1021a0891f37702500b9bf`,
+`ce211cbd3876c7ee4765b6b94ad8fe31ee2deb900f8754ca7c98e185ba78954d`,
+`b9a42a4a99871188f6f530caaaa3f0ea453ec9b88495a6bac9bba61e66e13693`,
+`96e0bcb839dca34eae37a630c2e911f1ce56906535d553898389c0828ccc4b61`, and
+`1c6873f28b6506b744dc9b512af90aba54c140b88869385505becf4d231e5c72`.
+The directly affected CI-harness/SLO domain exited 0 with `184 passed in
+100.49s` (log SHA256
+`17dc938607ede9c684e2981bb9845ae6b9c845f3b8874e11f2d3ac8c484cc46e`).
+Unfiltered local pytest exited 0 with `5720 passed, 15 skipped in 1155.30s`
+(log SHA256
+`fffcd1461a9f98dbd122bc224cd2c9255838aa9d13396923836f74cbfa3733aa`),
+using isolated temporary root `/Volumes/Date/tianshu-pytest-v44b.QRl7yX` and
+`-rs`; the log retains every skip reason. No low-disk guard or assertion was
+relaxed. A fresh independent Tier 1 reviewer returned `fixed` for the same
+384-file tree after 66 scoped tests passed, a non-extreme sample mutation failed
+on the intended `p50_ms` comparison, and restoration returned to 66 passes with
+the original tree hash. The report SHA256 is
+`b6c9a9fd471fca70ce840d59b922c28852947728ad57dfd8942a4d8c076f7682`; its
+green/red/restored log SHA256 values are
+`0a6471a969a550de51fc6833d1052a686b44e0a92ee46aefdb18beed707180d7`,
+`49fd451561523066c2e21af30cbe9990b1ddd30b020c227efbba0c9f5c8ebb1a`, and
+`dc2e0517c60823864f2a57862de44a649663a99e749b1fefc99717c9e86235c3`.
+The parent compared all 384 reviewed files byte-for-byte and replayed the
+critical probes in a second fresh private copy: 66 scoped tests passed, the
+sample mutation failed on `p50_ms`, the upload-guard mutation failed on the exact
+`always()` assertion, and restoration returned to 66 passes with tree
+`44e961…`. Parent green/sample-red/upload-red/restored log SHA256 values are
+`9dfb0937940290479f2d09a91d9e5e867318cb6848667f478c7fb864c4bf59a2`,
+`2c4251296c1fdac7bdddd02b7d6a590a8839662d3bb9fe55755c0f34c635ff04`,
+`325240c79d01befb460ea1f46c425363d26c9b00acae2fffd9410494a6b39169`, and
+`ddcfb5ed6f0080f1e08a9803305e35d2a8b3d56c33823d434bdbee016641bb6b`.
+Fresh hosted required CI remains pending; the earlier `417826…` full-suite
+result is not reused as v44b acceptance evidence.
