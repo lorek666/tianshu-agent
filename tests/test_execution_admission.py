@@ -31,6 +31,32 @@ def _settings(tmp_path):
     }
 
 
+def test_reaped_posix_leader_is_never_signalled_by_reusable_group_id(tmp_path, monkeypatch):
+    from tianshu import execution_admission
+    from tianshu.execution_admission import PreparedExecution
+
+    settings = _settings(tmp_path)
+    execution = PreparedExecution(
+        LOCAL_EXEC_BACKEND, kind="command", task_id="task", run_id="run", **settings,
+    )
+
+    class ReapedProcess:
+        pid = 123
+        returncode = 0
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    def forbidden_group_signal(*args, **kwargs):
+        pytest.fail("a reaped leader's numeric PGID must never be signalled")
+
+    monkeypatch.setattr(execution_admission.os, "killpg", forbidden_group_signal)
+    assert execution._stop_process(ReapedProcess()) == "unknown"
+
+
 def test_subject_changes_when_binary_environment_scope_or_config_changes(tmp_path):
     from tianshu.execution_admission import build_execution_subject
 

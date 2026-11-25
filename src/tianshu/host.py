@@ -631,6 +631,9 @@ class DaemonSupervisor:
         self._stop = threading.Event()
         self._attached_snapshot: bytes | None = None
         self._owned_snapshot: bytes | None = None
+        self._owned_lock_snapshot: bytes | None = None
+        self._owned_foreign_snapshot: bytes | None = None
+        self._owned_cleanup_attempted = False
         self._shutdown_snapshot_taken = False
         self._shutdown_snapshot: bytes | None = None
         self._shutdown_unconfirmed = False
@@ -896,12 +899,7 @@ class DaemonSupervisor:
                     raise HostError("上一代自有 Daemon 尚未退出，拒绝启动新一代")
                 self._wait_owned(previous, timeout=0)
                 self._observe_owned_process(previous, "wait_exited")
-                if self._owned_snapshot is not None:
-                    self._abort_start(previous)
-                else:
-                    self._process = None
-                    self._owned_snapshot = None
-                    self._close_log()
+                self._abort_start(previous)
             self._open_log()
             kwargs: dict[str, Any] = {}
             if os.name == "nt":
@@ -927,9 +925,13 @@ class DaemonSupervisor:
             )
             self._process = proc
             self._owned_snapshot = None
+            self._owned_lock_snapshot = None
+            self._owned_foreign_snapshot = None
+            self._owned_cleanup_attempted = False
         while time.monotonic() < deadline:
             if self._stop.is_set():
                 return
+            self._capture_owned_lock(proc)
             if self.alive():
                 try:
                     snapshot = self._run_daemon_helper(
@@ -971,40 +973,59 @@ class DaemonSupervisor:
             f"日志：{self.log_path}"
         )
 
+    def _capture_owned_lock(self, proc: subprocess.Popen[bytes]) -> None:
+        with self._lock:
+            if (
+                self._process is not proc
+                or proc.returncode is not None
+                or self._owned_snapshot is not None
+                or self._owned_lock_snapshot is not None
+            ):
+                return
+            try:
+                snapshot = (ipc.run_dir(self.data_root) / "daemon.lock").read_bytes()
+            except OSError:
+                return
+            identity = _daemon_lock_identity(snapshot)
+            if identity is None:
+                return
+            if identity[0] == proc.pid:
+                self._owned_lock_snapshot = snapshot
+            else:
+                self._owned_foreign_snapshot = snapshot
+
     def _abort_start(self, proc: subprocess.Popen[bytes]) -> None:
         with self._lock:
             if self._process is proc:
                 self._abort_start_owned(proc)
 
     def _abort_start_owned(self, proc: subprocess.Popen[bytes]) -> None:
-        """Reap a failed start without deleting a replacement Daemon's lock.
-
-        A ready owned Daemon gets one identity-bound graceful request first.
-        Windows forced termination does not run Python ``finally`` blocks, so
-        after the owned Popen is confirmed dead we may remove only the exact
-        lock snapshot captured at readiness. A changed/unreadable lock is kept.
-        """
+        """Reap a failed start without deleting a replacement Daemon's lock."""
+        retry = self._owned_cleanup_attempted
+        self._owned_cleanup_attempted = True
         deadline = time.monotonic() + STOP_CLEANUP_TIMEOUT_S
         lock_path = ipc.run_dir(self.data_root) / "daemon.lock"
-        snapshot = self._owned_snapshot
+        ready_snapshot = self._owned_snapshot
+        if ready_snapshot is None and self._owned_lock_snapshot is None:
+            self._capture_owned_lock(proc)
+        snapshot = ready_snapshot or self._owned_lock_snapshot
         identity = _daemon_lock_identity(snapshot) if snapshot is not None else None
-        was_running = self._poll_owned(proc) is None
         owned_identity = identity is not None and identity[0] == proc.pid
-        replacement_seen = False
-        lock_read_error: OSError | None = None
-        if owned_identity:
-            try:
-                current = lock_path.read_bytes()
-                owned_identity = current == snapshot
-                replacement_seen = not owned_identity
-            except FileNotFoundError:
-                owned_identity = False
-            except OSError as exc:
-                # The owned Popen is still safe to reap, but an unreadable lock
-                # is not proof that it disappeared or changed owners.
-                owned_identity = False
-                lock_read_error = exc
-        if owned_identity and self._poll_owned(proc) is None:
+        cleanup_snapshot = snapshot if owned_identity else None
+        try:
+            initial_lock = lock_path.read_bytes()
+        except OSError:
+            initial_lock = None
+        replacement_preexisted = (
+            cleanup_snapshot is not None and initial_lock != cleanup_snapshot
+        )
+        was_running = self._poll_owned(proc) is None
+        graceful_allowed = (
+            ready_snapshot is not None
+            and owned_identity
+            and initial_lock == ready_snapshot
+        )
+        if graceful_allowed and was_running:
             remaining = max(0.001, deadline - time.monotonic())
             self._request_shutdown(
                 reason="startup_abort",
@@ -1030,22 +1051,10 @@ class DaemonSupervisor:
             except subprocess.TimeoutExpired:
                 raise HostError("启动失败且无法确认自有 Daemon 退出") from None
         self._observe_owned_process(proc, "final_wait_exited")
-        if not owned_identity:
-            if lock_read_error is not None:
-                raise HostError("自有 Daemon 已退出，但无法核验其锁是否可清理") from lock_read_error
-            if replacement_seen and was_running:
-                raise HostError("自有 Daemon 退出后锁实例已变更，保留新实例")
-            self._process = None
-            self._owned_snapshot = None
-            self._close_log()
-            return
         from .daemon import daemon_lock_guard
         from .leases import GuardTimeout
 
         try:
-            # Daemon creation and stale takeover use this independent mutex.
-            # Keep read + identity comparison + unlink in one critical section;
-            # the Host metadata guard alone cannot exclude the Daemon CLI.
             remaining_ms = max(1, int((deadline - time.monotonic()) * 1000))
             with daemon_lock_guard(lock_path.parent, timeout_ms=remaining_ms):
                 try:
@@ -1054,22 +1063,27 @@ class DaemonSupervisor:
                     current = None
                 except OSError as exc:
                     raise HostError("自有 Daemon 已退出，但无法核验其锁是否可清理") from exc
-                if current is not None and current != snapshot:
-                    raise HostError("自有 Daemon 退出后锁实例已变更，保留新实例")
                 if current is not None:
-                    try:
-                        lock_path.unlink()
-                    except FileNotFoundError:
-                        pass
-                    except OSError as exc:
-                        raise HostError("自有 Daemon 已退出，但清理原实例锁失败") from exc
+                    if cleanup_snapshot is None:
+                        if current != self._owned_foreign_snapshot:
+                            raise HostError("自有 Daemon 已退出，但无法证明残留锁属于本次启动")
+                    elif current != cleanup_snapshot:
+                        if not retry and (was_running or not replacement_preexisted):
+                            raise HostError("自有 Daemon 退出后锁实例已变更，保留新实例")
+                    else:
+                        try:
+                            lock_path.unlink()
+                        except FileNotFoundError:
+                            pass
+                        except OSError as exc:
+                            raise HostError("自有 Daemon 已退出，但清理原实例锁失败") from exc
         except GuardTimeout as exc:
             raise HostError("自有 Daemon 已退出，但无法取得锁清理守卫") from exc
-        # Publish completed cleanup only after the exact owned lock is gone.
-        # On any lock error above, retain the dead Popen and readiness snapshot
-        # so a retry can finish cleanup without adopting a replacement identity.
         self._process = None
         self._owned_snapshot = None
+        self._owned_lock_snapshot = None
+        self._owned_foreign_snapshot = None
+        self._owned_cleanup_attempted = False
         self._close_log()
 
     def _shutdown_daemon(self, *, reason: str, timeout: float) -> bool:

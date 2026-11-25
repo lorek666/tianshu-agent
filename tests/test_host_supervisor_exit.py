@@ -50,14 +50,45 @@ def test_shutdown_test_daemon_waits_for_observed_process_exit(tmp_path, monkeypa
     lock_path = tmp_path / "daemon.lock"
     lock_path.write_text(json.dumps({"instance_id": "daemon-a", "pid": 123}), encoding="utf-8")
     monkeypatch.setattr(daemon_cleanup.daemon, "lock_path", lambda _root: lock_path)
-    monkeypatch.setattr(daemon_cleanup.daemon, "request_shutdown", lambda *_a, **_k: True)
+    requests = []
+
+    def request_shutdown(*_args, **kwargs):
+        requests.append(kwargs)
+        return True
+
+    monkeypatch.setattr(daemon_cleanup.daemon, "request_shutdown", request_shutdown)
     alive = iter([True, True, False])
     monkeypatch.setattr(daemon_cleanup, "pid_alive", lambda _pid: next(alive))
-    monkeypatch.setattr(daemon_cleanup, "process_birth_identity", lambda _pid: "birth-a")
+    monkeypatch.setattr(
+        daemon_cleanup, "process_birth_identity", lambda _pid: "birth-a",
+    )
 
     shutdown_test_daemon(tmp_path)
 
     assert next(alive, None) is None
+    assert len(requests) == 1
+    assert requests[0]["expected_instance_id"] == "daemon-a"
+    assert requests[0]["timeout"] > 0
+
+
+def test_shutdown_test_daemon_times_out_without_signalling(tmp_path, monkeypatch):
+    lock_path = tmp_path / "daemon.lock"
+    lock_path.write_text(json.dumps({"instance_id": "daemon-a", "pid": 123}), encoding="utf-8")
+    monkeypatch.setattr(daemon_cleanup.daemon, "lock_path", lambda _root: lock_path)
+    monkeypatch.setattr(
+        daemon_cleanup.daemon, "request_shutdown", lambda *_a, **_k: True,
+    )
+    monkeypatch.setattr(daemon_cleanup, "pid_alive", lambda _pid: True)
+    monkeypatch.setattr(
+        daemon_cleanup, "process_birth_identity", lambda _pid: "birth-a",
+    )
+    monkeypatch.setattr(
+        daemon_cleanup.threading, "Event",
+        lambda: pytest.fail("an expired cleanup deadline must not keep waiting"),
+    )
+
+    with pytest.raises(AssertionError, match="did not exit"):
+        shutdown_test_daemon(tmp_path, timeout=0)
 
 
 def test_shutdown_test_daemon_accepts_pid_reuse_as_original_exit(tmp_path, monkeypatch):
@@ -984,6 +1015,56 @@ def test_normal_ensure_retry_finishes_retained_lock_cleanup_before_spawn(
         assert supervisor._owned_snapshot is None
         raise SpawnAttempted
 
+    monkeypatch.setattr(host.subprocess, "Popen", checked_spawn)
+    with pytest.raises(SpawnAttempted):
+        supervisor.ensure()
+    assert supervisor._process is None
+    assert supervisor._owned_snapshot is None
+
+
+def test_failed_readiness_retains_lock_cleanup_evidence_for_retry(
+    tmp_path, monkeypatch, held_child,
+):
+    from tianshu import daemon
+
+    supervisor = host.DaemonSupervisor(tmp_path, [])
+    supervisor._process = held_child
+    lock_path = daemon.lock_path(tmp_path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    snapshot = json.dumps({
+        "pid": held_child.pid,
+        "started_at": 1,
+        "instance_id": "not-ready-yet",
+        "daemon_version": daemon.DAEMON_VERSION,
+    }).encode("utf-8")
+    lock_path.write_bytes(snapshot)
+    real_unlink = Path.unlink
+
+    def failed_unlink(path, *args, **kwargs):
+        if path == lock_path:
+            raise PermissionError("controlled pre-readiness lock cleanup failure")
+        return real_unlink(path, *args, **kwargs)
+
+    class SpawnAttempted(Exception):
+        pass
+
+    monkeypatch.setattr(Path, "unlink", failed_unlink)
+    with pytest.raises(host.HostError, match="清理原实例锁失败"):
+        supervisor._abort_start(held_child)
+    assert held_child.returncode is not None
+    assert supervisor._process is held_child
+    assert supervisor._owned_snapshot is None
+    assert lock_path.read_bytes() == snapshot
+
+    monkeypatch.setattr(Path, "unlink", real_unlink)
+
+    def checked_spawn(*args, **kwargs):
+        assert not lock_path.exists(), "retry spawned before pre-readiness lock cleanup"
+        assert supervisor._process is None
+        assert supervisor._owned_snapshot is None
+        raise SpawnAttempted
+
+    monkeypatch.setattr(supervisor, "alive", lambda: False)
     monkeypatch.setattr(host.subprocess, "Popen", checked_spawn)
     with pytest.raises(SpawnAttempted):
         supervisor.ensure()
@@ -2515,7 +2596,7 @@ raise SystemExit(host.run_host(
 def test_exit_cleanup_holds_host_identity_until_owned_root_is_reaped():
     import socket
 
-    from tianshu import daemon, ipc
+    from tianshu import ipc
 
     first_script = r"""
 import sys,time
@@ -2624,19 +2705,12 @@ raise SystemExit(host.run_host(
                 if proc is not None and proc.poll() is None:
                     proc.kill()
                     proc.wait(timeout=10)
-            lock_path = daemon.lock_path(root)
-            snapshot = lock_path.read_bytes() if lock_path.exists() else None
-            if snapshot is not None:
-                identity = json.loads(snapshot)
-                daemon.request_shutdown(
-                    root, expected_instance_id=identity["instance_id"], timeout=3,
-                )
-                deadline = time.monotonic() + 5
-                while ipc.probe(root, timeout=0.1) and time.monotonic() < deadline:
-                    threading.Event().wait(0.05)
+            shutdown_test_daemon(root)
 
 
 def test_failed_owned_readiness_reaps_the_started_root(monkeypatch):
+    from tianshu import daemon
+
     script = r"""
 import json,os,sys
 from pathlib import Path
@@ -2673,6 +2747,7 @@ while True:
                 supervisor.ensure()
             assert children and all(child.poll() is not None for child in children)
             assert supervisor._process is None
+            assert not daemon.lock_path(Path(directory)).exists()
         finally:
             for child in children:
                 if child.poll() is None:

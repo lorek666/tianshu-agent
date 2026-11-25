@@ -472,6 +472,8 @@ class PreparedExecution:
             # wait is authoritative; a reaped PID/PGID may already be reused.
             return "exited" if proc.poll() is not None else "unknown"
         if os.name == "posix":
+            if proc.returncode is not None:
+                return "unknown"
             try:
                 os.killpg(proc.pid, 0)
             except ProcessLookupError:
@@ -481,6 +483,7 @@ class PreparedExecution:
         return "unknown"
 
     def _stop_process(self, proc: subprocess.Popen[bytes]) -> str:
+        group_identity_safe = False
         if self._single_process:
             if proc.poll() is None:
                 try:
@@ -488,11 +491,15 @@ class PreparedExecution:
                 except OSError:
                     pass
         elif os.name == "posix":
-            # Capture group identity at launch: the leader may already have exited.
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except OSError:
-                pass
+            if proc.returncode is None:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    group_identity_safe = True
+                except OSError:
+                    pass
+                else:
+                    group_identity_safe = True
         elif proc.poll() is None:
             try:
                 proc.kill()
@@ -502,6 +509,16 @@ class PreparedExecution:
             proc.wait(timeout=2)
         except subprocess.TimeoutExpired:
             pass
+        if os.name == "posix" and not self._single_process:
+            if not group_identity_safe:
+                return "unknown"
+            try:
+                os.killpg(proc.pid, 0)
+            except ProcessLookupError:
+                return "exited"
+            except OSError:
+                pass
+            return "unknown"
         return self._process_tree_state(proc)
 
     def _collect_process(self, proc, *, policy, blob_dir=None) -> tuple[ExecResult, str]:
