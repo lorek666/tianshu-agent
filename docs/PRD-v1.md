@@ -1154,6 +1154,17 @@ D1 接上排队面、D2 接上收尾：spawn 在父账户 `subtasks` 维度真�
 - Windows Computer Use
 - 子 agent 双模式：`isolated`（只收任务单）/ `fork`（继承上下文），默认 isolated
 
+### 7.0.1 F5 Prompt Cache 的 adapter 本地策略
+
+策略封闭集为 `auto` / `off` / `prefix-v1` / `responses-explicit-v1`，
+机器副本见 [`schemas/prompt-cache-policy.json`](../schemas/prompt-cache-policy.json)；
+它不是 C1 消息字段、能力证明或授权对象。策略只处理 provider wire 副本，不改
+内部消息、工具身份、事件版本、预算与重试契约。缓存真实用量沿既有事件 v2 保存；
+官方 OpenAI 的缓存读写均包含在输入总量内，Anthropic 的总输入需加原生读取与创建。
+不得把缺失用量当零或按长度估算命中。策略、默认值、主动启用条件与联合质量观测见
+[缓存设计 spec](superpowers/specs/2026-11-22-prompt-cache-design.md)；
+交付及尚未执行的线上实测以[实施记录](changelog/2026-11-22-prompt-cache.md)为准。
+
 ### 7.1 F5 的确定性与语义摘要（新增演进要求）
 
 `context.py` 做确定性预览、卸载与裁剪，`loop.py` 在模型请求前持久化 spills；**模型语义摘要已交付（默认关，显式开启）**，实现与边界见 [context-summaries.md](context-summaries.md)。摘要作为**已持久化的派生材料**进入编译：默认路径逐字节不变；开启后回放读当时保存的那一份。后续演进仍遵守以下边界：

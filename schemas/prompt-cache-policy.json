@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Adapter-local prompt cache policy",
+  "description": "Local wire configuration, not a C1 message or an authorization capability.",
+  "type": "string",
+  "enum": ["auto", "off", "prefix-v1", "responses-explicit-v1"]
+}

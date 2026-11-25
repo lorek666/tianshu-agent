@@ -86,6 +86,10 @@ OpenAI Responses 使用独立的 `--provider openai-responses`，需显式填写
 支持文本、函数工具和加密 reasoning 续接。官方服务与网关的真实付费 smoke 尚未执行，
 协议与恢复边界见 [Responses 续接契约](docs/openai-responses-contract.md)。
 
+Prompt Cache 支持按协议配置稳定前缀与显式断点，并可用 `evaluate --cache-report`
+联合观察真实缓存用量与任务判据；默认值、开启条件和实测边界见
+[缓存配置与观测](docs/prompt-cache.md)。
+
 ## 常用命令
 
 **Task 是用户看到的那件事，Run 是一次执行**，两者生命周期分离；改目标会立刻 fence 掉旧 Run。
