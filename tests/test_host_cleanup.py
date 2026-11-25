@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 
 import pytest
+from daemon_cleanup import shutdown_test_daemon
 
 from tianshu import daemon, host, ipc
 
@@ -451,7 +452,7 @@ def test_late_real_host_cannot_replace_the_running_owner_or_stop_its_daemon() ->
                     assert not ipc.probe(root, timeout=0.5)
                     assert host.read_host_info(root) is None
         finally:
-            daemon.request_shutdown(root, reason="test_cleanup", timeout=5)
+            shutdown_test_daemon(root)
 
 
 def test_running_host_exits_without_stopping_daemon_when_identity_is_replaced() -> None:
@@ -475,7 +476,7 @@ def test_running_host_exits_without_stopping_daemon_when_identity_is_replaced() 
                 assert host.read_host_info(root) == replacement
                 assert ipc.probe(root, timeout=1)
         finally:
-            daemon.request_shutdown(root, reason="test_cleanup", timeout=5)
+            shutdown_test_daemon(root)
 
 
 def test_starting_host_cannot_leave_two_published_bridges() -> None:
@@ -515,7 +516,7 @@ def test_starting_host_cannot_leave_two_published_bridges() -> None:
                     assert not ipc.probe(root, timeout=0.5)
                     assert host.read_host_info(root) is None
         finally:
-            daemon.request_shutdown(root, reason="test_cleanup", timeout=5)
+            shutdown_test_daemon(root)
 
 
 def test_http_health_requires_a_real_health_response() -> None:
@@ -675,7 +676,7 @@ def test_real_stop_cannot_join_monitor_before_its_thread_has_started() -> None:
                 assert stderr == b""
                 assert http_alive_before_start
         finally:
-            daemon.request_shutdown(root, reason="test_cleanup", timeout=5)
+            shutdown_test_daemon(root)
 
 
 @pytest.mark.parametrize("kind", ["invalid-json", "directory"])

@@ -215,13 +215,18 @@ def test_native_python_child_bypasses_only_the_windows_launcher(
         patch.setattr(slo.os, "name", "nt" if windows else "posix")
         patch.setattr(sys, "executable", str(executable))
         patch.setattr(sys, "_base_executable", str(base_executable))
-        command, env = slo._native_python_child(argv, env={"KEEP": "yes"})
+        command, env = slo._native_python_child(
+            argv,
+            env={"KEEP": "yes", "PYTHONPATH": os.pathsep.join(["startup", "src"])},
+        )
     assert command == ([str(base_executable), "worker.py"] if windows else argv)
     assert env["KEEP"] == "yes"
     if windows:
-        assert env["PYTHONPATH"] == os.pathsep.join(sys.path)
+        assert env["PYTHONPATH"] == os.pathsep.join([
+            *sys.path, os.pathsep.join(["startup", "src"]),
+        ])
     else:
-        assert "PYTHONPATH" not in env
+        assert env["PYTHONPATH"] == os.pathsep.join(["startup", "src"])
 
 
 def test_native_python_child_leaves_non_python_commands_unchanged(monkeypatch):

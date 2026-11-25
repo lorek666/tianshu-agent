@@ -414,6 +414,14 @@
   Windows 红、定向红绿与独立复审见
   [PR #228 跟进修复](changelog/2026-11-24-pr228-windows-followup.md)。
 
+- **停止请求送达与测试进程退出必须分开（2026-11-24）**：Windows 的
+  `daemon.request_shutdown()` 只证明请求送达；Daemon 仍可能短暂持有继承的
+  `daemon.log` 句柄，测试直接删除临时目录会真实撞上 WinError 32。清理 helper
+  先冻结锁中的 PID 与 OS 出生身份，再等待该进程退出；PID 复用只说明原进程已退出，
+  绝不据此向替代进程发信号，超时仍硬失败。Windows 从 venv launcher 切到原生
+  base interpreter 时也必须保留调用方 `PYTHONPATH`，否则 `tests/_startup` 不加载，
+  子进程失去维护锁根隔离，SLO 诊断应拒绝启动而不是放宽检查。
+
 - **CI 插件须验证真实测试模块的收集兼容性（2026-11-23）**：
   模块级参数化 fixture 会触发 pytest 内建收集重排。小型无参数夹具通过、
   普通裸全量通过，都不能证明严格分片插件能收集项目自身的测试。

@@ -650,7 +650,10 @@ def _native_python_child(
     native = _native_python_command(command)
     if native == command:
         return command, env
-    return native, {**env, "PYTHONPATH": os.pathsep.join(sys.path)}
+    paths = list(sys.path)
+    if env.get("PYTHONPATH"):
+        paths.append(env["PYTHONPATH"])
+    return native, {**env, "PYTHONPATH": os.pathsep.join(paths)}
 
 
 def _launch_host(

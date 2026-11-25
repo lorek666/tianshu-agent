@@ -14,7 +14,9 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import daemon_cleanup
 import pytest
+from daemon_cleanup import shutdown_test_daemon
 
 from tianshu import host
 
@@ -24,7 +26,10 @@ def _child_env():
     # code page inherited by a CI runner.
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     if os.name == "nt":
-        env["PYTHONPATH"] = os.pathsep.join(sys.path)
+        paths = list(sys.path)
+        if env.get("PYTHONPATH"):
+            paths.append(env["PYTHONPATH"])
+        env["PYTHONPATH"] = os.pathsep.join(paths)
     return env
 
 
@@ -32,37 +37,41 @@ def _test_interpreter() -> str:
     return sys._base_executable if os.name == "nt" else sys.executable
 
 
-def _shutdown_test_daemon(root: Path) -> None:
-    from tianshu import daemon
-
-    lock_path = daemon.lock_path(root)
-    try:
-        snapshot = lock_path.read_bytes()
-    except FileNotFoundError:
-        return
-    identity = json.loads(snapshot)
-    daemon.request_shutdown(
-        root, expected_instance_id=identity["instance_id"], timeout=3,
-    )
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        try:
-            current = lock_path.read_bytes()
-        except FileNotFoundError:
-            return
-        if current != snapshot:
-            return
-        threading.Event().wait(0.05)
-    raise AssertionError(
-        "test Daemon retained its identity after graceful shutdown; "
-        "refusing to terminate an unowned PID"
-    )
-
-
 def test_native_windows_test_interpreter_keeps_project_imports(monkeypatch):
     with monkeypatch.context() as patch:
         patch.setattr(os, "name", "nt")
-        assert _child_env()["PYTHONPATH"] == os.pathsep.join(sys.path)
+        expected = list(sys.path)
+        if os.environ.get("PYTHONPATH"):
+            expected.append(os.environ["PYTHONPATH"])
+        assert _child_env()["PYTHONPATH"] == os.pathsep.join(expected)
+
+
+def test_shutdown_test_daemon_waits_for_observed_process_exit(tmp_path, monkeypatch):
+    lock_path = tmp_path / "daemon.lock"
+    lock_path.write_text(json.dumps({"instance_id": "daemon-a", "pid": 123}), encoding="utf-8")
+    monkeypatch.setattr(daemon_cleanup.daemon, "lock_path", lambda _root: lock_path)
+    monkeypatch.setattr(daemon_cleanup.daemon, "request_shutdown", lambda *_a, **_k: True)
+    alive = iter([True, True, False])
+    monkeypatch.setattr(daemon_cleanup, "pid_alive", lambda _pid: next(alive))
+    monkeypatch.setattr(daemon_cleanup, "process_birth_identity", lambda _pid: "birth-a")
+
+    shutdown_test_daemon(tmp_path)
+
+    assert next(alive, None) is None
+
+
+def test_shutdown_test_daemon_accepts_pid_reuse_as_original_exit(tmp_path, monkeypatch):
+    lock_path = tmp_path / "daemon.lock"
+    lock_path.write_text(json.dumps({"instance_id": "daemon-a", "pid": 123}), encoding="utf-8")
+    monkeypatch.setattr(daemon_cleanup.daemon, "lock_path", lambda _root: lock_path)
+    monkeypatch.setattr(daemon_cleanup.daemon, "request_shutdown", lambda *_a, **_k: True)
+    monkeypatch.setattr(daemon_cleanup, "pid_alive", lambda _pid: True)
+    births = iter(["birth-a", "birth-b"])
+    monkeypatch.setattr(daemon_cleanup, "process_birth_identity", lambda _pid: next(births))
+
+    shutdown_test_daemon(tmp_path)
+
+    assert next(births, None) is None
 
 
 @pytest.fixture
@@ -2049,7 +2058,7 @@ raise SystemExit(host.run_host(
             if first is not None and first.poll() is None:
                 first.kill()
                 first.wait(timeout=10)
-            _shutdown_test_daemon(root)
+            shutdown_test_daemon(root)
 
 
 def test_takeover_health_failure_reaps_the_adopted_daemon():
@@ -2110,7 +2119,7 @@ raise SystemExit(host.run_host(
             if daemon_proc is not None and daemon_proc.poll() is None:
                 daemon_proc.kill()
                 daemon_proc.wait(timeout=10)
-            _shutdown_test_daemon(root)
+            shutdown_test_daemon(root)
 
 
 @pytest.mark.parametrize("serialize_disappeared_owner", [False, True])
@@ -2314,7 +2323,7 @@ raise SystemExit(host.run_host(
                     proc.wait(timeout=10)
                 if stream is not None:
                     stream.close()
-            _shutdown_test_daemon(root)
+            shutdown_test_daemon(root)
 
 
     from tianshu import daemon, ipc
@@ -2410,7 +2419,7 @@ raise SystemExit(host.run_host(
                     proc.wait(timeout=10)
                 if stream is not None:
                     stream.close()
-            _shutdown_test_daemon(root)
+            shutdown_test_daemon(root)
 
 
 def test_bridge_failure_does_not_stop_a_daemon_already_attached_by_another_host():
@@ -2500,7 +2509,7 @@ raise SystemExit(host.run_host(
                     proc.wait(timeout=10)
                 if stream is not None:
                     stream.close()
-            _shutdown_test_daemon(root)
+            shutdown_test_daemon(root)
 
 
 def test_exit_cleanup_holds_host_identity_until_owned_root_is_reaped():
@@ -2869,7 +2878,7 @@ raise SystemExit(host.run_host(
             if daemon_proc is not None and daemon_proc.poll() is None:
                 daemon_proc.kill()
                 daemon_proc.wait(timeout=10)
-            _shutdown_test_daemon(root)
+            shutdown_test_daemon(root)
 
 
 @pytest.mark.parametrize("replace_after_failure", [False, True])
