@@ -14,9 +14,9 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-import daemon_cleanup
 import pytest
-from daemon_cleanup import shutdown_test_daemon
+import support
+from support import shutdown_daemon_and_wait
 
 from tianshu import host
 
@@ -46,61 +46,66 @@ def test_native_windows_test_interpreter_keeps_project_imports(monkeypatch):
         assert _child_env()["PYTHONPATH"] == os.pathsep.join(expected)
 
 
-def test_shutdown_test_daemon_waits_for_observed_process_exit(tmp_path, monkeypatch):
+def test_shutdown_daemon_and_wait_waits_for_observed_process_exit(tmp_path, monkeypatch):
+    from tianshu import daemon, execution_admission
+
     lock_path = tmp_path / "daemon.lock"
     lock_path.write_text(json.dumps({"instance_id": "daemon-a", "pid": 123}), encoding="utf-8")
-    monkeypatch.setattr(daemon_cleanup.daemon, "lock_path", lambda _root: lock_path)
+    monkeypatch.setattr(daemon, "lock_path", lambda _root: lock_path)
     requests = []
 
     def request_shutdown(*_args, **kwargs):
         requests.append(kwargs)
         return True
 
-    monkeypatch.setattr(daemon_cleanup.daemon, "request_shutdown", request_shutdown)
-    alive = iter([True, True, False])
-    monkeypatch.setattr(daemon_cleanup, "pid_alive", lambda _pid: next(alive))
+    monkeypatch.setattr(daemon, "request_shutdown", request_shutdown)
+    births = iter(["birth-a", "birth-a", "birth-b"])
     monkeypatch.setattr(
-        daemon_cleanup, "process_birth_identity", lambda _pid: "birth-a",
+        execution_admission, "process_birth_identity", lambda _pid: next(births),
     )
 
-    shutdown_test_daemon(tmp_path)
+    shutdown_daemon_and_wait(tmp_path)
 
-    assert next(alive, None) is None
+    assert next(births, None) is None
     assert len(requests) == 1
     assert requests[0]["expected_instance_id"] == "daemon-a"
     assert requests[0]["timeout"] > 0
 
 
-def test_shutdown_test_daemon_times_out_without_signalling(tmp_path, monkeypatch):
+def test_shutdown_daemon_and_wait_times_out_without_signalling(tmp_path, monkeypatch):
+    from tianshu import daemon, execution_admission
+
     lock_path = tmp_path / "daemon.lock"
     lock_path.write_text(json.dumps({"instance_id": "daemon-a", "pid": 123}), encoding="utf-8")
-    monkeypatch.setattr(daemon_cleanup.daemon, "lock_path", lambda _root: lock_path)
+    monkeypatch.setattr(daemon, "lock_path", lambda _root: lock_path)
     monkeypatch.setattr(
-        daemon_cleanup.daemon, "request_shutdown", lambda *_a, **_k: True,
-    )
-    monkeypatch.setattr(daemon_cleanup, "pid_alive", lambda _pid: True)
-    monkeypatch.setattr(
-        daemon_cleanup, "process_birth_identity", lambda _pid: "birth-a",
+        daemon, "request_shutdown", lambda *_a, **_k: True,
     )
     monkeypatch.setattr(
-        daemon_cleanup.threading, "Event",
+        execution_admission, "process_birth_identity", lambda _pid: "birth-a",
+    )
+    monkeypatch.setattr(
+        support.threading, "Event",
         lambda: pytest.fail("an expired cleanup deadline must not keep waiting"),
     )
 
-    with pytest.raises(AssertionError, match="did not exit"):
-        shutdown_test_daemon(tmp_path, timeout=0)
+    with pytest.raises(AssertionError, match="原 Daemon OS 进程未退出"):
+        shutdown_daemon_and_wait(tmp_path, timeout=0)
 
 
-def test_shutdown_test_daemon_accepts_pid_reuse_as_original_exit(tmp_path, monkeypatch):
+def test_shutdown_daemon_and_wait_accepts_pid_reuse_as_original_exit(tmp_path, monkeypatch):
+    from tianshu import daemon, execution_admission
+
     lock_path = tmp_path / "daemon.lock"
     lock_path.write_text(json.dumps({"instance_id": "daemon-a", "pid": 123}), encoding="utf-8")
-    monkeypatch.setattr(daemon_cleanup.daemon, "lock_path", lambda _root: lock_path)
-    monkeypatch.setattr(daemon_cleanup.daemon, "request_shutdown", lambda *_a, **_k: True)
-    monkeypatch.setattr(daemon_cleanup, "pid_alive", lambda _pid: True)
+    monkeypatch.setattr(daemon, "lock_path", lambda _root: lock_path)
+    monkeypatch.setattr(daemon, "request_shutdown", lambda *_a, **_k: True)
     births = iter(["birth-a", "birth-b"])
-    monkeypatch.setattr(daemon_cleanup, "process_birth_identity", lambda _pid: next(births))
+    monkeypatch.setattr(
+        execution_admission, "process_birth_identity", lambda _pid: next(births),
+    )
 
-    shutdown_test_daemon(tmp_path)
+    shutdown_daemon_and_wait(tmp_path)
 
     assert next(births, None) is None
 
@@ -2033,16 +2038,7 @@ raise SystemExit(host.run_host(
                 assert daemon.lock_path(root).read_bytes() == attached_snapshot
                 assert ipc.probe(root, timeout=0.2)
         finally:
-            lock_path = daemon.lock_path(root)
-            snapshot = lock_path.read_bytes() if lock_path.exists() else None
-            if snapshot is not None:
-                identity = json.loads(snapshot)
-                daemon.request_shutdown(
-                    root, expected_instance_id=identity["instance_id"], timeout=3,
-                )
-                deadline = time.monotonic() + 5
-                while ipc.probe(root, timeout=0.1) and time.monotonic() < deadline:
-                    threading.Event().wait(0.05)
+            shutdown_daemon_and_wait(root, timeout=5)
             if daemon_proc is not None:
                 try:
                     daemon_proc.wait(timeout=10)
@@ -2139,7 +2135,7 @@ raise SystemExit(host.run_host(
             if first is not None and first.poll() is None:
                 first.kill()
                 first.wait(timeout=10)
-            shutdown_test_daemon(root)
+            shutdown_daemon_and_wait(root, timeout=5)
 
 
 def test_takeover_health_failure_reaps_the_adopted_daemon():
@@ -2200,7 +2196,7 @@ raise SystemExit(host.run_host(
             if daemon_proc is not None and daemon_proc.poll() is None:
                 daemon_proc.kill()
                 daemon_proc.wait(timeout=10)
-            shutdown_test_daemon(root)
+            shutdown_daemon_and_wait(root, timeout=5)
 
 
 @pytest.mark.parametrize("serialize_disappeared_owner", [False, True])
@@ -2404,7 +2400,7 @@ raise SystemExit(host.run_host(
                     proc.wait(timeout=10)
                 if stream is not None:
                     stream.close()
-            shutdown_test_daemon(root)
+            shutdown_daemon_and_wait(root, timeout=5)
 
 
     from tianshu import daemon, ipc
@@ -2500,7 +2496,7 @@ raise SystemExit(host.run_host(
                     proc.wait(timeout=10)
                 if stream is not None:
                     stream.close()
-            shutdown_test_daemon(root)
+            shutdown_daemon_and_wait(root, timeout=5)
 
 
 def test_bridge_failure_does_not_stop_a_daemon_already_attached_by_another_host():
@@ -2590,7 +2586,7 @@ raise SystemExit(host.run_host(
                     proc.wait(timeout=10)
                 if stream is not None:
                     stream.close()
-            shutdown_test_daemon(root)
+            shutdown_daemon_and_wait(root, timeout=5)
 
 
 def test_exit_cleanup_holds_host_identity_until_owned_root_is_reaped():
@@ -2705,7 +2701,7 @@ raise SystemExit(host.run_host(
                 if proc is not None and proc.poll() is None:
                     proc.kill()
                     proc.wait(timeout=10)
-            shutdown_test_daemon(root)
+            shutdown_daemon_and_wait(root, timeout=5)
 
 
 def test_failed_owned_readiness_reaps_the_started_root(monkeypatch):
@@ -2953,7 +2949,7 @@ raise SystemExit(host.run_host(
             if daemon_proc is not None and daemon_proc.poll() is None:
                 daemon_proc.kill()
                 daemon_proc.wait(timeout=10)
-            shutdown_test_daemon(root)
+            shutdown_daemon_and_wait(root, timeout=5)
 
 
 @pytest.mark.parametrize("replace_after_failure", [False, True])

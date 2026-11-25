@@ -167,6 +167,60 @@ v35 首次生成凭证时脚本误沿用 `freeze-v34.json` 文件名，独立读
 以 [PR #228](https://github.com/lorek666/tianshu-agent/pull/228) 对精确对象的记录为准；
 这里不把旧 CI 或 draft 跳过记为通过。
 
+## v35 hosted CI 拒绝与 v36 Windows 收尾修复（2026-11-25）
+
+v35 head `dbb6a43c5de0684368acfd53f1366fd659328fbe` 的 run
+[45368602694](https://github.com/lorek666/tianshu-agent/actions/runs/45368602694)
+真实 `completed/failure`：十项 job 中八项成功，Windows shard 0 与 Windows required
+汇总失败。四份 pytest ZIP 和 Windows restore ZIP 均核 GitHub `digest`，ZIP member
+与解压报告逐字节一致。原始阶段 JSON 记录六项失败：三项 Host 清理在 Windows 删除
+`logs/daemon.log` 时触发 `WinError 32`，三项 SLO 状态背压测试在真实 Host 子进程
+启动前拒绝测试锁根。两个 worker 共用 stdout，`-vv` 进度行会交叉拼接；额外
+`FAILED` 行不能推翻 GitHub digest 绑定的阶段 JSON 与两段 `FAILURES`。失败日志
+SHA256 为 `81c09ee64e6d8e80c5ab61bbbe3535a7623f90342ea6323780a0fec355a3fb1d`。
+
+v36 只修测试收尾证据与锁根等价性，不改产品停止契约：测试清理先观察锁中的 PID
+与 OS birth identity，退出请求绑定原 `instance_id`；只有锁快照未变才允许升级终止。
+SLO guard 保留 `PYTEST_CURRENT_TEST`、实际维护锁根和预期锁根三重检查，改用文件系统
+对象同一性避免 Windows 路径别名误拒。v36 的两项私有副本变异负控均实际退出 1，
+受影响域回归退出 0，日志 SHA256 为
+`5a8f774821452cf9ebb0091d84af73f9748a5ee16166625d630ccdc28ccdf425`。
+
+v36 首次裸全量在系统盘低于产品 2 GiB 准入时实际退出 1，失败日志 SHA256 为
+`95fbc5e038d9f1fafcce7ebd004e3706d8394ad150780b669825b7d52a9b5f69`；仅把
+`TMPDIR` 与 `TIANSHU_TEST_TMP_ROOT` 指向高空间卷后，无筛选全量退出 0，日志 SHA256
+为 `819327448569b1c8bed3e87b79e53129ba70aff599a7684e67994dd8f0e50f53`。
+但独立 Host 复审仍拒绝 v36：birth identity 不可读时退回 IPC 探活会误判 OS 进程
+退出；强制终止前只比较锁字节，没有再次核验 birth identity，PID 复用可能误杀。
+主控在私有探针中复现两项反例，拒绝该冻结，不把本机全量绿当作最终通过。
+
+## v37 当前候选验证与边界（2026-11-25）
+
+- v37 冻结 index tree `8466fc6fff0fdafc3a3f1f56c76aee3bc068fd18`；src 树
+  `317defbd5e35ad8f5295bdea1667ad6a11f4361c`；tests 树
+  `2ed5d979c0ade66a4741a851a763a3cc284f5b1e`；scripts 树
+  `1477cba5f743a3180b3e4dee42584262c106c28d`。
+- 非文档清单 SHA256 `05561b0169e4e7d944a12144c75d30b1d3464370716ae60208488a94abd4a6c8`；
+  冻结凭证 SHA256 `e7a4d2ed415ea81397410c44927d67e84458417b867ae4b0438d872d7de280e1`。
+- birth identity 不可读时失败关闭，不再用 IPC 探活证明退出；强制终止前同时要求锁
+  快照未变且原 OS 创建身份仍相同。新增回归覆盖不可读身份与 PID 复用，旧 helper 在
+  私有副本对两项回归均实际失败；撤掉等待与改回路径字符串的变异也分别退出 1。
+  负控回执 SHA256 `a161db483774c9a2f0595fc5f519a29d294258b3fb639ae8f684ef5ebe98dce4`；
+  受影响域日志 SHA256 `72d48c0cf24e5b78e0dd4160bc91d16f40c9cd6f79cc04290a74e220e957caf6`。
+- Host 与 SLO 两路独立复审均 PASS，报告 SHA256 分别为
+  `2aad93ecae6679fddad216d3ef53178f72656e91f9e23aff36625cd5c49cd802` 与
+  `9708574c1366745be7e4cee92076cfd4c4db009cf3960f08739117177f36ab78`。
+  主控核全部原件哈希后，在新私有目录逐字节重算 manifest，重放关键绿灯、两项 Host
+  变异和 SLO 变异均通过；主控回执 SHA256
+  `afb512c654302f605af698079a068eb58184698e59c7f3ca62f0d5bcfcc046da`。
+- 同一冻结树的无筛选全量命令仅设置 `TMPDIR` 与 `TIANSHU_TEST_TMP_ROOT` 到高空间卷，
+  实际退出 0；动态总计与跳过原因以日志为准，日志 SHA256
+  `063db1468d14037ae85f4a820531854c8dbde8333ec73d9231d6ef3f6675799b`。
+  lock、Ruff、两份 diff 与本地链接检查也均退出 0。环境为
+  `macOS-26.6.2-arm64-arm-64bit` / Python 3.12.13；不替代 Windows 原生验证。
+- 文档回填只改文档；须重新核对非文档清单不变。最终提交及新完整 hosted CI 的
+  head/base/合成 merge、全部 job 与原始报告验收以 PR #228 对精确对象的记录为准。
+
 250ms 孤儿检查宽限和零孤儿门槛不变，不更改 workflow、权限来源或 C1–C5 契约。
 PID 存活与创建身份分别查询，明确不是原子句柄观察；锁内容也不是认证父链证明。
 owned launcher 的退出不证明任意后代已退出，附着端点检查不冒充拥有 OS 句柄。

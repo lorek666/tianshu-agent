@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 import pytest
-from daemon_cleanup import shutdown_test_daemon
+from support import shutdown_daemon_and_wait
 
 from tianshu import daemon, host, ipc
 
@@ -452,7 +452,75 @@ def test_late_real_host_cannot_replace_the_running_owner_or_stop_its_daemon() ->
                     assert not ipc.probe(root, timeout=0.5)
                     assert host.read_host_info(root) is None
         finally:
-            shutdown_test_daemon(root)
+            shutdown_daemon_and_wait(root, reason="test_cleanup", timeout=5)
+
+
+def test_daemon_cleanup_waits_for_original_os_process(monkeypatch, tmp_path: Path) -> None:
+    from tianshu import execution_admission
+
+    identity = {"pid": 12345, "instance_id": "daemon-under-test"}
+    lock_path = daemon.lock_path(tmp_path)
+    lock_path.parent.mkdir(parents=True)
+    lock_path.write_text(json.dumps(identity), encoding="utf-8")
+    requests = []
+
+    def request_shutdown(data_root, **kwargs):
+        requests.append((data_root, kwargs))
+        return True
+
+    monkeypatch.setattr(daemon, "request_shutdown", request_shutdown)
+    monkeypatch.setattr(execution_admission, "process_birth_identity", lambda pid: "same-birth")
+    with pytest.raises(AssertionError, match="原 Daemon OS 进程未退出"):
+        shutdown_daemon_and_wait(tmp_path, timeout=0.01)
+    assert requests == [(tmp_path, {
+        "reason": "test_cleanup",
+        "expected_instance_id": "daemon-under-test",
+        "timeout": 0.01,
+    })]
+
+
+def test_daemon_cleanup_fails_closed_without_process_birth_identity(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    from tianshu import execution_admission
+
+    lock_path = daemon.lock_path(tmp_path)
+    lock_path.parent.mkdir(parents=True)
+    lock_path.write_text(
+        json.dumps({"pid": os.getpid(), "instance_id": "daemon-under-test"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(daemon, "request_shutdown", lambda *args, **kwargs: True)
+    monkeypatch.setattr(execution_admission, "process_birth_identity", lambda pid: None)
+    monkeypatch.setattr(
+        ipc, "probe", lambda *args, **kwargs: pytest.fail("IPC 探活不能证明 OS 进程退出"),
+    )
+    with pytest.raises(AssertionError, match="原 Daemon OS 进程未退出"):
+        shutdown_daemon_and_wait(tmp_path, timeout=0)
+
+
+def test_daemon_cleanup_does_not_terminate_reused_pid(monkeypatch, tmp_path: Path) -> None:
+    from tianshu import execution_admission
+
+    lock_path = daemon.lock_path(tmp_path)
+    lock_path.parent.mkdir(parents=True)
+    lock_path.write_text(
+        json.dumps({"pid": 12345, "instance_id": "daemon-under-test"}),
+        encoding="utf-8",
+    )
+    identities = iter(["original-birth", "original-birth", "reused-birth"])
+    terminated = []
+    monkeypatch.setattr(daemon, "request_shutdown", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        execution_admission, "process_birth_identity", lambda pid: next(identities),
+    )
+    with pytest.raises(AssertionError, match="原 Daemon OS 进程未退出"):
+        shutdown_daemon_and_wait(
+            tmp_path,
+            timeout=0,
+            terminate=lambda pid, timeout: terminated.append(pid),
+        )
+    assert terminated == []
 
 
 def test_running_host_exits_without_stopping_daemon_when_identity_is_replaced() -> None:
@@ -476,7 +544,7 @@ def test_running_host_exits_without_stopping_daemon_when_identity_is_replaced() 
                 assert host.read_host_info(root) == replacement
                 assert ipc.probe(root, timeout=1)
         finally:
-            shutdown_test_daemon(root)
+            shutdown_daemon_and_wait(root, reason="test_cleanup", timeout=5)
 
 
 def test_starting_host_cannot_leave_two_published_bridges() -> None:
@@ -516,7 +584,7 @@ def test_starting_host_cannot_leave_two_published_bridges() -> None:
                     assert not ipc.probe(root, timeout=0.5)
                     assert host.read_host_info(root) is None
         finally:
-            shutdown_test_daemon(root)
+            shutdown_daemon_and_wait(root, reason="test_cleanup", timeout=5)
 
 
 def test_http_health_requires_a_real_health_response() -> None:
@@ -676,7 +744,7 @@ def test_real_stop_cannot_join_monitor_before_its_thread_has_started() -> None:
                 assert stderr == b""
                 assert http_alive_before_start
         finally:
-            shutdown_test_daemon(root)
+            shutdown_daemon_and_wait(root, reason="test_cleanup", timeout=5)
 
 
 @pytest.mark.parametrize("kind", ["invalid-json", "directory"])

@@ -694,11 +694,14 @@
   [受限后端记录](changelog/2026-11-23-seatbelt-leaf.md)。完全访问仍禁用，
   不以“本地功能已实现”替代最终 CI、真实付费模型或用户设备验收。
 
-- **Host/SLO 停止与就绪身份候选（2026-11-24，本地未合入）**：
+- **Host/SLO 停止与就绪身份候选（2026-11-25，本地未合入）**：
   Host 停止监控与 spawn 锁按固定顺序串行化，监控恢复使用代际交接，
   停止失败不留下永久失监；SLO readiness 在 HTTP 后复核 PID birth identity
-  与完整 Host 实例，Windows 原生解释器保留项目导入路径。精确冻结、独立复审
-  与未验范围见[停止与实例证据记录](changelog/2026-11-23-host-stop-instance-evidence.md)。
+  与完整 Host 实例，Windows 原生解释器保留项目导入路径。v35 hosted Windows
+  清理失败由测试收尾等待原 OS 进程身份及 SLO 锁根 `samefile` 判定修复；v36 因
+  birth 不可读时 IPC 误判退出、终止前未复核 birth 被独立复审拒绝，v37 改为
+  失败关闭并复核原身份。精确冻结、独立复审与未验范围见
+  [停止与实例证据记录](changelog/2026-11-23-host-stop-instance-evidence.md)。
   Windows 原生沙箱、任意后代监管和远程 MCP 隔离仍未交付，#224 保持开放。
 
 - **Goal G1 不是自动执行模式（2026-11-22，本地候选）**：每轮手动继续、人工逐项
