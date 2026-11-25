@@ -141,6 +141,10 @@ class Observation:
     #: "两者都看"：`subtask.output_unavailable`（c3）两栏都读（空摘要 + 无引用
     #: 要同时成立），`subtask.result_quoted`（c1）只读事件，行由测试单独断言。
     subtasks: list[dict[str, Any]] = field(default_factory=list)
+    #: 辅助摘要的版本化持久化遥测；与主消息事件分开，包含同库根/子/followup。
+    auxiliary_model_calls: list[dict[str, Any]] = field(default_factory=list)
+    #: 旁路遥测损坏不改变 C5 的安全/质量判据，缓存报告单列其证据缺口。
+    auxiliary_telemetry_error: str | None = None
 
     @property
     def valid(self) -> bool:

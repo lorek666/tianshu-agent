@@ -200,6 +200,31 @@ def test_windows_weights_cover_accumulated_medium_file_estimation_errors(tmp_pat
     assert abs(costs[0] - costs[1]) < 15, costs
 
 
+def test_windows_weights_include_measured_summary_and_cache_evaluation_work(tmp_path):
+    # Complete-file intervals from Windows run 45050478841, rounded up.
+    # Include all test files changed by this cache batch and the affected
+    # evaluation assembly, rather than a subset dominated by one large file.
+    # That run was RED: these completed intervals are scheduling evidence only.
+    observed = {
+        "tests/test_cache_metrics.py": (46, 46),
+        "tests/test_summary_cache_telemetry.py": (28, 32),
+        "tests/test_eval_separation.py": (8, 153),
+        "tests/test_eval_real_tasks.py": (37, 172),
+        "tests/test_model_usage_v2.py": (73, 8),
+        "tests/test_prompt_cache.py": (100, 2),
+    }
+    files = {file: "".join(f"def test_probe_{index}(): pass\n" for index in range(count))
+             for file, (count, _) in observed.items()}
+    evidence, env, results, docs = shards(tmp_path, files)
+    assert [result.returncode for result in results] == [0, 0], [
+        (result.stdout, result.stderr) for result in results]
+    accepted = verify(evidence, env)
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+    costs = [sum(observed[file][1] for file in {node.split("::", 1)[0]
+                                               for node in doc["selected"]}) for doc in docs]
+    assert abs(costs[0] - costs[1]) < 15, costs
+
+
 def phase_source(phase, action, *, mark=""):
     prefix = "import pytest\n"
     if phase == "call":

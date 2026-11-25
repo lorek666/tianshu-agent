@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -615,7 +615,11 @@ _DELEGATION_CHILD_SUMMARY = (
 )
 
 #: 子任务脚本（G2 委派 D3）：先**尝试**写文件/出网（必须被拒），再读两份文档。
-_DELEGATION_CHILD_SCRIPT = (
+#: 离线回执显式声明夹具用量，便于真实预算链结算；不是实测 token 或长度估算。
+#: 缺回执必须保留预占，不能靠绕过父预算或提高局部限额让脚本通过。
+_DELEGATION_CHILD_SCRIPT = tuple(replace(
+    response, usage={"input_tokens": 40, "output_tokens": 8},
+) for response in (
     _tool(
         "d_write",
         "create_report",
@@ -630,7 +634,7 @@ _DELEGATION_CHILD_SCRIPT = (
     _tool("d_read1", "read_text", path="资料/产品需求.md"),
     _tool("d_read2", "read_text", path="资料/评审纪要.md"),
     _end(_DELEGATION_CHILD_SUMMARY),
-)
+))
 
 _DELEGATION_FIXTURE = {
     "资料/产品需求.md": (
@@ -652,10 +656,10 @@ _DELEGATION_REPORT = (
 )
 
 
-#: RU-D1@1.0.0：父任务派一个只读子任务调查两份本地文档，父任务汇总并带来源。
+#: RU-D1@1.0.1：父任务派一个只读子任务调查两份本地文档，父任务汇总并带来源。
 _DELEGATION = RealUserTask(
     task_id="RU-D1",
-    version="1.0.0",
+    version="1.0.1",
     category="real_user:delegation",
     title="委派调查：只读子任务读两份资料，父任务汇总并引用来源（含只读边界）",
     task=(

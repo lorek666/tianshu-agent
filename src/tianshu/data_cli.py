@@ -470,6 +470,12 @@ _AUDIT_TABLES: dict[str, dict[str, Any]] = {
         "ts": "created_at", "state": "status",
         "protection": "BEFORE DELETE 触发器 + 回放三道校验依赖",
     },
+    "summary_model_calls": {
+        "ts": None, "state": None, "protection": "摘要调用身份（追加式遥测，禁止覆盖与删除）",
+    },
+    "summary_model_usage": {
+        "ts": None, "state": None, "protection": "摘要最终 usage（追加式遥测，禁止覆盖与删除）",
+    },
     "budget_accounts": {"ts": None, "state": None, "protection": "计费事实（聚合行）"},
     "budget_limits": {"ts": None, "state": None, "protection": "计费事实"},
     "budget_counters": {
@@ -572,6 +578,14 @@ def _audit_basics(conn: sqlite3.Connection, name: str) -> tuple[int, int | None,
         row = conn.execute(
             "SELECT COUNT(*) AS n, MIN(created_at) AS lo,"
             " MAX(created_at) AS hi FROM summary_versions",
+        ).fetchone()
+    elif name == "summary_model_calls":
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, NULL AS lo, NULL AS hi FROM summary_model_calls",
+        ).fetchone()
+    elif name == "summary_model_usage":
+        row = conn.execute(
+            "SELECT COUNT(*) AS n, NULL AS lo, NULL AS hi FROM summary_model_usage",
         ).fetchone()
     elif name == "budget_accounts":
         row = conn.execute(
