@@ -86,6 +86,7 @@ def test_unsignalled_posix_group_is_unknown_after_process_lookup_error(tmp_path,
     monkeypatch.setattr(execution_admission, "os", SimpleNamespace(
         name="posix", killpg=missing_group,
     ))
+    monkeypatch.setattr(execution_admission, "signal", SimpleNamespace(SIGKILL=9))
     assert execution._stop_process(MissingGroupProcess()) == "unknown"
 
 
