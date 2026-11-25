@@ -226,3 +226,40 @@ PID 存活与创建身份分别查询，明确不是原子句柄观察；锁内�
 owned launcher 的退出不证明任意后代已退出，附着端点检查不冒充拥有 OS 句柄。
 Windows 原生沙箱、任意后代监管和远程 MCP 隔离仍未交付。
 本轮不合并、不发布、不改 #225/#227 冻结对象，不自动开始下一大项。
+
+## v39 整合冻结与最终独立复审（2026-11-25）
+
+- 整合提交 `5e33b732a2f1514cddf2395384e40874e5f9ba3f` 保留远端平行提交
+  `c1feb4185bec29d64cbaa7b4624c7ea4ccd086fb` 的 Windows 子进程环境、Host
+  readiness 身份复核与 SLO 锁根判定，并合并两侧重复的测试清理 helper。
+- 最终规范对象是 `git ls-files -z src tests scripts` 的 384 个跟踪文件。按
+  repository-relative UTF-8 路径排序后，依次更新
+  `path bytes + NUL + SHA256(complete file bytes)`，其中文件摘要是 raw 32-byte
+  digest，不能把原始文件内容直接拼入总哈希。该规范 tree SHA256 为
+  `a693e9d3c3756ab1c61b32964e8f5a8e7b3666a2ef5a3576923f4f96298bcf89`。
+  它与 v35–v37 的历史 manifest 口径不同，不互相替代。
+- 第一轮最终独立复审返回 `partial_fixed`，主控在私有探针中复现两项缺陷：测试
+  清理把“后续 birth identity 不可读”误判为原进程退出；初始 `killpg` 抛出
+  `ProcessLookupError` 时并未实际发信号，却被当作 process group 已清理。两项均
+  先新增在旧实现上失败的回归，再修复为失败关闭。
+- 测试清理现在分别处理相同 birth、birth 改变、PID 确认不存在，以及 birth 不可读
+  但 PID 仍存在。POSIX 已退出但未回收的子进程用 `WNOWAIT` 确认 exited，不释放
+  PID；未知状态绝不升级终止。process group 只有实际成功发过信号且随后观察到
+  不存在才报 exited，初始 `ProcessLookupError` 保持 unknown。
+- 生命周期、执行进程组隔离、SLO 环境/锁根三路独立读者均对最终规范树返回
+  `fixed`。报告 SHA256 分别为
+  `a4f69af0d1696784c67993d717e7657c43f80244a313dd0a13dab203dc9beba7`、
+  `29b9047f281da725bea6834f66a96339a052d53b21590c28066f1d4a701c61fa` 与
+  `22e9ae66549223ddc9ba0dd631d287c64d85a2f56f76cfcb397653508056f067`。
+- 主控另建全新私有副本，逐字节重算规范树，重放关键绿灯和三项定向变异。恢复后
+  关键回归再次通过，规范树哈希不变；回执 SHA256 为
+  `60130e11b97d37b8c77956072af7696aef2ef9ec9a31232649faef2a046dfe02`。
+- 受影响域回归、`uv lock --check`、`uv run --frozen ruff check .`、两份 diff 和
+  本地链接检查均退出 0。同一冻结代码树上的无筛选全量命令
+  `TMPDIR=/Volumes/Date/tianshu-pytest-8dGaXd TIANSHU_TEST_TMP_ROOT=/Volumes/Date/tianshu-pytest-8dGaXd uv run --frozen pytest`
+  实际退出 0；动态总计与平台/opt-in 跳过原因以日志为准，日志 SHA256 为
+  `dcc1c560a46c1b2a7cbf7a13e67027a82d4d0233c98450eb960621526faab74b`。
+  环境为 macOS arm64 / Python 3.12，不替代 Windows 原生验证。
+- 纯文档回填后已再次核对上述规范树哈希零变化。最终 head 的 hosted required
+  CI、两份 Windows shard、合成 merge 与原始报告尚待严格验收；本机 macOS 结果
+  不替代 Windows 原生验证。Windows 任意后代监管仍由 #224 跟踪。

@@ -700,7 +700,13 @@
   与完整 Host 实例，Windows 原生解释器保留项目导入路径。v35 hosted Windows
   清理失败由测试收尾等待原 OS 进程身份及 SLO 锁根 `samefile` 判定修复；v36 因
   birth 不可读时 IPC 误判退出、终止前未复核 birth 被独立复审拒绝，v37 改为
-  失败关闭并复核原身份。精确冻结、独立复审与未验范围见
+  失败关闭并复核原身份。v39 整合远端平行修复后，测试清理进一步区分相同 birth、
+  birth 改变、PID 确认不存在、POSIX 未回收 exited child 与 unknown；初始未发信号
+  的 `killpg` 失败不能当作进程组已清理。整合代码 `5e33b73` 的规范 tree SHA256 为
+  `a693e9d3c3756ab1c61b32964e8f5a8e7b3666a2ef5a3576923f4f96298bcf89`，三路独立
+  复审均为 `fixed`；同树无筛选本机全量退出 0，日志 SHA256 为
+  `dcc1c560a46c1b2a7cbf7a13e67027a82d4d0233c98450eb960621526faab74b`。精确冻结、
+  独立复审与未验范围见
   [停止与实例证据记录](changelog/2026-11-23-host-stop-instance-evidence.md)。
   Windows 原生沙箱、任意后代监管和远程 MCP 隔离仍未交付，#224 保持开放。
 
