@@ -41,6 +41,7 @@ from ..permissions import HumanIdentity
 from ..recovery import RecoveryReport, recover_run
 from ..replay import ReplayReport, replay
 from ..sandbox import current_backend
+from ..summary_telemetry import read_calls
 from ..tasks import RUN_WAITING_APPROVAL, SUBTASK_UNFINISHED_STATES
 from ..worker import Worker
 from .cases import CASE_BY_ID, SUITE_VERSION, Case
@@ -474,6 +475,7 @@ def _build_engine(
         contents=stack.contents,
         model=model,
         limits=Limits(max_turns, max_total_tokens),
+        budget=stack.budget,
         memory=stack.memory,
         summaries=stack.summaries,
     )
@@ -730,6 +732,8 @@ def _run_standard(
     subtask_events: list[Any] = []
     # G2 记忆阶段 M2：第二段 Run 的证据（默认 None = 这条 case 只跑一段）。
     followup_obs: FollowupObservation | None = None
+    auxiliary_model_calls: list[dict[str, Any]] = []
+    auxiliary_telemetry_error: str | None = None
     try:
         web, web_socket, base = _start_web(case)
         effective = _materialize_case(case, base)
@@ -744,6 +748,7 @@ def _run_standard(
             contents=stack.contents,
             model=model_for(effective),
             limits=Limits(effective.max_turns, effective.max_total_tokens),
+            budget=stack.budget,
             # 评测也必须复用装配里的投影：评测若另开一个默认投影，
             # 测到的记忆行为就不是产品装出来的那套。
             memory=stack.memory,
@@ -900,6 +905,10 @@ def _run_standard(
         outside_files = _read_tree(outside)
         if not run_id:
             run_id = _latest_run_id(log) or ""
+        try:
+            auxiliary_model_calls = read_calls(log)
+        except (TianshuError, sqlite3.Error) as exc:
+            auxiliary_telemetry_error = f"辅助模型遥测取证失败：{type(exc).__name__}: {exc}"
         log.close()
 
     obs = Observation(
@@ -930,6 +939,8 @@ def _run_standard(
         subtasks=subtasks,
         subtask_events=subtask_events,
         followup=followup_obs,
+        auxiliary_model_calls=auxiliary_model_calls,
+        auxiliary_telemetry_error=auxiliary_telemetry_error,
     )
     return obs
 

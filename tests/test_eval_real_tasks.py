@@ -542,6 +542,43 @@ def test_delegation_task_spawns_readonly_subtask_and_aggregates(real_task_suite)
         _assert_all_checks_green(obs, task)
 
 
+def test_delegation_harness_settles_declared_usage_under_the_real_parent_budget(tmp_path):
+    from tianshu.budget import BudgetLedger
+    from tianshu.events import EventLog
+
+    task = REAL_USER_TASK_BY_ID["RU-D1"]
+    case = task.to_case()
+    root = tmp_path / "delegation-budget"
+    suite = run_suite(
+        (case,), model_for=lambda selected: ScriptedModel(list(selected.script)),
+        repeat=1, workdir=root, keep=True,
+    )
+    obs = suite.observations[0]
+    assert obs.subtasks[0]["state"] == "succeeded"
+    assert obs.subtasks[0]["limits"]["max_tokens"] == 2000
+    child_id = obs.subtasks[0]["child_run_id"]
+    log = EventLog(root / case.case_id / "run0" / "events.db")
+    try:
+        budget = BudgetLedger(log)
+        account = budget.account(f"run:{child_id}")
+        assert account["parent_id"] == f"run:{obs.run_id}"
+        usage = budget.usage(f"run:{child_id}")
+        declared = [
+            response.usage for response in case.subtask_scripts["docs_reader"].script
+        ]
+        assert all(
+            set(item) >= {"input_tokens", "output_tokens"} for item in declared
+        )
+        assert usage["settled"]["tokens"] == sum(
+            item["input_tokens"] + item["output_tokens"] for item in declared
+        ) > 0
+        assert usage["settled"]["requests"] == len(declared)
+        assert usage["reserved"]["tokens"] == 0
+        assert task.version == "1.1.0"
+    finally:
+        log.close()
+
+
 _TWISTED_FIXTURE = {
     "资料/产品需求.md": "# 产品需求 v4\n\n导出必须用 XML；单次导出 30 分钟内；打印必须做。\n",
     "资料/评审纪要.md": "# 评审纪要 11-12\n\n结论：先做 XML 导出；打印必须做。\n",
