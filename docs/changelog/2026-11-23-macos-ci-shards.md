@@ -19,7 +19,9 @@ macOS Python 使用两个独立原生 runner，直接运行原 pytest，保留
 复用原 count2 整文件分片，不新增 supervisor 或 watchdog；各片私有 basetemp、
 cache_dir 和报告。上传只选择原始 `shard.json`，运行数据不进入下载树。
 
-macOS required 的 Ubuntu 汇总分别下载本 run/attempt 的两个具名 artifact，
+macOS required 的 Ubuntu 汇总分别下载本 run 的两个具名 artifact（初版按当前 attempt
+命名；2026-11-26 起改为解析每个工件的真实 attempt，见
+[重跑修复记录](2026-11-26-pr228-rerun-artifact-attempts.md)），
 严格验证实际/预期 SHA、索引、有序 collection、互斥覆盖、各阶段与完成节点，
 同时要求 Python 矩阵和原生 Rust job 成功。缺件、额外文件、错身份、
 未执行报告或上游失败/取消均不能报绿。四个 required 名称、Windows count4、

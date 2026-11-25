@@ -98,9 +98,17 @@ PYTHONPATH=scripts PYTEST_ADDOPTS="" uv run --frozen pytest -o addopts="" -q -rs
 ```
 
 `INDEX` 为0或1，其余为各 runner 临时目录内独立的绝对路径；报告上传只包含
-`shard.json`，不包含缓存或测试数据。两个具名 artifact 分别下载到汇总目录的
-`0/`、`1/` 后，以原严格 verifier 核对 count2 全集和上游 job 成功。
-保留直接 pytest 及原生 fatal handler，不新增 macOS watchdog 线程。
+`shard.json`，不包含缓存或测试数据。汇总先按 run ID、平台前缀和精确 shard 索引解析
+每个 artifact 的真实 attempt，再分别下载到汇总目录的 `0/`、`1/`，以严格 verifier
+核对 count2 全集、显式 per-shard attempt map 和上游 job 成功。保留直接 pytest 及原生
+fatal handler，不新增 macOS watchdog 线程。
+
+失败作业重跑（`gh run rerun --failed`）会递增 run attempt，但未重跑的成功 job 仍保留
+旧 attempt 的工件，新启动的汇总 job 则处于新 attempt。汇总不得用当前
+`GITHUB_RUN_ATTEMPT` 拼下载名；`scripts/ci_artifacts.py` 从 GitHub Actions API 读取本 run
+的未过期工件，为每个精确 shard 选择最新 attempt，缺失或同 attempt 重名直接失败。
+下载名与 verifier 的 attempt map 都来自同一解析结果，不放宽 SHA、run、shard、完整覆盖
+或上游成功校验。
 
 macOS 与每个 Windows worker 把 state 背压诊断写入严格报告树之外的
 `TIANSHU_SLO_DIAGNOSTICS_DIR/state-pressure/<shard>.json`。测试在首次断言前原子发布
@@ -128,9 +136,10 @@ worker 完成，任一真实退出非零使父调用失败。启动失败或可�
 自行收尾，也不构成产品进程沙箱或任意后代监管。
 
 Windows required 检查由 Ubuntu 汇总 job 承担：job 级 `always()` 保证上游失败仍进入核验，
-且汇总硬要求两个 Windows job 整体 `success`。本 run/attempt 的两个具名 artifact 分别下载到
-`0/`、`1/`，前者须恰含 `0/shard.json`、`1/shard.json`，后者须恰含
-`2/shard.json`、`3/shard.json`；不能先合并解包抹掉 runner 归属。核对实际/预期 SHA、
+且汇总硬要求两个 Windows job 整体 `success`。汇总按真实 artifact attempt 下载本 run 的
+两个具名 artifact 到 `0/`、`1/`，前者须恰含 `0/shard.json`、`1/shard.json`，后者须恰含
+`2/shard.json`、`3/shard.json`；一个 artifact 的 attempt 同时约束其中两个 worker report，
+不能先合并解包抹掉 runner 归属。核对实际/预期 SHA、
 完整有序 collection、文件分组、互斥全集、setup/call/teardown 与 finish 覆盖；各阶段按 pytest
 原语义接受通过或跳过（含 teardown skip/xfail），任一失败、漏报、重复或错归属均拒绝。
 报告中的 pytest session exit 为 0 不能覆盖包装器迟发诊断失败、上传失败或取消。两台 runner

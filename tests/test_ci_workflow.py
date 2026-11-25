@@ -244,6 +244,63 @@ def test_state_pressure_upload_regressions_are_rejected(old, new):
         _assert_state_pressure_uploads(workflow.replace(old, new, 1))
 
 
+def _assert_rerun_artifact_resolution(workflow):
+    for summary, prefix, count in (
+        ("macos_summary", "macos-pytest", 2),
+        ("windows_summary", "windows-pytest", 4),
+    ):
+        block = _job_block(workflow, summary)
+        artifact_count = count // 2 if count == 4 else count
+        assert "id: shard_artifacts" in block
+        assert "GITHUB_TOKEN: ${{ github.token }}" in block
+        assert "uv run --frozen python scripts/ci_artifacts.py" in block
+        assert '--repository "$GITHUB_REPOSITORY"' in block
+        assert '--run-id "$GITHUB_RUN_ID"' in block
+        assert f'--prefix {prefix} --indices {" ".join(map(str, range(artifact_count)))}' in block
+        if count == 4:
+            assert "--reports-per-artifact 2" in block
+        assert '--github-output "$GITHUB_OUTPUT"' in block
+        assert "--run-attempts '${{ steps.shard_artifacts.outputs.attempts }}'" in block
+        for index in range(artifact_count):
+            assert (
+                "name: ${{ steps.shard_artifacts.outputs.shard_"
+                f"{index}_name }}}}\n          path: "
+                "${{ runner.temp }}/" + ("macos" if count == 2 else "windows")
+                + f"-ci-shards/{index}"
+            ) in block
+        current_attempt_name = (
+            f"name: {prefix}-${{{{ github.run_id }}}}-${{{{ github.run_attempt }}}}-"
+        )
+        assert current_attempt_name not in block
+
+
+def test_required_summaries_resolve_actual_upstream_artifact_attempts():
+    _assert_rerun_artifact_resolution(_workflow())
+
+
+@pytest.mark.parametrize("old,new", [
+    (
+        "--run-attempts '${{ steps.shard_artifacts.outputs.attempts }}'",
+        '--run-attempt "$GITHUB_RUN_ATTEMPT"',
+    ),
+    (
+        "name: ${{ steps.shard_artifacts.outputs.shard_0_name }}",
+        "name: macos-pytest-${{ github.run_id }}-${{ github.run_attempt }}-0",
+    ),
+    (
+        "name: ${{ steps.shard_artifacts.outputs.shard_1_name }}\n"
+        "          path: ${{ runner.temp }}/windows-ci-shards/1",
+        "name: windows-pytest-${{ github.run_id }}-${{ github.run_attempt }}-1\n"
+        "          path: ${{ runner.temp }}/windows-ci-shards/1",
+    ),
+])
+def test_required_summary_rejects_current_attempt_artifact_assumption(old, new):
+    workflow = _workflow()
+    assert old in workflow
+    with pytest.raises(AssertionError):
+        _assert_rerun_artifact_resolution(workflow.replace(old, new, 1))
+
+
 def test_main_push_ci_is_not_made_cancellable_or_draft_gated():
     workflow = _workflow()
     assert re.search(r"(?m)^  push:\n    branches: \[main\]$", workflow)
@@ -313,8 +370,8 @@ def _assert_windows_worker_pairs(workflow):
     assert "--count 4 --indices 0 1 2 3" in summary
     for index in range(2):
         assert (
-            "name: windows-pytest-${{ github.run_id }}-${{ github.run_attempt }}-"
-            f"{index}\n          path: "
+            "name: ${{ steps.shard_artifacts.outputs.shard_"
+            f"{index}_name }}}}\n          path: "
             "${{ runner.temp }}/windows-ci-shards/" + str(index)
         ) in summary
 

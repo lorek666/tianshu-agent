@@ -350,10 +350,25 @@ class Shard:
         temporary.replace(self.report)
 
 
+def shard_attempts(args):
+    expected = {str(index) for index in args.indices}
+    if args.run_attempts is None:
+        require(isinstance(args.run_attempt, str) and args.run_attempt.isdigit(),
+                "invalid run attempt")
+        return {index: args.run_attempt for index in expected}
+    attempts = json.loads(args.run_attempts)
+    require(isinstance(attempts, dict) and set(attempts) == expected,
+            "run attempt map must cover exactly the requested shards")
+    require(all(type(value) is str and value.isdigit() for value in attempts.values()),
+            "run attempt map values must be decimal strings")
+    return attempts
+
+
 def verify(args):
     require(args.needs_result == "success", "CI shard jobs did not all succeed")
     require(args.count in (2, 4) and args.indices == list(range(args.count)),
             "expected every index of count 2 or 4")
+    attempts = shard_attempts(args)
     # Keep each runner's original artifact separate. A valid report from the
     # wrong runner must not be laundered by merging the two ZIPs together.
     paths = [(args.reports_root / str(index // 2) if args.count == 4
@@ -368,7 +383,7 @@ def verify(args):
         require(isinstance(doc, dict) and type(doc["version"]) is int and doc["version"] == 1,
                 "unsupported shard evidence version")
         expected = {"checkout_sha": args.sha, "github_sha": args.sha,
-                    "run_id": args.run_id, "run_attempt": args.run_attempt,
+                    "run_id": args.run_id, "run_attempt": attempts[str(index)],
                     "shard_index": index, "shard_count": args.count, "pytest_session_exit": 0}
         require(all(type(doc[key]) is type(value) and doc[key] == value
                     for key, value in expected.items()), "shard identity or pytest exit mismatch")
@@ -398,7 +413,9 @@ def main():
     parser.add_argument("--reports-root", type=Path, required=True)
     parser.add_argument("--sha", required=True)
     parser.add_argument("--run-id", required=True)
-    parser.add_argument("--run-attempt", required=True)
+    attempt = parser.add_mutually_exclusive_group(required=True)
+    attempt.add_argument("--run-attempt")
+    attempt.add_argument("--run-attempts")
     parser.add_argument("--count", type=int, required=True)
     parser.add_argument("--indices", type=int, nargs="+", required=True)
     parser.add_argument("--needs-result", required=True)

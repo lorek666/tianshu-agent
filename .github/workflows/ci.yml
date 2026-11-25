@@ -179,17 +179,26 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - run: uv python install 3.12
       - run: uv sync --frozen
+      - name: 解析 macOS 分片实际 attempt
+        id: shard_artifacts
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          uv run --frozen python scripts/ci_artifacts.py
+          --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID"
+          --prefix macos-pytest --indices 0 1 --github-output "$GITHUB_OUTPUT"
       - name: 下载 macOS 分片 0
         if: always()
         uses: actions/download-artifact@v4
         with:
-          name: macos-pytest-${{ github.run_id }}-${{ github.run_attempt }}-0
+          name: ${{ steps.shard_artifacts.outputs.shard_0_name }}
           path: ${{ runner.temp }}/macos-ci-shards/0
       - name: 下载 macOS 分片 1
         if: always()
         uses: actions/download-artifact@v4
         with:
-          name: macos-pytest-${{ github.run_id }}-${{ github.run_attempt }}-1
+          name: ${{ steps.shard_artifacts.outputs.shard_1_name }}
           path: ${{ runner.temp }}/macos-ci-shards/1
       - name: 验证 macOS 上游结论与完整覆盖
         if: always()
@@ -199,8 +208,8 @@ jobs:
         run: >-
           uv run --frozen python scripts/pytest_ci_shards.py verify
           --reports-root "$SHARD_REPORTS" --sha "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID"
-          --run-attempt "$GITHUB_RUN_ATTEMPT" --count 2 --indices 0 1
-          --needs-result "$UPSTREAM_RESULT"
+          --run-attempts '${{ steps.shard_artifacts.outputs.attempts }}'
+          --count 2 --indices 0 1 --needs-result "$UPSTREAM_RESULT"
       - name: Require complete native macOS gates
         if: always()
         env:
@@ -316,17 +325,27 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - run: uv python install 3.12
       - run: uv sync --frozen
+      - name: 解析 Windows 分片实际 attempt
+        id: shard_artifacts
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          uv run --frozen python scripts/ci_artifacts.py
+          --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID"
+          --prefix windows-pytest --indices 0 1 --reports-per-artifact 2
+          --github-output "$GITHUB_OUTPUT"
       - name: 下载分片 0
         if: always()
         uses: actions/download-artifact@v4
         with:
-          name: windows-pytest-${{ github.run_id }}-${{ github.run_attempt }}-0
+          name: ${{ steps.shard_artifacts.outputs.shard_0_name }}
           path: ${{ runner.temp }}/windows-ci-shards/0
       - name: 下载分片 1
         if: always()
         uses: actions/download-artifact@v4
         with:
-          name: windows-pytest-${{ github.run_id }}-${{ github.run_attempt }}-1
+          name: ${{ steps.shard_artifacts.outputs.shard_1_name }}
           path: ${{ runner.temp }}/windows-ci-shards/1
       - name: 验证上游结论与完整覆盖
         if: always()
@@ -338,8 +357,8 @@ jobs:
         run: >-
           uv run --frozen python scripts/pytest_ci_shards.py verify
           --reports-root "$SHARD_REPORTS" --sha "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID"
-          --run-attempt "$GITHUB_RUN_ATTEMPT" --count 4 --indices 0 1 2 3
-          --needs-result "$UPSTREAM_RESULT"
+          --run-attempts '${{ steps.shard_artifacts.outputs.attempts }}'
+          --count 4 --indices 0 1 2 3 --needs-result "$UPSTREAM_RESULT"
       - name: 验证 Windows 桌面壳门禁
         if: always()
         env:

@@ -70,8 +70,8 @@ def _assert_macos_shards(workflow):
         assert "if: always()" in download
         assert "uses: actions/download-artifact@v4" in download
         assert (
-            "name: macos-pytest-${{ github.run_id }}-${{ github.run_attempt }}-"
-            f"{index}\n          path: "
+            "name: ${{ steps.shard_artifacts.outputs.shard_"
+            f"{index}_name }}}}\n          path: "
             "${{ runner.temp }}/macos-ci-shards/" + str(index)
         ) in download
     verifier = _step(summary, "验证 macOS 上游结论与完整覆盖")
@@ -82,7 +82,8 @@ def _assert_macos_shards(workflow):
     for option in (
         'uv run --frozen python scripts/pytest_ci_shards.py verify',
         '--reports-root "$SHARD_REPORTS"', '--sha "$GITHUB_SHA"',
-        '--run-id "$GITHUB_RUN_ID"', '--run-attempt "$GITHUB_RUN_ATTEMPT"',
+        '--run-id "$GITHUB_RUN_ID"',
+        "--run-attempts '${{ steps.shard_artifacts.outputs.attempts }}'",
         '--count 2 --indices 0 1', '--needs-result "$UPSTREAM_RESULT"',
     ):
         assert option in command
@@ -101,6 +102,14 @@ def test_macos_shards_keep_native_coverage_identity_and_strict_required_summary(
     ('-o cache_dir="$CI_SHARD_ROOT-cache"', ""),
     ("if-no-files-found: error", "if-no-files-found: warn"),
     ("macos-ci-shards/1", "macos-ci-shards/0"),
+    (
+        "name: ${{ steps.shard_artifacts.outputs.shard_0_name }}",
+        "name: macos-pytest-${{ github.run_id }}-${{ github.run_attempt }}-0",
+    ),
+    (
+        "--run-attempts '${{ steps.shard_artifacts.outputs.attempts }}'",
+        '--run-attempt "$GITHUB_RUN_ATTEMPT"',
+    ),
     ("--count 2 --indices 0 1", "--count 2 --indices 0"),
     ('--needs-result "$UPSTREAM_RESULT"', '--needs-result success'),
     ("timeout-minutes: 25", "timeout-minutes: 30"),
@@ -184,6 +193,10 @@ def test_private_roots_and_native_pytest(pytestconfig):
     prefix = "uv run --frozen python scripts/pytest_ci_shards.py"
     assert verify.startswith(prefix)
     verify = verify.replace(prefix, f'"{sys.executable}" "{SCRIPTS / "pytest_ci_shards.py"}"', 1)
+    attempts = {str(index): doc["run_attempt"] for index, doc in enumerate(documents)}
+    verify = verify.replace(
+        "${{ steps.shard_artifacts.outputs.attempts }}", json.dumps(attempts),
+    )
     assert first_env is not None
     env = {**first_env, "SHARD_REPORTS": str(root), "UPSTREAM_RESULT": "success"}
 

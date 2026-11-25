@@ -89,9 +89,11 @@ def shards(tmp_path, files=None, extra=(), extra_env=None, count=2):
     return evidence, first_env, results, documents
 
 
-def verify(evidence, env, *, needs="success", extra=(), count=2):
+def verify(evidence, env, *, needs="success", extra=(), count=2, attempts=None):
+    identity = (["--run-attempts", json.dumps(attempts)] if attempts is not None
+                else ["--run-attempt", ATTEMPT])
     return run([sys.executable, str(VERIFIER), "verify", "--reports-root", str(evidence),
-                "--sha", env["GITHUB_SHA"], "--run-id", RUN_ID, "--run-attempt", ATTEMPT,
+                "--sha", env["GITHUB_SHA"], "--run-id", RUN_ID, *identity,
                 "--count", str(count), "--indices", *map(str, range(count)),
                 "--needs-result", needs, *extra],
                evidence.parent, env)
@@ -469,6 +471,51 @@ def test_verifier_rejects_incomplete_or_mismatched_real_evidence(
         report_path(evidence, 0, count).write_text("{", encoding="utf-8")
     result = verify(evidence, env, count=count)
     assert result.returncode == 1, result.stdout + result.stderr
+
+
+def test_verifier_accepts_explicit_mixed_attempts_after_failed_job_rerun(
+    complete_evidence, tmp_path,
+):
+    env, original = complete_evidence
+    docs = deepcopy(original)
+    docs[0]["run_attempt"] = "1"
+    attempts = {str(index): doc["run_attempt"] for index, doc in enumerate(docs)}
+    for index, doc in enumerate(docs):
+        path = report_path(tmp_path, index, len(docs))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(doc), encoding="utf-8")
+    accepted = verify(tmp_path, env, count=len(docs), attempts=attempts)
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+    assert verify(tmp_path, env, count=len(docs)).returncode == 1
+
+
+@pytest.mark.parametrize("mutation", ["missing", "extra", "non-string", "empty", "both"])
+def test_verifier_rejects_incomplete_or_ambiguous_attempt_maps(
+    complete_evidence, tmp_path, mutation,
+):
+    env, docs = complete_evidence
+    for index, doc in enumerate(docs):
+        path = report_path(tmp_path, index, len(docs))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(doc), encoding="utf-8")
+    attempts = {str(index): ATTEMPT for index in range(len(docs))}
+    extra = []
+    if mutation == "missing":
+        attempts.pop("0")
+    elif mutation == "extra":
+        attempts["9"] = ATTEMPT
+    elif mutation == "non-string":
+        attempts["0"] = int(ATTEMPT)
+    elif mutation == "empty":
+        attempts = {}
+    else:
+        extra = ["--run-attempt", ATTEMPT]
+    result = run([sys.executable, str(VERIFIER), "verify", "--reports-root", str(tmp_path),
+                  "--sha", env["GITHUB_SHA"], "--run-id", RUN_ID,
+                  "--run-attempts", json.dumps(attempts), *extra,
+                  "--count", str(len(docs)), "--indices", *map(str, range(len(docs))),
+                  "--needs-result", "success"], tmp_path.parent, env)
+    assert result.returncode != 0, result.stdout + result.stderr
 
 
 @pytest.mark.parametrize("needs", ["failure", "cancelled", "skipped"])

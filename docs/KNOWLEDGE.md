@@ -188,6 +188,12 @@
   在首个失败谓词后硬退，验证日志不完整时 JSON 仍可读取。两个平台均以 `always()` 上传，
   工件名绑定 run/attempt/shard，缺件只告警且不覆盖原退出码。没有改 runner 数量、并发、
   阈值、25 分钟上限、60 秒栈诊断或四个 required 名称；见[增量记录](changelog/2026-11-26-pr229-state-pressure-evidence.md)。
+- **失败作业重跑不能沿用汇总 job 的当前 attempt（2026-11-26）**：`--failed` 只重跑
+  失败 job 时，成功分片仍保留旧 attempt 工件，汇总却已进入新 attempt。macOS/Windows
+  汇总改为从本 run API 为每个精确 shard 解析最新未过期工件，并用同一结果生成下载名和
+  per-shard attempt map；Windows 一个 artifact 的 attempt 同时约束两个 worker report。
+  严格 verifier 仍拒绝缺失、重复、错 SHA/run/shard、漏阶段和上游非成功，不放宽拓扑或时限；
+  见[增量记录](changelog/2026-11-26-pr228-rerun-artifact-attempts.md)。
 
 ### 收尾轮实现决策（2026-11-11，PR #66–#72）
 
