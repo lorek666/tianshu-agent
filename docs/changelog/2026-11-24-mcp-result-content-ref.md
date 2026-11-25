@@ -43,3 +43,11 @@ f0ccf88cfee6b3ac25f81f968d846ffd101d6a13554b0a4108ac8990db1de892
 - 最终校准树独立第二读者复核为 **已修**：逐文件重算与真实完整区间一致，取消分片只使用全部选中节点均完成的文件，剩余缺失项回退完整 run；PR head/base/合成 merge 身份与知识库条目连续性也经第二次只读复核确认。完整 code/test tree SHA256：`6ff6a699bcbe907afbb6e892df7c140aea75d5c77f8ef492e9a910afec62fa18`。
 - 最终树本机 mac-arm64 `uv run --frozen pytest`：`5191 passed, 15 skipped in 903.30s`，退出码 0；定向分片测试 `77 passed`，锁文件、Ruff、diff 与文档相对链接门禁通过。
 - 校准提交的 [run 45345940207](https://github.com/lorek666/tianshu-agent/actions/runs/45345940207) 已完成且 `conclusion=success`，所有 Python、Rust 与 UI 作业成功。PR head `3f334c89c50e86f9a3697e1d318b92d53156031c`、base `c5fcff0715a02a89704581ffdc0a15c5789705f6` 的合成 merge/checkout 为 `6802dfff254c43ee6f5809338ae3f2d182290a93`，tree 与 head 相同。重新下载的两份 Windows 原始报告均绑定该 SHA，完整有序 collection 互斥全集、逐阶段通过/跳过与 session exit=0 已复核；没有失败、漏报或重复。
+
+## Windows 分片超时最终校准（2026-11-24）
+
+- 文档 head `228e13ffc78e2f9a5f24ca376556e692c7719418` 的 [run 45350527384](https://github.com/lorek666/tianshu-agent/actions/runs/45350527384) 是超时红：Windows shard0 在 pytest 99%、原有 25 分钟上限处被取消，未进入 sessionfinish，也未产出 `shard.json`；shard1 及其余 Python、Rust、UI 作业成功，Windows required 汇总按缺件失败。该轮不能作为通过证据。
+- 最终校准 head `3153e3d93c447c4dd6d3845246e3bd65576d6806`、tree `d000f5bc0420ec72e966e69c0a33f4097bf1be6d`，base 仍为 `c5fcff0715a02a89704581ffdc0a15c5789705f6`。七个文件权重只取成功轮与取消轮中完整文件区间的较大值；取消轮里未完成或未开始的文件不参与校准。
+- 最终 head 的 [run 45360540032](https://github.com/lorek666/tianshu-agent/actions/runs/45360540032) 已 `conclusion=success`，Python 两分片与 required 汇总、macOS/Ubuntu Python、macOS/Windows Rust、UI 作业全部成功。合成 merge/checkout SHA 为 `76c32c3394de3ee9007ac908c32139f15bd811f3`，双亲为上述 head 与 base，合成提交 tree 与 PR head tree 一致。
+- 重新下载的两份 Windows 原始报告都绑定 `checkout_sha = github_sha = 76c32c3394de3ee9007ac908c32139f15bd811f3`、`run_id = 45360540032`、`run_attempt = 1`、`pytest_session_exit = 0`。本地 verifier 输出 `Verified 5207 collected nodes across two Windows shards`：完整有序 collection 互斥全集，shard0/shard1 分别完成 2604/2603 个选中节点，逐阶段报告 7736/7620 条，无失败、漏报或重复。
+- 未删测试、未提高 25 分钟上限、未忽略缺件、未改变 wrapper/fatal handler/60 秒线程栈诊断；两片设计与原有平衡断言保持不变。后续纯文档回填仍需 required CI 绑定最终文档提交。
