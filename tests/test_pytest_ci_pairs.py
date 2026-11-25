@@ -132,6 +132,7 @@ def test_barrier(tmp_path, pytestconfig):
         capture_output=True, text=True, check=True)
     data = dict(pid=os.getpid(), parent=os.getppid(),
         shard=pytestconfig.getoption("--ci-shard-index"),
+        shard_env=os.environ.get("TIANSHU_CI_SHARD_INDEX"),
         checkout=str(pytestconfig.rootpath),
         basetemp=str(pytestconfig._tmp_path_factory.getbasetemp()),
         cache=str(pytestconfig.cache._cachedir),
@@ -190,6 +191,7 @@ def test_barrier(tmp_path, pytestconfig):
 
         assert len({item["pid"] for item in observations}) == 4
         assert {item["shard"] for item in observations} == {0, 1, 2, 3}
+        assert all(item["shard_env"] == str(item["shard"]) for item in observations)
         assert parents_running
         for field in ("basetemp", "cache", "lock", "registry", "authority"):
             paths = [Path(item[field]).resolve() for item in observations]

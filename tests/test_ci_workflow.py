@@ -229,6 +229,20 @@ def _assert_windows_worker_pairs(workflow):
     assert "continue-on-error" not in workers + summary
     assert "CI_PAIR_ROOT: ${{ runner.temp }}/windows-ci/reports" in workers
     assert (
+        "TIANSHU_SLO_DIAGNOSTICS_DIR: ${{ runner.temp }}/windows-ci/slo-diagnostics"
+        in workers
+    )
+    assert (
+        "      - name: 上传 Windows SLO 原始样本与失败诊断\n"
+        "        if: always()\n"
+        "        uses: actions/upload-artifact@v4\n"
+        "        with:\n"
+        "          name: windows-slo-${{ github.run_id }}-${{ github.run_attempt }}-"
+        "${{ matrix.shard }}\n"
+        "          path: ${{ runner.temp }}/windows-ci/slo-diagnostics\n"
+        "          if-no-files-found: warn\n"
+    ) in workers
+    assert (
         "uv run --frozen python scripts/pytest_with_stacks.py\n"
         "          --ci-pair-index=${{ matrix.shard }} --ci-pair-root=\"$CI_PAIR_ROOT\""
     ) in workers
@@ -255,6 +269,14 @@ def test_windows_pairs_preserve_runner_identity_and_required_gates():
     ("shard: [0, 1]", "shard: [0, 1, 2, 3]"),
     ("timeout-minutes: 25", "timeout-minutes: 30"),
     ("--stack-timeout=60", "--stack-timeout=0"),
+    (
+        "TIANSHU_SLO_DIAGNOSTICS_DIR: ${{ runner.temp }}/windows-ci/slo-diagnostics",
+        'TIANSHU_SLO_DIAGNOSTICS_DIR: ""',
+    ),
+    (
+        "      - name: 上传 Windows SLO 原始样本与失败诊断\n        if: always()",
+        "      - name: 上传 Windows SLO 原始样本与失败诊断\n        if: success()",
+    ),
 ])
 def test_windows_pair_guard_rejects_weakened_workflow(old, new):
     workflow = _workflow()

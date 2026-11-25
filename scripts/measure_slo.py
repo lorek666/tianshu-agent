@@ -2907,6 +2907,7 @@ def run_all_benchmarks(
     smoke: bool = False,
     thresholds_path: Path = DEFAULT_THRESHOLDS_PATH,
     schema_path: Path = DEFAULT_SCHEMA_PATH,
+    samples_path: Path | None = None,
 ) -> tuple[dict[str, Any], int]:
     thresholds, thresholds_sha, defs = load_and_validate_thresholds(
         thresholds_path, schema_path=schema_path
@@ -2988,6 +2989,20 @@ def run_all_benchmarks(
         )
         for name, vals in raw_samples_map.items()
     }
+    measured_at = dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    environment = collect_hardware_metadata()
+    if samples_path is not None:
+        samples_report = {
+            "schema_version": "slo-samples-v1",
+            "measured_at": measured_at,
+            "environment": environment,
+            "samples": raw_samples_map,
+        }
+        _write_bytes_exact(
+            samples_path,
+            (json.dumps(samples_report, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+            .encode("utf-8"),
+        )
 
     raw_report: dict[str, Any] = {
         "schema_version": "slo-report-v1",
@@ -2995,8 +3010,8 @@ def run_all_benchmarks(
         "gate_mode": "smoke" if smoke else "release",
         "policy_version": int(thresholds["policy_version"]),
         "thresholds_sha256": thresholds_sha,
-        "measured_at": dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "environment": collect_hardware_metadata(),
+        "measured_at": measured_at,
+        "environment": environment,
         "dataset": dataset_info,
         "metrics": metrics_summary,
         "slow_subscriber": slow_sub_info,
@@ -3055,6 +3070,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="写出脱敏后的结构化 Markdown 报告路径",
     )
+    parser.add_argument(
+        "--output-samples-json",
+        type=Path,
+        default=None,
+        help="额外写出未聚合的数值样本，供 CI 性能失败诊断",
+    )
     # 内部受控子进程参数（--data-root 与 host.run_host 的子进程约定保持一致）
     parser.add_argument("--_child-role", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--data-root", default=None, help=argparse.SUPPRESS)
@@ -3085,6 +3106,7 @@ def main(argv: list[str] | None = None) -> int:
             smoke=args.smoke,
             thresholds_path=args.thresholds,
             schema_path=args.schema,
+            samples_path=args.output_samples_json,
         )
     except SloConfigError as exc:
         print(f"[slo-gate] 配置或契约错误：{exc}", file=sys.stderr)

@@ -240,6 +240,7 @@ jobs:
         env:
           PYTEST_ADDOPTS: ""
           CI_PAIR_ROOT: ${{ runner.temp }}/windows-ci/reports
+          TIANSHU_SLO_DIAGNOSTICS_DIR: ${{ runner.temp }}/windows-ci/slo-diagnostics
         # 保留原 wrapper/fatal handler/60秒 Python 线程栈；C 扩展长期持有 GIL
         # 时仍不能保证采样。此 step 唯一直接命令保留 wrapper 最终退出码。
         run: >-
@@ -254,6 +255,13 @@ jobs:
           name: windows-pytest-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
           path: ${{ runner.temp }}/windows-ci/reports
           if-no-files-found: error
+      - name: 上传 Windows SLO 原始样本与失败诊断
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-slo-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/windows-ci/slo-diagnostics
+          if-no-files-found: warn
       - name: 上传恢复 T1 Windows 原生证据
         if: always() && matrix.shard == 0
         uses: actions/upload-artifact@v4

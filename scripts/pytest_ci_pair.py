@@ -56,6 +56,8 @@ def run_pair(index: int, root: Path, pytest_args: list[str]) -> int:
     children: list[subprocess.Popen] = []
     try:
         for worker in range(index * 2, index * 2 + 2):
+            worker_env = dict(env)
+            worker_env["TIANSHU_CI_SHARD_INDEX"] = str(worker)
             children.append(subprocess.Popen([
                 sys.executable, str(scripts / "pytest_with_stacks.py"),
                 *pytest_args, "-p", "pytest_ci_shards",
@@ -63,7 +65,7 @@ def run_pair(index: int, root: Path, pytest_args: list[str]) -> int:
                 f"--ci-shard-report={root / str(worker) / 'shard.json'}",
                 f"--basetemp={runtime / str(worker)}",
                 "-o", f"cache_dir={runtime / ('cache-' + str(worker))}",
-            ], env=env))
+            ], env=worker_env))
         codes = [child.wait() for child in children]
         return next((code if code > 0 else 1 for code in codes if code), 0)
     finally:
