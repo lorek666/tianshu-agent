@@ -47,7 +47,7 @@ def test_native_windows_test_interpreter_keeps_project_imports(monkeypatch):
 
 
 def test_shutdown_daemon_and_wait_waits_for_observed_process_exit(tmp_path, monkeypatch):
-    from tianshu import daemon, execution_admission
+    from tianshu import daemon, execution_admission, host, leases
 
     lock_path = tmp_path / "daemon.lock"
     lock_path.write_text(json.dumps({"instance_id": "daemon-a", "pid": 123}), encoding="utf-8")
@@ -59,6 +59,8 @@ def test_shutdown_daemon_and_wait_waits_for_observed_process_exit(tmp_path, monk
         return True
 
     monkeypatch.setattr(daemon, "request_shutdown", request_shutdown)
+    monkeypatch.setattr(leases, "pid_alive", lambda _pid: True)
+    monkeypatch.setattr(host, "_unreaped_child_state", lambda _pid: "running")
     births = iter(["birth-a", "birth-a", "birth-b"])
     monkeypatch.setattr(
         execution_admission, "process_birth_identity", lambda _pid: next(births),
@@ -73,7 +75,7 @@ def test_shutdown_daemon_and_wait_waits_for_observed_process_exit(tmp_path, monk
 
 
 def test_shutdown_daemon_and_wait_times_out_without_signalling(tmp_path, monkeypatch):
-    from tianshu import daemon, execution_admission
+    from tianshu import daemon, execution_admission, host, leases
 
     lock_path = tmp_path / "daemon.lock"
     lock_path.write_text(json.dumps({"instance_id": "daemon-a", "pid": 123}), encoding="utf-8")
@@ -84,6 +86,8 @@ def test_shutdown_daemon_and_wait_times_out_without_signalling(tmp_path, monkeyp
     monkeypatch.setattr(
         execution_admission, "process_birth_identity", lambda _pid: "birth-a",
     )
+    monkeypatch.setattr(leases, "pid_alive", lambda _pid: True)
+    monkeypatch.setattr(host, "_unreaped_child_state", lambda _pid: "running")
     monkeypatch.setattr(
         support.threading, "Event",
         lambda: pytest.fail("an expired cleanup deadline must not keep waiting"),
@@ -837,6 +841,7 @@ def test_stop_fails_closed_when_replacement_appears_during_forced_cleanup(
     assert lock_path.read_bytes() == replacement
 
 
+@pytest.mark.skipif(os.name == "nt", reason="native POSIX WNOWAIT child observation")
 def test_owned_termination_detects_an_unreaped_exit_without_signalling(
     tmp_path, monkeypatch, held_child,
 ):
@@ -856,6 +861,29 @@ def test_owned_termination_detects_an_unreaped_exit_without_signalling(
     monkeypatch.setattr(host.os, "kill", forbidden_signal)
     assert supervisor._terminate(held_child) == {"outcome": "not_running"}
     assert held_child.wait(timeout=10) == 0
+
+
+def test_owned_termination_treats_waitid_without_status_as_running(monkeypatch):
+    signals = []
+    waitid_os = SimpleNamespace(
+        name="posix",
+        P_PID=getattr(os, "P_PID", 1),
+        WEXITED=getattr(os, "WEXITED", 4),
+        WNOHANG=getattr(os, "WNOHANG", 8),
+        WNOWAIT=getattr(os, "WNOWAIT", 0),
+        waitid=lambda *args: None,
+        kill=lambda pid, sig: signals.append((pid, sig)),
+    )
+    monkeypatch.setattr(host, "os", waitid_os)
+
+    class RunningProcess:
+        pid = 123
+        returncode = None
+
+    assert host.DaemonSupervisor._terminate(RunningProcess()) == {
+        "outcome": "signal_sent",
+    }
+    assert signals == [(123, host.signal.SIGTERM)]
 
 
 def test_windows_owned_termination_uses_the_retained_process_handle(monkeypatch):
@@ -2920,13 +2948,21 @@ raise SystemExit(host.run_host(
             daemon_proc.wait(timeout=10)
             deadline = time.monotonic() + 30
             while True:
-                current_lock = daemon.lock_path(root).read_bytes()
-                if current_lock != original_lock and ipc.probe(root, timeout=0.1):
+                try:
+                    current_lock = daemon.lock_path(root).read_bytes()
+                except FileNotFoundError:
+                    current_lock = None
+                if (
+                    current_lock is not None
+                    and current_lock != original_lock
+                    and ipc.probe(root, timeout=0.1)
+                ):
                     break
                 assert proc.poll() is None and time.monotonic() < deadline, (
                     "monitor did not restart the Daemon after an unconfirmed attached stop"
                 )
                 threading.Event().wait(0.05)
+            assert current_lock is not None
             new_owner = json.loads(current_lock)
             deadline = time.monotonic() + 10
             while not (root / "spawn-ready").exists():

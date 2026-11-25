@@ -1193,7 +1193,7 @@ def test_unlink_lock_does_not_retry_posix_permission_error(
         attempts += 1
         raise PermissionError(13, "permission denied", str(lock_path))
 
-    monkeypatch.setattr(module.os, "name", "posix")
+    monkeypatch.setattr(module, "os", SimpleNamespace(name="posix"))
     monkeypatch.setattr(Path, "unlink", denied)
 
     module._unlink_lock(lock)

@@ -8,6 +8,7 @@ import sys
 from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -53,7 +54,9 @@ def test_reaped_posix_leader_is_never_signalled_by_reusable_group_id(tmp_path, m
     def forbidden_group_signal(*args, **kwargs):
         pytest.fail("a reaped leader's numeric PGID must never be signalled")
 
-    monkeypatch.setattr(execution_admission.os, "killpg", forbidden_group_signal)
+    monkeypatch.setattr(execution_admission, "os", SimpleNamespace(
+        name="posix", killpg=forbidden_group_signal,
+    ))
     assert execution._stop_process(ReapedProcess()) == "unknown"
 
 
@@ -80,8 +83,9 @@ def test_unsignalled_posix_group_is_unknown_after_process_lookup_error(tmp_path,
     def missing_group(*args, **kwargs):
         raise ProcessLookupError
 
-    monkeypatch.setattr(execution_admission.os, "name", "posix")
-    monkeypatch.setattr(execution_admission.os, "killpg", missing_group)
+    monkeypatch.setattr(execution_admission, "os", SimpleNamespace(
+        name="posix", killpg=missing_group,
+    ))
     assert execution._stop_process(MissingGroupProcess()) == "unknown"
 
 

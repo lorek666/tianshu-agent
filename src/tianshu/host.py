@@ -78,7 +78,7 @@ def _unreaped_child_state(pid: int) -> str:
     try:
         if hasattr(os, "waitid"):
             info = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
-            return "running" if info.si_pid == 0 else "exited"
+            return "running" if info is None or info.si_pid == 0 else "exited"
         if sys.platform != "darwin":
             return "unknown"
         import ctypes

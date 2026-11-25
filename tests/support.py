@@ -82,8 +82,8 @@ def shutdown_daemon_and_wait(
         if birth is None:
             return False
         current = process_birth_identity(pid)
-        if current is not None:
-            return current != birth
+        if current is not None and current != birth:
+            return True
         if not pid_alive(pid):
             return True
         if os.name == "posix":

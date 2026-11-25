@@ -15,8 +15,10 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
+import support
 from support import shutdown_daemon_and_wait
 
 from tianshu import daemon, host, ipc
@@ -456,7 +458,7 @@ def test_late_real_host_cannot_replace_the_running_owner_or_stop_its_daemon() ->
 
 
 def test_daemon_cleanup_waits_for_original_os_process(monkeypatch, tmp_path: Path) -> None:
-    from tianshu import execution_admission
+    from tianshu import execution_admission, host, leases
 
     identity = {"pid": 12345, "instance_id": "daemon-under-test"}
     lock_path = daemon.lock_path(tmp_path)
@@ -470,6 +472,8 @@ def test_daemon_cleanup_waits_for_original_os_process(monkeypatch, tmp_path: Pat
 
     monkeypatch.setattr(daemon, "request_shutdown", request_shutdown)
     monkeypatch.setattr(execution_admission, "process_birth_identity", lambda pid: "same-birth")
+    monkeypatch.setattr(leases, "pid_alive", lambda pid: True)
+    monkeypatch.setattr(host, "_unreaped_child_state", lambda pid: "running")
     with pytest.raises(AssertionError, match="原 Daemon OS 进程未退出"):
         shutdown_daemon_and_wait(tmp_path, timeout=0.01)
     assert requests == [(tmp_path, {
@@ -547,8 +551,9 @@ def test_daemon_cleanup_accepts_confirmed_pid_absence_when_birth_is_unreadable(
     shutdown_daemon_and_wait(tmp_path, timeout=0)
 
 
+@pytest.mark.parametrize("later_birth", [None, "original-birth"])
 def test_daemon_cleanup_accepts_unreaped_exited_child(
-    monkeypatch, tmp_path: Path,
+    monkeypatch, tmp_path: Path, later_birth,
 ) -> None:
     from tianshu import execution_admission, host, leases
 
@@ -558,10 +563,11 @@ def test_daemon_cleanup_accepts_unreaped_exited_child(
         json.dumps({"pid": 12345, "instance_id": "daemon-under-test"}),
         encoding="utf-8",
     )
-    births = iter(["original-birth", None])
+    births = iter(["original-birth", later_birth])
     monkeypatch.setattr(daemon, "request_shutdown", lambda *args, **kwargs: True)
     monkeypatch.setattr(leases, "pid_alive", lambda pid: True)
     monkeypatch.setattr(host, "_unreaped_child_state", lambda pid: "exited")
+    monkeypatch.setattr(support, "os", SimpleNamespace(name="posix"))
     monkeypatch.setattr(
         execution_admission, "process_birth_identity", lambda pid: next(births),
     )
@@ -570,7 +576,7 @@ def test_daemon_cleanup_accepts_unreaped_exited_child(
 
 
 def test_daemon_cleanup_does_not_terminate_reused_pid(monkeypatch, tmp_path: Path) -> None:
-    from tianshu import execution_admission
+    from tianshu import execution_admission, host, leases
 
     lock_path = daemon.lock_path(tmp_path)
     lock_path.parent.mkdir(parents=True)
@@ -581,6 +587,8 @@ def test_daemon_cleanup_does_not_terminate_reused_pid(monkeypatch, tmp_path: Pat
     identities = iter(["original-birth", "original-birth", "reused-birth"])
     terminated = []
     monkeypatch.setattr(daemon, "request_shutdown", lambda *args, **kwargs: True)
+    monkeypatch.setattr(leases, "pid_alive", lambda pid: True)
+    monkeypatch.setattr(host, "_unreaped_child_state", lambda pid: "running")
     monkeypatch.setattr(
         execution_admission, "process_birth_identity", lambda pid: next(identities),
     )
