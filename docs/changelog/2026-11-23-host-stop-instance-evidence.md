@@ -263,3 +263,44 @@ Windows 原生沙箱、任意后代监管和远程 MCP 隔离仍未交付。
 - 纯文档回填后已再次核对上述规范树哈希零变化。最终 head 的 hosted required
   CI、两份 Windows shard、合成 merge 与原始报告尚待严格验收；本机 macOS 结果
   不替代 Windows 原生验证。Windows 任意后代监管仍由 #224 跟踪。
+
+## v40 hosted CI 拒绝与跨平台收尾（2026-11-25）
+
+v39 head `4133bbd0c8a52029c392dc82577f91e6bd148d50` 的 run
+[45553583330](https://github.com/lorek666/tianshu-agent/actions/runs/45553583330)
+为真实 `completed/failure`。四份 pytest ZIP 均按 GitHub artifact `digest` 核验；
+权威原始报告记录六项 Windows 失败与七项 Ubuntu 失败，Windows required 汇总失败
+是上游分片失败的派生结果，不另算产品缺陷。完整失败日志 SHA256 为
+`5abcf08c1b013564c978748048de4a192479c3d603e1b538d3d577929d2fd7d6`。
+
+Windows 六项失败均在测试可移植性或重启竞态观测：两项直接访问 Windows 不存在的
+`os.killpg`；一项测试清理助手在 Windows 无法走 POSIX 分支；一项全局修改
+`os.name` 使 pathlib 尝试实例化 `PosixPath`；一项原生 POSIX `WNOWAIT` 子进程测试
+在 Windows 等待真实子进程退出；一项 attached-stop 重启测试把锁文件短暂缺失
+当成终态。修复只替换模块局部 `os`，为原生 POSIX 用例加诚实的 Windows skip，
+并把锁缺失保留为有截止时间和 owner 身份断言的重启退避状态。
+
+Ubuntu 七项失败有共同产品根因：Linux 的
+`os.waitid(P_PID, pid, WEXITED|WNOHANG|WNOWAIT)` 对仍运行的子进程返回 `None`，
+不是 `si_pid == 0` 的 `siginfo_t`。旧实现访问 `info.si_pid` 后把 `AttributeError`
+归为 unknown，监督器因此拒绝向真正运行的自有 Daemon 发信号。私有 Linux 容器
+复现旧行为为失败，修复后同选集通过；两份输出 SHA256 分别为
+`a5d2cbbfd5ca1613bbcb03773f851ecf8aa72f91a163051ca039a7cf1baee9b4` 与
+`ae65f5b3cff5e198e78103ef5757adba29b6ed2f2a1fb4b22fe38fc80eecb493`。
+测试清理另修正相同 birth identity 的 Linux zombie：PID 仍存在不等于仍运行，
+须继续用 `WNOWAIT` 观察已退出但未回收的子进程。
+
+修复提交 `dbeed810899d3692e5b93e48b17d29d79a2971a8` 的规范代码树为 384 个
+`src/`、`tests/`、`scripts/` 跟踪文件，tree SHA256 为
+`ff87e28cf9ee45d9623a7b4648a2c828b0409c7f6c11d04fcb7918257100e3bf`。
+恢复旧 `waitid` 解引用与旧清理排序的两项私有变异均实际退出 1，日志 SHA256 为
+`1187a5dd0f5ebdbe2d3a5e9a3231dc160665b955468e9b690a1fb2c3c5f43706` 与
+`63fbe4be2bbc1874e449319765a4cd8e8e825489e76add015d89341829696ae7`。
+受影响域回归、lock、Ruff 与 diff 门禁退出 0，域日志 SHA256 为
+`6b844a1cdf198df044ba7ef420743f87bd8216ebc48b21411745ec43f5e760d0`。
+同一代码树的无筛选全量退出 0，日志 SHA256 为
+`6066abc7cba50e12291c6eda27647bb32f98ba2a8fd70959a617eb9f15b5caee`；
+动态总计与跳过原因以日志为准。独立第二读者对同一规范树返回 `fixed`，另跑
+定向用例、真实子进程探针与两项反向变异，未发现阻断问题；复审回执 SHA256 为
+`e272b116f6e795d37e576bccfc30c26736aed21ac6441129d5552dc326c0c3f5`。
+新 head 的 hosted required CI 尚待完成。

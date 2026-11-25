@@ -422,6 +422,15 @@
   base interpreter 时也必须保留调用方 `PYTHONPATH`，否则 `tests/_startup` 不加载，
   子进程失去维护锁根隔离，SLO 诊断应拒绝启动而不是放宽检查。
 
+- **`WNOWAIT` 没有状态代表子进程仍运行，相同 birth 也不排除 zombie（2026-11-25）**：
+  Linux `os.waitid(P_PID, pid, WEXITED|WNOHANG|WNOWAIT)` 对运行中子进程返回
+  `None`，不是 `si_pid == 0` 的结构体；旧解引用把真实运行误判为 unknown，导致
+  Host 不肯终止自有 Daemon。清理 helper 还必须区分“PID 存在”和“进程仍运行”：
+  Linux zombie 保留原 birth identity 且 `kill(pid, 0)` 仍成功，只有 `WNOWAIT`
+  能确认它已退出。Windows 测试模拟 POSIX 分支时只替换模块局部 `os`，不修改
+  进程全局 `os.name`；原生 POSIX 用例在 Windows 明确 skip。见
+  [PR #228 跟进修复](changelog/2026-11-24-pr228-windows-followup.md)。
+
 - **未就绪失败也要保存精确锁证据（2026-11-25）**：子进程可能在认证就绪前已写入
   `daemon.lock`。Host 须把 PID 匹配的启动期锁字节与已认证就绪快照分开保存；
   重试必须先完成旧 owned 进程等待和精确锁清理。残留锁无法证明属于该失败子进程时
