@@ -494,8 +494,6 @@ class PreparedExecution:
             if proc.returncode is None:
                 try:
                     os.killpg(proc.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    group_identity_safe = True
                 except OSError:
                     pass
                 else:

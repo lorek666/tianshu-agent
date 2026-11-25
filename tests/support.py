@@ -63,6 +63,7 @@ def shutdown_daemon_and_wait(
     """等待原 Daemon OS 进程退出，避免 Windows 日志句柄阻止临时目录清理。"""
     from tianshu import daemon
     from tianshu.execution_admission import process_birth_identity
+    from tianshu.leases import pid_alive
 
     lock_path = daemon.lock_path(data_root)
     try:
@@ -74,10 +75,22 @@ def shutdown_daemon_and_wait(
     birth = process_birth_identity(pid)
 
     def same_process() -> bool:
-        return birth is not None and process_birth_identity(pid) == birth
+        current = process_birth_identity(pid)
+        return birth is not None and current is not None and current == birth
 
     def exited() -> bool:
-        return birth is not None and not same_process()
+        if birth is None:
+            return False
+        current = process_birth_identity(pid)
+        if current is not None:
+            return current != birth
+        if not pid_alive(pid):
+            return True
+        if os.name == "posix":
+            from tianshu.host import _unreaped_child_state
+
+            return _unreaped_child_state(pid) == "exited"
+        return False
 
     def wait_until_exited() -> bool:
         deadline = time.monotonic() + timeout

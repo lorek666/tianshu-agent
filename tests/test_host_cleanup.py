@@ -499,6 +499,76 @@ def test_daemon_cleanup_fails_closed_without_process_birth_identity(
         shutdown_daemon_and_wait(tmp_path, timeout=0)
 
 
+def test_daemon_cleanup_fails_closed_when_birth_becomes_unreadable(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    from tianshu import execution_admission, leases
+
+    lock_path = daemon.lock_path(tmp_path)
+    lock_path.parent.mkdir(parents=True)
+    lock_path.write_text(
+        json.dumps({"pid": 12345, "instance_id": "daemon-under-test"}),
+        encoding="utf-8",
+    )
+    births = iter(["original-birth", None, None])
+    terminated = []
+    monkeypatch.setattr(daemon, "request_shutdown", lambda *args, **kwargs: True)
+    monkeypatch.setattr(leases, "pid_alive", lambda pid: True)
+    monkeypatch.setattr(
+        execution_admission, "process_birth_identity", lambda pid: next(births),
+    )
+    with pytest.raises(AssertionError, match="原 Daemon OS 进程未退出"):
+        shutdown_daemon_and_wait(
+            tmp_path,
+            timeout=0,
+            terminate=lambda pid, timeout: terminated.append(pid),
+        )
+    assert terminated == []
+
+
+def test_daemon_cleanup_accepts_confirmed_pid_absence_when_birth_is_unreadable(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    from tianshu import execution_admission, leases
+
+    lock_path = daemon.lock_path(tmp_path)
+    lock_path.parent.mkdir(parents=True)
+    lock_path.write_text(
+        json.dumps({"pid": 12345, "instance_id": "daemon-under-test"}),
+        encoding="utf-8",
+    )
+    births = iter(["original-birth", None])
+    monkeypatch.setattr(daemon, "request_shutdown", lambda *args, **kwargs: True)
+    monkeypatch.setattr(leases, "pid_alive", lambda pid: False)
+    monkeypatch.setattr(
+        execution_admission, "process_birth_identity", lambda pid: next(births),
+    )
+
+    shutdown_daemon_and_wait(tmp_path, timeout=0)
+
+
+def test_daemon_cleanup_accepts_unreaped_exited_child(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    from tianshu import execution_admission, host, leases
+
+    lock_path = daemon.lock_path(tmp_path)
+    lock_path.parent.mkdir(parents=True)
+    lock_path.write_text(
+        json.dumps({"pid": 12345, "instance_id": "daemon-under-test"}),
+        encoding="utf-8",
+    )
+    births = iter(["original-birth", None])
+    monkeypatch.setattr(daemon, "request_shutdown", lambda *args, **kwargs: True)
+    monkeypatch.setattr(leases, "pid_alive", lambda pid: True)
+    monkeypatch.setattr(host, "_unreaped_child_state", lambda pid: "exited")
+    monkeypatch.setattr(
+        execution_admission, "process_birth_identity", lambda pid: next(births),
+    )
+
+    shutdown_daemon_and_wait(tmp_path, timeout=0)
+
+
 def test_daemon_cleanup_does_not_terminate_reused_pid(monkeypatch, tmp_path: Path) -> None:
     from tianshu import execution_admission
 
