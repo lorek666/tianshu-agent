@@ -406,7 +406,8 @@
   假红。停止升级只接收自有 `Popen`：POSIX 先用不回收子进程的 `waitid(WNOWAIT)`
   确认仍未运行，macOS 通过完整 SDK `siginfo_t` 调用 libc；Windows 只通过保留的
   原进程句柄调用 `TerminateProcess`，绝不回退到裸 PID、`OpenProcess(PID)` 或
-  `taskkill /PID`。附着实例没有自有句柄，只能等待同一端点消失，不能强杀。
+  `taskkill /PID`。附着实例没有自有句柄，只能等待同一端点消失且冻结身份的原进程
+  退出，不能强杀。
   普通重试须先完成已保留旧进程的等待和精确锁清理，才能启动下一代。
   Windows 强杀因此只保证自有 Daemon 根退出，不保留旧 `taskkill /T` 的树清理，
   也不证明 Daemon 执行后代退出；完整进程树监管仍由
@@ -430,6 +431,17 @@
   能确认它已退出。Windows 测试模拟 POSIX 分支时只替换模块局部 `os` 与
   `signal`，不修改进程全局 `os.name`，也不访问 Windows 不存在的 `SIGKILL`；
   原生 POSIX 用例在 Windows 明确 skip。见
+  [PR #228 跟进修复](changelog/2026-11-24-pr228-windows-followup.md)。
+
+- **附着停止也必须核验原 OS 进程退出（2026-11-25）**：IPC 端点消失只证明
+  listener 已关闭，不证明 Daemon 已释放继承的 `daemon.log` 句柄。附着 Host 没有
+  自有 `Popen`，更不得按裸 PID 强杀；它须在首次停止快照冻结 PID 与 OS birth，
+  等待端点消失且该身份退出。Windows 用只读 `OpenProcess(SYNCHRONIZE)` +
+  `WaitForSingleObject(0)`；birth 仍可查询不代表进程仍运行，只要 frozen birth
+  尚未证明 PID 复用，就必须执行句柄等待。POSIX 对非子进程 zombie 用 `/proc`
+  或有界 `ps` 识别，`waitid` 只用于可观察的子进程。锁消失是等待条件，不是成功
+  证据；锁不可读、实例替换或身份不可确认仍失败。测试清理同时保留停止前的锁
+  快照与 `(PID, birth)`，不在清理时重新采样原身份；显式未知 birth 保持未知。见
   [PR #228 跟进修复](changelog/2026-11-24-pr228-windows-followup.md)。
 
 - **未就绪失败也要保存精确锁证据（2026-11-25）**：子进程可能在认证就绪前已写入

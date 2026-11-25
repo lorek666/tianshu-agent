@@ -337,3 +337,80 @@ macOS 两片、Windows 索引 0/1/3 均无失败，Windows 索引 2 只有
 同一规范树的无筛选本机全量退出 0，日志 SHA256 为
 `763cbfb06c8b421c8852994d507efe8d3ead4a36940b7815258ad22c52e16b92`；
 动态总计与跳过原因以日志为准。lock、Ruff、diff 与相对链接检查均退出 0。
+
+## v42 附着进程退出核验（2026-11-25）
+
+head `106149771ac6d5a85e24fdac7a16279815043eb3` 的 run
+[45593616819](https://github.com/lorek666/tianshu-agent/actions/runs/45593616819)
+真实失败。Windows shard0 ZIP SHA256
+`9525b2d429f275304f7edefae5b660c5ab0b3ae9e79b23f6f31a921c6ef43c70`
+与 GitHub artifact digest 一致；原始报告绑定 synthetic merge
+`ac8b5e77c181f134526ec59bdfc1902bcb495714`、run `45593616819`、attempt 1。
+索引 0 只有
+`tests/test_host_cleanup.py::test_late_real_host_cannot_replace_the_running_owner_or_stop_its_daemon`
+失败，索引 1 无失败报告。测试体已输出 `Host 已退出`，随后
+`TemporaryDirectory` 删除 `logs/daemon.log` 时抛 `PermissionError: [WinError 32]`。
+完整失败 job 日志 SHA256 为
+`a0a6617b743ae6763f4f518f329d7c1e8b13ae536fb78b855f2b70cb844066ef`。
+
+附着 Host 此前只确认 IPC 端点消失；Daemon 可能已删锁并关闭 listener，却仍持有
+第一个 Host 传下来的日志句柄。v42 在首次停止快照冻结原 PID 与 OS birth，等待
+端点消失且该进程退出，绝不向附着 PID 发信号。Windows 复用只读
+`OpenProcess(SYNCHRONIZE)` + `WaitForSingleObject(0)`；POSIX 对非子进程 zombie
+使用 `/proc` 或有界 `ps`，因为 `waitid` 不能观察别人的子进程。锁消失只允许继续
+等待，不是成功证据；锁不可读、实例替换或身份无法确认仍硬失败。测试清理保留
+停止前的锁快照，避免锁先删后无法定位原进程。
+
+v42 规范代码树仍为 `src/`、`tests/`、`scripts/` 下 384 个跟踪文件，tree SHA256
+为 `b7a3130964be51cbd0e73fcc37750ca4d3692705ae18c45ebf34b4fd3a6bcd42`。
+定向正控退出 0，日志 SHA256 为
+`3ff1e2324a6668cb12e59ac32a1660883c64c173d5cfce6beb6a95261550a1db`。
+私有未修基线令两项产品回归分别因“子进程仍活着”和“未抛 HostError”失败，日志
+SHA256 为 `875a7a0f89982983a03cab68a8c5e75612733dee61e87b75643c8d72f2be0c56`。
+Host/Daemon 受影响域退出 0，动态总计与跳过原因以日志为准，日志
+SHA256 为 `1b38be1036e84d4a7f56a83545ec319ff0c75393803dca88fb79293e39366ed3`。
+lock、Ruff 与 diff 门禁退出 0。
+
+v42 独立第二读者返回 `partial_fixed`，不是通过；回执 SHA256 为
+`c97202eda3fcca715c389378ff543123dea05d32f844c2ba41ff4019d682ea14`。
+读者发现 Windows 原进程退出后 birth 仍可短暂查询，旧顺序会在
+`pid_alive()` 的 `WaitForSingleObject(0)` 之前返回，误判存活；清理 helper
+只冻结锁字节，birth 仍在清理时采样，PID 复用时可能等待错进程。主控先复现
+Windows 顺序回归为红，再修改产品与测试。
+
+## v43 独立复审修复（2026-11-25）
+
+v43 在 frozen birth 尚未证明 PID 复用时总是调用 `pid_alive(pid)`，Windows
+因此不会因 birth 仍可查询而跳过只读进程句柄等待。清理 helper 接收冻结的
+`(pid, birth)`，核对它与锁快照的 PID 一致，并保留显式未知 birth，不再重采样。
+真实双 Host 清理在停止附着 Host 前同时冻结锁字节和进程身份。
+
+v43 规范代码树 SHA256 为
+`b352f52a86fdfbc99a97805efbc009eb163d2ef271832b5d9e5aff28fcef0ed7`。
+旧 Windows 顺序回归实际因 `assert False` 失败，日志 SHA256 为
+`a7b9a4f89a4698e0f9fd25119f45cfbd4398d1281980ebf24b3c65183dc64691`；
+修复后定向门禁退出 0，日志 SHA256 为
+`9a27e78bc0d12a2b8f09fc72f4d5b35a4e724e75ea0fc57f561d5e8d80399914`。
+私有副本恢复两项旧行为后，Windows 观察、复用 PID 清理超时、未知 birth
+重采样和 PID 不一致守卫均按目标断言失败，日志 SHA256 为
+`42b1495b7adf110c732412b508f6367f86e25c4b62b40501bee08540c8ad65ec`；
+恢复修复文件后转绿，日志 SHA256 为
+`7256316818e0211d1c4dc30d19c5b69dd944b4f7c923e409b47993643d15fb98`。
+
+v43 的 Host/Daemon/SLO/进程身份受影响域退出 0，动态总计与跳过原因以日志为准，
+日志 SHA256 为 `cb5b0b1f94769cf511a6af28b4562648ebcf980802bda067b55e5f8a0483679d`。
+
+新独立 Tier 1 读者对同一规范树返回 `fixed`，完成私有限定 GREEN、有效 Windows
+顺序变异 RED 与恢复 GREEN。主控核验回执及探针哈希、逐字节比对四个复审文件、重算
+归档规范树，并在全新私有副本重放关键探针，绿、目标变异红、恢复绿均一致。复审回执
+SHA256 为 `82bcbb83570a10c24d9f2e62b4b3c7806c97c6d74bcc62958c3f5b729f6f9492`；
+主控重放绿、红、恢复日志 SHA256 分别为
+`a4835840358f59fd69453f15a3bad9641cd2cf0b3d31efa6e404619244987ad2`、
+`c5651d2e208900a551092f10fb4b7e8baec1ea961f62696f702039dde49d0e25` 与
+`b6c51b401d65a9c69435f8b86cecab752d65ded7188228aab3de3eb010990b60`。
+
+同一规范树上的无筛选全量仅将 `TMPDIR` 与 `TIANSHU_TEST_TMP_ROOT` 移到高空间卷，
+实际退出 0；动态总计与平台/opt-in 跳过原因以日志为准，日志 SHA256 为
+`51820e400cf705d8fff48663f379bca642d1b2fda2b6154e9d6bcd7b827d8ba0`。lock、Ruff、
+diff 与变更文档链接检查也均退出 0。fresh hosted required CI 仍待完成；已停止的 v42
+全量运行不充当这套变更代码树的最终证据，macOS 复审也不冒充原生 Windows 验证。
