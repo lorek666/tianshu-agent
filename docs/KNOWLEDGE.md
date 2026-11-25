@@ -173,7 +173,7 @@
 
 **派生硬约束**：安全不能靠用户配置（默认值必须正确）；默认可写就必须默认可撤销；单用户假设必须显式声明。
 
-- **Windows CI 分片决定（2026-11-14；2026-11-23 候选演进）**：保留四 required 名称、两个独立 runner 与25分钟上限，按整文件分片。历史每台一个 worker 的完整运行仍出现两片超时；本批候选改为每台并行两个原 wrapper 真进程，隔离 basetemp、pytest 缓存及用例运行根。两个 artifact 分开下载，严格绑定各自的两个索引，不先合并解包；新原生吞吐由对应冻结的完整 CI 单独验证，不能从本机探针推断。汇总 job 在 Ubuntu 核验真实 Windows job 的结论与开发报告；完整收集快照先于其它筛选，最终列表再核，不用选后列表倒推全集。报告不能覆盖上游失败或取消；不新增产品契约、依赖或 skip。失败原件与验证边界见[增量记录](changelog/2026-11-23-windows-ci-worker-pairs.md)。
+- **Windows CI 分片决定（2026-11-14；2026-11-26 定型）**：保留四 required 名称、四个独立 runner 与25分钟上限，按整文件做 count4。历史单 worker 两片会累计超时；两台 runner 各并行两个 worker 虽消除超时，却在 run `45705494683` 两个 attempt 都污染冷启动 SLO，第二次 daemon 内部冷启动 p50 也显著升高。现改为四台 runner 各跑一个分片，避免同机测试 worker 与 SLO 争用；不串行退回半套测试，不降权重或阈值。四个 artifact 分别下载并严格绑定各自索引、SHA 和真实 attempt；汇总 job 在 Ubuntu 核验真实 Windows job 的结论与开发报告。完整收集快照先于其它筛选，最终列表再核，不用选后列表倒推全集；报告不能覆盖上游失败或取消。新原生结论只由对应冻结的 hosted CI 证明，本机探针不能替代。历史与失败原件见[worker-pair 记录](changelog/2026-11-23-windows-ci-worker-pairs.md)及[四 runner 修复记录](changelog/2026-11-26-pr228-windows-independent-shards.md)。
 - **macOS CI 容量修复候选（2026-11-23）**：run `45160677871` 的 Python
   实际执行触及25分钟上限，macOS required 失败，不能归因于 runner 排队。
   候选在两个独立原生 runner 复用 count2 整文件分片，保留直接 pytest、
@@ -183,17 +183,17 @@
   见[修复设计](superpowers/specs/2026-11-23-macos-ci-shards-design.md)与
   [增量记录](changelog/2026-11-23-macos-ci-shards.md)。
 - **取消后的 state 诊断必须独立于 pytest 日志（2026-11-26）**：在 #228 的
-  macOS count2 与 Windows「两台 runner × 每台两 worker / count4」拓扑上，首次断言前
-  将完整 D7 脱敏报告原子写入严格报告树之外的 `state-pressure/<shard>.json`；真实子进程
-  在首个失败谓词后硬退，验证日志不完整时 JSON 仍可读取。两个平台均以 `always()` 上传，
-  工件名绑定 run/attempt/shard，缺件只告警且不覆盖原退出码。没有改 runner 数量、并发、
-  阈值、25 分钟上限、60 秒栈诊断或四个 required 名称；见[增量记录](changelog/2026-11-26-pr229-state-pressure-evidence.md)。
+  macOS count2 与 Windows count4 拓扑上，首次断言前将完整 D7 脱敏报告原子写入严格报告树
+  之外的 `state-pressure/<shard>.json`；真实子进程在首个失败谓词后硬退，验证日志不完整时
+  JSON 仍可读取。两个平台均以 `always()` 上传，工件名绑定 run/attempt/shard，缺件只告警且
+  不覆盖原退出码。该证据机制随后原样保留到 Windows 四独立 runner，没有改阈值、25 分钟
+  上限、60 秒栈诊断或四个 required 名称；见[增量记录](changelog/2026-11-26-pr229-state-pressure-evidence.md)。
 - **失败作业重跑不能沿用汇总 job 的当前 attempt（2026-11-26）**：`--failed` 只重跑
   失败 job 时，成功分片仍保留旧 attempt 工件，汇总却已进入新 attempt。macOS/Windows
   汇总改为从本 run API 为每个精确 shard 解析最新未过期工件，并用同一结果生成下载名和
-  per-shard attempt map；Windows 一个 artifact 的 attempt 同时约束两个 worker report。
-  严格 verifier 仍拒绝缺失、重复、错 SHA/run/shard、漏阶段和上游非成功，不放宽拓扑或时限；
-  见[增量记录](changelog/2026-11-26-pr228-rerun-artifact-attempts.md)。
+  per-shard attempt map。Windows 四独立 runner 落地后，每个 artifact 只约束一个 report；
+  混用不同 attempt 的正控仍须逐索引通过。严格 verifier 仍拒绝缺失、重复、错
+  SHA/run/shard、漏阶段和上游非成功，不放宽拓扑或时限；见[增量记录](changelog/2026-11-26-pr228-rerun-artifact-attempts.md)。
 
 ### 收尾轮实现决策（2026-11-11，PR #66–#72）
 

@@ -62,8 +62,8 @@ def project(root, files):
     return env
 
 
-def report_path(root, index, count):
-    return (root / str(index // 2) if count == 4 else root) / str(index) / "shard.json"
+def report_path(root, index, _count):
+    return root / str(index) / "shard.json"
 
 
 def shards(tmp_path, files=None, extra=(), extra_env=None, count=2):
@@ -560,13 +560,13 @@ def test_four_valid_reports_moved_between_runner_artifacts_are_rejected(
 ):
     env, docs = complete_evidence
     if len(docs) != 4:
-        return  # The two-shard historical format has no pair artifacts.
+        return  # The two-shard historical format has only two artifacts.
     for index, doc in enumerate(docs):
         path = report_path(tmp_path, index, 4)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(doc), encoding="utf-8")
     assert verify(tmp_path, env, count=4).returncode == 0
-    misplaced = tmp_path / "1" / "0" / "shard.json"
+    misplaced = tmp_path / "0" / "0" / "shard.json"
     misplaced.parent.mkdir()
     report_path(tmp_path, 0, 4).rename(misplaced)
     assert verify(tmp_path, env, count=4).returncode == 1

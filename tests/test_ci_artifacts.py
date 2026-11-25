@@ -78,16 +78,18 @@ def test_github_output_keeps_names_and_explicit_attempt_map(tmp_path):
     ]
 
 
-def test_windows_pair_artifact_attempt_covers_both_worker_reports(tmp_path):
+def test_windows_independent_artifact_attempt_map_covers_all_four_reports(tmp_path):
     module = load_module()
     output = tmp_path / "github-output"
     resolved = {
         "0": {"name": "windows-pytest-123-1-0", "attempt": 1},
         "1": {"name": "windows-pytest-123-2-1", "attempt": 2},
+        "2": {"name": "windows-pytest-123-3-2", "attempt": 3},
+        "3": {"name": "windows-pytest-123-1-3", "attempt": 1},
     }
-    module.write_github_output(resolved, output, reports_per_artifact=2)
+    module.write_github_output(resolved, output)
     assert output.read_text(encoding="utf-8").splitlines()[-1] == (
-        'attempts={"0": "1", "1": "1", "2": "2", "3": "2"}'
+        'attempts={"0": "1", "1": "2", "2": "3", "3": "1"}'
     )
 
 

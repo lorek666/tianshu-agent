@@ -2,7 +2,7 @@ name: CI
 
 # Python 检查与 CONTRIBUTING.md §5 使用同一锁文件和测试套件：
 # uv lock --check 与 ruff 命令相同；pytest 增加汇总、跳过原因及 Windows
-# 长等待诊断参数，并在两个独立 Windows runner 按文件分片。
+# 长等待诊断参数，并在四个独立 Windows runner 按文件分片。
 # UI 另有类型、测试、构建与 dist 一致性检查；macOS required job 与 Windows
 # required 汇总还会覆盖 R1 Tauri 壳的 fmt/test/clippy。
 # 三个平台的 Python 检查和 UI 检查均为 required，准确名称见 CONTRIBUTING §6。
@@ -220,8 +220,9 @@ jobs:
           test "$PYTHON_RESULT" = success
           test "$DESKTOP_RESULT" = success
 
-  # Windows 保留完整覆盖（含 issue #21/#50 回归），分到两个独立 runner。
-  # 每台并行两个隔离 worker；四个整文件分片不改变25分钟上限或验收。
+  # Windows 保留完整覆盖（含 issue #21/#50 回归），分到四个独立 runner。
+  # 每台只跑一个整文件分片，避免并行测试 worker 污染同机冷启动 SLO。
+  # 四个分片不改变25分钟上限、权重或验收；失败作业重跑仍按分片解析 attempt。
   windows_shards:
     name: windows shard ${{ matrix.shard }} · py3.12
     runs-on: windows-latest
@@ -230,7 +231,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1]
+        shard: [0, 1, 2, 3]
     defaults:
       run:
         shell: bash
@@ -256,13 +257,14 @@ jobs:
       - name: Pytest Windows 分片
         env:
           PYTEST_ADDOPTS: ""
-          CI_PAIR_ROOT: ${{ runner.temp }}/windows-ci/reports
+          CI_SHARD_REPORT: ${{ runner.temp }}/windows-ci/shard.json
           TIANSHU_SLO_DIAGNOSTICS_DIR: ${{ runner.temp }}/windows-ci/slo-diagnostics
         # 保留原 wrapper/fatal handler/60秒 Python 线程栈；C 扩展长期持有 GIL
         # 时仍不能保证采样。此 step 唯一直接命令保留 wrapper 最终退出码。
         run: >-
-          uv run --frozen python scripts/pytest_with_stacks.py
-          --ci-pair-index=${{ matrix.shard }} --ci-pair-root="$CI_PAIR_ROOT"
+          uv run --frozen python scripts/pytest_with_stacks.py -p pytest_ci_shards
+          --ci-shard-index=${{ matrix.shard }} --ci-shard-count=4
+          --ci-shard-report="$CI_SHARD_REPORT"
           -o addopts="" -vv -rs --tb=short
           --durations=20 --stack-timeout=60
       - name: 上传本分片原始报告
@@ -270,7 +272,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: windows-pytest-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
-          path: ${{ runner.temp }}/windows-ci/reports
+          path: ${{ runner.temp }}/windows-ci/shard.json
           if-no-files-found: error
       - name: 上传 Windows SLO 原始样本与失败诊断
         if: always()
@@ -308,10 +310,13 @@ jobs:
         run: cargo clippy --locked --all-targets -- -D warnings
 
   windows_summary:
-    # 名称保留为原 required check；此 job 在 Ubuntu 核验两个 Windows job。
+    # 名称保留为原 required check；此 job 在 Ubuntu 核验四个 Windows 分片 job。
     name: test (windows-latest) · py3.12
     runs-on: ubuntu-latest
     needs: [windows_shards, desktop_windows]
+    permissions:
+      contents: read
+      actions: read
     # 上游失败也必须进入汇总，不能让 required 因依赖失败而 skip 成 success。
     if: always() && (github.event_name == 'push' || github.event.pull_request.draft == false)
     timeout-minutes: 25
@@ -333,7 +338,7 @@ jobs:
         run: >-
           uv run --frozen python scripts/ci_artifacts.py
           --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID"
-          --prefix windows-pytest --indices 0 1 --reports-per-artifact 2
+          --prefix windows-pytest --indices 0 1 2 3
           --github-output "$GITHUB_OUTPUT"
       - name: 下载分片 0
         if: always()
@@ -347,6 +352,18 @@ jobs:
         with:
           name: ${{ steps.shard_artifacts.outputs.shard_1_name }}
           path: ${{ runner.temp }}/windows-ci-shards/1
+      - name: 下载分片 2
+        if: always()
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.shard_artifacts.outputs.shard_2_name }}
+          path: ${{ runner.temp }}/windows-ci-shards/2
+      - name: 下载分片 3
+        if: always()
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.shard_artifacts.outputs.shard_3_name }}
+          path: ${{ runner.temp }}/windows-ci-shards/3
       - name: 验证上游结论与完整覆盖
         if: always()
         env:

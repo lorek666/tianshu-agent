@@ -379,11 +379,9 @@ def verify(args):
     require(args.count in (2, 4) and args.indices == list(range(args.count)),
             "expected every index of count 2 or 4")
     attempts = shard_attempts(args)
-    # Keep each runner's original artifact separate. A valid report from the
-    # wrong runner must not be laundered by merging the two ZIPs together.
-    paths = [(args.reports_root / str(index // 2) if args.count == 4
-              else args.reports_root) / str(index) / "shard.json"
-             for index in args.indices]
+    # Each runner owns exactly one report artifact, so a valid report cannot
+    # be laundered by moving it into another runner's download directory.
+    paths = [args.reports_root / str(index) / "shard.json" for index in args.indices]
     require({p for p in args.reports_root.rglob("*") if p.is_file()} == set(paths),
             "missing or extra shard artifacts")
     documents = [json.loads(path.read_text(encoding="utf-8")) for path in paths]

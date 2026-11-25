@@ -71,19 +71,15 @@ def resolve_artifacts(
 
 
 def write_github_output(
-    resolved: dict[str, dict[str, str | int]], output: Path, *, reports_per_artifact: int = 1,
+    resolved: dict[str, dict[str, str | int]], output: Path,
 ) -> None:
-    if reports_per_artifact not in (1, 2):
-        raise ValueError("reports per artifact must be one or two")
     lines = []
     attempts = {}
     for index in sorted(resolved, key=int):
         row = resolved[index]
         lines.append(f"shard_{index}_name={row['name']}")
         lines.append(f"shard_{index}_attempt={row['attempt']}")
-        first = int(index) * reports_per_artifact
-        for report_index in range(first, first + reports_per_artifact):
-            attempts[str(report_index)] = str(row["attempt"])
+        attempts[index] = str(row["attempt"])
     lines.append(f"attempts={json.dumps(attempts, sort_keys=True)}")
     with output.open("a", encoding="utf-8") as stream:
         stream.write("\n".join(lines) + "\n")
@@ -95,7 +91,6 @@ def main() -> int:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--prefix", required=True)
     parser.add_argument("--indices", required=True, nargs="+", type=int)
-    parser.add_argument("--reports-per-artifact", type=int, default=1)
     parser.add_argument("--token-env", default="GITHUB_TOKEN")
     parser.add_argument("--github-output", type=Path)
     args = parser.parse_args()
@@ -107,9 +102,7 @@ def main() -> int:
             artifacts, run_id=args.run_id, prefix=args.prefix, indices=args.indices,
         )
         if args.github_output is not None:
-            write_github_output(
-                resolved, args.github_output, reports_per_artifact=args.reports_per_artifact,
-            )
+            write_github_output(resolved, args.github_output)
     except (ValueError, OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
         parser.exit(1, f"CI artifact resolution failed: {exc}\n")
     print(json.dumps(resolved, sort_keys=True))

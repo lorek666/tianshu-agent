@@ -250,15 +250,14 @@ def _assert_rerun_artifact_resolution(workflow):
         ("windows_summary", "windows-pytest", 4),
     ):
         block = _job_block(workflow, summary)
-        artifact_count = count // 2 if count == 4 else count
+        artifact_count = count
         assert "id: shard_artifacts" in block
         assert "GITHUB_TOKEN: ${{ github.token }}" in block
         assert "uv run --frozen python scripts/ci_artifacts.py" in block
         assert '--repository "$GITHUB_REPOSITORY"' in block
         assert '--run-id "$GITHUB_RUN_ID"' in block
         assert f'--prefix {prefix} --indices {" ".join(map(str, range(artifact_count)))}' in block
-        if count == 4:
-            assert "--reports-per-artifact 2" in block
+        assert "--reports-per-artifact" not in block
         assert '--github-output "$GITHUB_OUTPUT"' in block
         assert "--run-attempts '${{ steps.shard_artifacts.outputs.attempts }}'" in block
         for index in range(artifact_count):
@@ -335,16 +334,17 @@ def test_pr_template_records_the_candidate_freeze_contract():
         assert required in template
 
 
-def _assert_windows_worker_pairs(workflow):
+def _assert_windows_independent_shards(workflow):
     workers = _job_block(workflow, "windows_shards")
     summary = _job_block(workflow, "windows_summary")
     assert "runs-on: windows-latest" in workers
-    assert "shard: [0, 1]" in workers
+    assert "shard: [0, 1, 2, 3]" in workers
     assert "timeout-minutes: 25" in workers
     assert "fail-fast: false" in workers
     assert "ref: ${{ github.sha }}" in workers
     assert "continue-on-error" not in workers + summary
-    assert "CI_PAIR_ROOT: ${{ runner.temp }}/windows-ci/reports" in workers
+    assert "--ci-pair-" not in workers
+    assert "CI_SHARD_REPORT: ${{ runner.temp }}/windows-ci/shard.json" in workers
     assert (
         "TIANSHU_SLO_DIAGNOSTICS_DIR: ${{ runner.temp }}/windows-ci/slo-diagnostics"
         in workers
@@ -360,15 +360,19 @@ def _assert_windows_worker_pairs(workflow):
         "          if-no-files-found: warn\n"
     ) in workers
     assert (
-        "uv run --frozen python scripts/pytest_with_stacks.py\n"
-        "          --ci-pair-index=${{ matrix.shard }} --ci-pair-root=\"$CI_PAIR_ROOT\""
+        "uv run --frozen python scripts/pytest_with_stacks.py -p pytest_ci_shards\n"
+        "          --ci-shard-index=${{ matrix.shard }} --ci-shard-count=4\n"
+        "          --ci-shard-report=\"$CI_SHARD_REPORT\""
     ) in workers
     assert '--stack-timeout=60' in workers
-    assert "path: ${{ runner.temp }}/windows-ci/reports\n" in workers
+    assert "path: ${{ runner.temp }}/windows-ci/shard.json\n" in workers
     assert "if-no-files-found: error" in workers
     assert "needs: [windows_shards, desktop_windows]" in summary
+    assert "permissions:\n      contents: read\n      actions: read" in summary
+    assert "--prefix windows-pytest --indices 0 1 2 3" in summary
+    assert "--reports-per-artifact" not in summary
     assert "--count 4 --indices 0 1 2 3" in summary
-    for index in range(2):
+    for index in range(4):
         assert (
             "name: ${{ steps.shard_artifacts.outputs.shard_"
             f"{index}_name }}}}\n          path: "
@@ -376,14 +380,24 @@ def _assert_windows_worker_pairs(workflow):
         ) in summary
 
 
-def test_windows_pairs_preserve_runner_identity_and_required_gates():
-    _assert_windows_worker_pairs(_workflow())
+def test_windows_independent_runners_isolate_slo_and_keep_required_gates():
+    _assert_windows_independent_shards(_workflow())
 
 
 @pytest.mark.parametrize("old,new", [
     ("--count 4 --indices 0 1 2 3", "--count 2 --indices 0 1"),
     ("windows-ci-shards/1", "windows-ci-shards/0"),
-    ("shard: [0, 1]", "shard: [0, 1, 2, 3]"),
+    ("shard: [0, 1, 2, 3]", "shard: [0, 1]"),
+    ("--ci-shard-count=4", "--ci-shard-count=2"),
+    ("--prefix windows-pytest --indices 0 1 2 3", "--prefix windows-pytest --indices 0 1"),
+    (
+        "permissions:\n      contents: read\n      actions: read",
+        "permissions:\n      contents: read",
+    ),
+    (
+        "--ci-shard-report=\"$CI_SHARD_REPORT\"",
+        "--ci-pair-index=${{ matrix.shard }} --ci-pair-root=\"$CI_SHARD_REPORT\"",
+    ),
     ("timeout-minutes: 25", "timeout-minutes: 30"),
     ("--stack-timeout=60", "--stack-timeout=0"),
     (
@@ -395,8 +409,8 @@ def test_windows_pairs_preserve_runner_identity_and_required_gates():
         "      - name: 上传 Windows SLO 原始样本与失败诊断\n        if: success()",
     ),
 ])
-def test_windows_pair_guard_rejects_weakened_workflow(old, new):
+def test_windows_independent_runner_guard_rejects_weakened_workflow(old, new):
     workflow = _workflow()
     assert old in workflow
     with pytest.raises(AssertionError):
-        _assert_windows_worker_pairs(workflow.replace(old, new))
+        _assert_windows_independent_shards(workflow.replace(old, new))

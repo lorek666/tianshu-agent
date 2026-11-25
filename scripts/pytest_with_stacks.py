@@ -164,9 +164,4 @@ def main(argv: list[str]) -> int:
 
 
 if __name__ == "__main__":
-    if any(arg.split("=", 1)[0] in ("--ci-pair-index", "--ci-pair-root")
-           for arg in sys.argv[1:]):
-        from pytest_ci_pair import main as pair_main
-
-        raise SystemExit(pair_main(sys.argv[1:]))
     raise SystemExit(main(sys.argv[1:]))
