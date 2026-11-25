@@ -27,4 +27,14 @@ run `45671429051` attempt 1 的 macOS Rust job 被取消；按 `--failed` 重跑
 
 - 独立第二读者在第三份私有快照返回 `fixed`，绑定 review tree `8d71021e9c6530e29075ddc2942386040719012ab52ef30dedc9294d67662ee9`；定向基线/恢复均退出 0，恢复后无筛选全量也退出 0。它分别把 macOS 下载名、Windows 每工件 report 数和 verifier 的 per-shard attempt 读取改成旧行为，三种 mutation 均在预期断言处非零，恢复后均回到绿色；恢复树与作者代码树逐文件一致。独立报告 SHA256 `ef8a56ffdf98f350131e2ce07056d8b1cd7191a56dddb42811807668690fc3cc`，探针清单 SHA256 `8a57b7d1f4c7b756c339a616362af027a74046902b11cfc2de469d4f1336345c`，独立全量日志 SHA256 `cbcf60d08df6ca887168683d1d07ca8df37e5ab01239ff600989f03cd99076ba`。两条非阻断低建议（把分页探针固化进测试、评估显式 `actions: read`）不改变本轮修复结论；当前公开仓库无认证工件 API 实测可读。
 
-修复后的最终 head、合成 merge 与 hosted required CI 结果取得后补入本节及 PR 正文；本文件不预填尚未发生的绿色结果。
+## 最终代码 head 的 hosted CI
+
+代码 head `26743f27f0cbfbdc9e4d60f831b312db917883cc`（base `a755e2abf7d75b6baf36a1e47f47646142f0bc8d`）触发 [run `45684106116` attempt 1](https://github.com/lorek666/tianshu-agent/actions/runs/45684106116)，结论为 `success`。GitHub PR 合成 merge `0402194cec40beaedb6fb60da199b5fffcea96c9` 的 parents 精确对应该 base 与 head，merge tree 和 head tree 均为 `391ef281d13bded7f7657fbe6d15d1783ae68ca4`。全部 job 与 PR check 成功，四个 required 名称均保持原样：`test (ubuntu-latest) · py3.12`、`test (macos-latest) · py3.12`、`test (windows-latest) · py3.12`、`ui · typecheck / test / build`。
+
+- 汇总日志显示新 resolver 实际通过 API 选中 attempt 1：macOS 下载 `macos-pytest-45684106116-1-0/1`，Windows 下载 `windows-pytest-45684106116-1-0/1`；Windows 显式 map 为 `{"0":"1","1":"1","2":"1","3":"1"}`。严格 verifier 以合成 merge SHA 重放两平台原始报告，分别通过 macOS count2 与 Windows count4 的完整 collection、身份与文件树校验，日志 SHA256 `5aeec017ebb672a8721431ed8cfe395f44b19026d5cd058ff838406027b85351`。
+- 九个 artifact ZIP 的本地 SHA256 均与 GitHub metadata 一致；核验日志 SHA256 `af0d8bfbb54cab9f6c2b1b129018c0319c2c86fd1dface5f8f62d8fc3202e0de`。四个 pytest 工件 digest 为：macOS `8dd7c3fbf51c442a3b2bbb68227d0842ee3ca68fb0364e7dae9433c8a1e8f35e` / `906869c8e09cbc4b4f4a7981265beb1ea1c21aca07f76b156b4bebb1d958a6a8`，Windows `ba039c62c1ad6210626eded4ebd8e5d2b27840117fea85f6bcf8125a722564ff` / `48d27fdf00922f6a03c03851b8d8c871d289562b992b47bff314ec13554b046c`。
+- 从 raw samples 按 nearest-rank 重算，macOS/Windows SLO 均 `PASS`，冻结阈值 canonical SHA256 `0602a7b1ec84265ef502d72e3385a6cbd3f370e29838a5b1c15a151b2b1b8432` 未变；Windows cold-start p95 `2008.184ms < 2200ms`。两平台 soak 均 `PASS`，orphan PID 均为空。该轮为 CI smoke，不冒充完整十小时 soak 或 min-repeats 基线。
+- #229 state-pressure 证据已随配对 shard 保留：macOS/Windows 各有 3 个 qualified、0 invalid，p95 分别为 `147.480583ms` / `37.554ms`，cursor reconnect 均验证通过、orphan 均为 0；证据仍标为 `diagnostic_pre_threshold`，不伪造阈值或 verdict。Windows restore T1 为 `PASS`，`directory_power_loss_durability=NOT_PROVEN` 边界保留；诊断文件未发现本机用户路径泄漏。
+- 汇总核验记录 SHA256 `12dc01b790d3a595d0ed276f7a8768c9a1179dd01b3649fdbfd7d13ed90bf040`，CI 元数据记录 SHA256 `2f1e5607cb2d3df78d03aae0de795fde39f85360022e5809e417d7cca87d3a40`；macOS/Windows 汇总日志 SHA256 分别为 `68fb08dda953056da1d8d42f6e5287320706d4ee55c00887eea10fc8010491b3` / `be7243fc059f6f244692a13c5b56f44a77ac62b870ed4546210582ccffacec74`。
+
+上述绿色只绑定代码 head `26743f2`。本次证据回填产生纯文档 head 后，仍需该 head 自己的 hosted required CI；不得把这里的代码 head 结果提前算到文档 head 上。
