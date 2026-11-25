@@ -271,3 +271,32 @@ SHA256 is
 This documentation backfill leaves normative tree `44e961…` unchanged; the final
 documentation-only head still requires its own hosted checks. The earlier
 `417826…` full-suite result is not reused as v44b acceptance evidence.
+
+### Documentation-head SLO red and rerun decision (2026-11-25)
+
+Documentation head `f35773ed05b9ce8c03d75c8051ca1defa976a2e8` completed
+[run 45660902767](https://github.com/lorek666/tianshu-agent/actions/runs/45660902767)
+as `completed/failure`, attempt `1`, base
+`a755e2abf7d75b6baf36a1e47f47646142f0bc8d`, and synthetic merge
+`2f3d417e2d45c995f4a1bfdbab2a067acfa99dd9`. The diff from code head `abe8c24`
+is documentation only. macOS shard 0 had exactly one failed call phase,
+`tests/test_slo_and_soak.py::test_measure_slo_smoke_and_run_soak_real_subprocesses`:
+`cancel_ack_ms p95=500.962ms` exceeded the frozen `500.0ms` limit by `0.962ms`.
+All other measured SLO dimensions passed, `orphan_pids=[]`, and no safety or
+Host/Daemon lifecycle assertion failed. Windows shards and the Windows required
+summary, macOS shard 1, Ubuntu, UI, and both Rust jobs succeeded.
+
+The macOS shard-0 ZIP SHA256
+`799cd3e77eef6529189e0c1a83f973ce09f45157873a635512cc9d96070f1fe8`
+matched its GitHub artifact digest; the raw `shard.json` SHA256 is
+`fb7fcdcc060bc0f1a6544687c9988ffa81099e8855f198ff60834714e47cde9a`.
+The failed-job log SHA256 is
+`a9a6c915faec16bb2046ff43956eeab641fa384dc090551174c650b156af31dc`,
+and the bound failure record SHA256 is
+`9407105055763f2ff9a64874cbb172428e07d91cd8ec803bf973c50ef0f61030`.
+This remains a real red gate, not a pass. Because the only change from the
+reviewed code head is documentation, it is not evidence of a new lifecycle
+regression; the frozen threshold and assertions will not be relaxed, samples
+will not be discarded, and the earlier green will not be substituted. The
+failed evidence is retained while a fresh hosted run is requested for the new
+documentation head; that run must independently pass every required check.
