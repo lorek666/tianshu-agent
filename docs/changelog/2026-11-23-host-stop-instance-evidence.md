@@ -303,4 +303,37 @@ Ubuntu 七项失败有共同产品根因：Linux 的
 动态总计与跳过原因以日志为准。独立第二读者对同一规范树返回 `fixed`，另跑
 定向用例、真实子进程探针与两项反向变异，未发现阻断问题；复审回执 SHA256 为
 `e272b116f6e795d37e576bccfc30c26736aed21ac6441129d5552dc326c0c3f5`。
-新 head 的 hosted required CI 尚待完成。
+新 head `92c6a372fa0b4df348789ef6329d90383ac53158` 的 hosted required CI
+没有通过；唯一剩余 Windows 失败与 v41 收尾见下节。
+
+## v41 Windows signal fake 收尾（2026-11-25）
+
+head `92c6a372fa0b4df348789ef6329d90383ac53158` 的 run
+[45579136730](https://github.com/lorek666/tianshu-agent/actions/runs/45579136730)
+为真实 `completed/failure`。四份 pytest ZIP 均按 GitHub artifact `digest` 核验；
+macOS 两片、Windows 索引 0/1/3 均无失败，Windows 索引 2 只有
+`tests/test_execution_admission.py::test_unsignalled_posix_group_is_unknown_after_process_lookup_error`
+失败，Windows required 汇总是派生失败。
+
+该测试已把模块局部 `os` 替换为 fake，但产品代码在调用 fake `killpg` 前先求值
+`signal.SIGKILL`；Windows 的 `signal` 模块没有该常量，因此测试尚未进入
+`ProcessLookupError` 分支就抛 `AttributeError`。v41 同时替换模块局部 `signal`，
+不修改进程全局状态，也不放宽 unknown 断言。完整失败日志 SHA256 为
+`c559b3ead5ccfcbc9e7f3c57ac1e41d58803f1e12a91bc5e4bfbb07128cf79bd`。
+
+修复提交 `b62a6dc142d50771d1a60a1b0ba7745908d649bd` 的规范代码树为 384 个
+`src/`、`tests/`、`scripts/` 跟踪文件，tree SHA256 为
+`e963b51a8f97e394a40dc10ba548c1398bd55ce5f5491ff2e2f92b334b25ae0d`。
+定向两项通过；受影响域回归退出 0，日志 SHA256 为
+`734390e792d90a6228bd4b3cea94f903a443cf232d2ecad44a9a9d453c86a038`。
+私有副本将 signal fake 置空后，目标测试按预期在
+`src/tianshu/execution_admission.py:496` 因缺少 `SIGKILL` 失败，恢复后转绿；
+正、负、恢复日志 SHA256 分别为
+`2de9fce2a129e8da29f56ca2520ffb53e6692456adc23a6a0e2e124adba5e421`、
+`6413f2ba7b76b95ac44fa3c2745893b76c32e8179ba9a55d7c36e5607ee5fa30` 与
+`5b19689a97d618d5cdfce632de67285a8efa3c57100a80350a5bb7ca9e05ae34`。
+独立第二读者对新规范树返回 `fixed`，主进程另做私有回放；复审回执 SHA256 为
+`6a150bfcd8fb5660dda0da649dd9c158750457a28c6ea3ea627ef73254f92103`。
+同一规范树的无筛选本机全量退出 0，日志 SHA256 为
+`763cbfb06c8b421c8852994d507efe8d3ead4a36940b7815258ad22c52e16b92`；
+动态总计与跳过原因以日志为准。lock、Ruff、diff 与相对链接检查均退出 0。

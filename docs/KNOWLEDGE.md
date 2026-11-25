@@ -427,8 +427,9 @@
   `None`，不是 `si_pid == 0` 的结构体；旧解引用把真实运行误判为 unknown，导致
   Host 不肯终止自有 Daemon。清理 helper 还必须区分“PID 存在”和“进程仍运行”：
   Linux zombie 保留原 birth identity 且 `kill(pid, 0)` 仍成功，只有 `WNOWAIT`
-  能确认它已退出。Windows 测试模拟 POSIX 分支时只替换模块局部 `os`，不修改
-  进程全局 `os.name`；原生 POSIX 用例在 Windows 明确 skip。见
+  能确认它已退出。Windows 测试模拟 POSIX 分支时只替换模块局部 `os` 与
+  `signal`，不修改进程全局 `os.name`，也不访问 Windows 不存在的 `SIGKILL`；
+  原生 POSIX 用例在 Windows 明确 skip。见
   [PR #228 跟进修复](changelog/2026-11-24-pr228-windows-followup.md)。
 
 - **未就绪失败也要保存精确锁证据（2026-11-25）**：子进程可能在认证就绪前已写入
