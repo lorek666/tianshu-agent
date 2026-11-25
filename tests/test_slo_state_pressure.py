@@ -97,6 +97,21 @@ def test_state_measurement_uses_existing_backlog_before_another_large_write(monk
     assert all(trial["invalid_reason"] is None for trial in report["trials"])
 
 
+def test_state_guard_accepts_filesystem_aliases_of_the_effective_lock_root(
+    monkeypatch, tmp_path,
+):
+    lock_root = tmp_path / "locks"
+    alias = tmp_path / "windows-path-alias"
+    lock_root.mkdir()
+    alias.mkdir()
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "test_state_guard_alias")
+    monkeypatch.setenv("TIANSHU_TEST_LOCK_ROOT", str(alias))
+    monkeypatch.setattr(slo.maintenance, "_lock_root", lambda: lock_root)
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "samefile", lambda self, other: True)
+        slo._require_state_pressure_test_isolation(lock_root)
+
+
 @pytest.mark.parametrize("lock_root_set", [False, True])
 def test_state_diagnostic_refuses_without_effective_test_lock(lock_root_set, monkeypatch, tmp_path):
     if lock_root_set:

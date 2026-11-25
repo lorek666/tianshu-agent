@@ -15,6 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from support import shutdown_daemon_and_wait
 
 from tianshu import host
 
@@ -1209,18 +1210,9 @@ raise SystemExit(host.run_host(
                 assert daemon.lock_path(root).read_bytes() == attached_snapshot
                 assert ipc.probe(root, timeout=0.2)
         finally:
-            lock_path = daemon.lock_path(root)
-            snapshot = lock_path.read_bytes() if lock_path.exists() else None
-            if snapshot is not None:
-                identity = json.loads(snapshot)
-                daemon.request_shutdown(
-                    root, expected_instance_id=identity["instance_id"], timeout=3,
-                )
-                deadline = time.monotonic() + 5
-                while ipc.probe(root, timeout=0.1) and time.monotonic() < deadline:
-                    threading.Event().wait(0.05)
-                if ipc.probe(root, timeout=0.1) and lock_path.read_bytes() == snapshot:
-                    host.DaemonSupervisor._terminate(identity["pid"], timeout=3)
+            shutdown_daemon_and_wait(
+                root, timeout=5, terminate=host.DaemonSupervisor._terminate,
+            )
             if daemon_proc is not None:
                 try:
                     daemon_proc.wait(timeout=10)
@@ -1317,18 +1309,9 @@ raise SystemExit(host.run_host(
             if first is not None and first.poll() is None:
                 first.kill()
                 first.wait(timeout=10)
-            lock_path = daemon.lock_path(root)
-            snapshot = lock_path.read_bytes() if lock_path.exists() else None
-            if snapshot is not None:
-                identity = json.loads(snapshot)
-                daemon.request_shutdown(
-                    root, expected_instance_id=identity["instance_id"], timeout=3,
-                )
-                deadline = time.monotonic() + 5
-                while ipc.probe(root, timeout=0.1) and time.monotonic() < deadline:
-                    threading.Event().wait(0.05)
-                if ipc.probe(root, timeout=0.1) and lock_path.read_bytes() == snapshot:
-                    host.DaemonSupervisor._terminate(identity["pid"], timeout=3)
+            shutdown_daemon_and_wait(
+                root, timeout=5, terminate=host.DaemonSupervisor._terminate,
+            )
 
 
 def test_takeover_health_failure_reaps_the_adopted_daemon():
@@ -1389,18 +1372,9 @@ raise SystemExit(host.run_host(
             if daemon_proc is not None and daemon_proc.poll() is None:
                 daemon_proc.kill()
                 daemon_proc.wait(timeout=10)
-            lock_path = daemon.lock_path(root)
-            snapshot = lock_path.read_bytes() if lock_path.exists() else None
-            if snapshot is not None:
-                identity = json.loads(snapshot)
-                daemon.request_shutdown(
-                    root, expected_instance_id=identity["instance_id"], timeout=3,
-                )
-                deadline = time.monotonic() + 5
-                while ipc.probe(root, timeout=0.1) and time.monotonic() < deadline:
-                    threading.Event().wait(0.05)
-                if ipc.probe(root, timeout=0.1) and lock_path.read_bytes() == snapshot:
-                    host.DaemonSupervisor._terminate(identity["pid"], timeout=3)
+            shutdown_daemon_and_wait(
+                root, timeout=5, terminate=host.DaemonSupervisor._terminate,
+            )
 
 
 @pytest.mark.parametrize("serialize_disappeared_owner", [False, True])
@@ -1604,18 +1578,9 @@ raise SystemExit(host.run_host(
                     proc.wait(timeout=10)
                 if stream is not None:
                     stream.close()
-            lock_path = daemon.lock_path(root)
-            snapshot = lock_path.read_bytes() if lock_path.exists() else None
-            if snapshot is not None:
-                identity = json.loads(snapshot)
-                daemon.request_shutdown(
-                    root, expected_instance_id=identity["instance_id"], timeout=3,
-                )
-                deadline = time.monotonic() + 5
-                while ipc.probe(root, timeout=0.1) and time.monotonic() < deadline:
-                    threading.Event().wait(0.05)
-                if ipc.probe(root, timeout=0.1) and lock_path.read_bytes() == snapshot:
-                    host.DaemonSupervisor._terminate(identity["pid"], timeout=3)
+            shutdown_daemon_and_wait(
+                root, timeout=5, terminate=host.DaemonSupervisor._terminate,
+            )
 
 
     from tianshu import daemon, ipc
@@ -1711,18 +1676,9 @@ raise SystemExit(host.run_host(
                     proc.wait(timeout=10)
                 if stream is not None:
                     stream.close()
-            lock_path = daemon.lock_path(root)
-            snapshot = lock_path.read_bytes() if lock_path.exists() else None
-            if snapshot is not None:
-                identity = json.loads(snapshot)
-                daemon.request_shutdown(
-                    root, expected_instance_id=identity["instance_id"], timeout=3,
-                )
-                deadline = time.monotonic() + 5
-                while ipc.probe(root, timeout=0.1) and time.monotonic() < deadline:
-                    threading.Event().wait(0.05)
-                if ipc.probe(root, timeout=0.1) and lock_path.read_bytes() == snapshot:
-                    host.DaemonSupervisor._terminate(identity["pid"], timeout=3)
+            shutdown_daemon_and_wait(
+                root, timeout=5, terminate=host.DaemonSupervisor._terminate,
+            )
 
 
 def test_bridge_failure_does_not_stop_a_daemon_already_attached_by_another_host():
@@ -1812,24 +1768,15 @@ raise SystemExit(host.run_host(
                     proc.wait(timeout=10)
                 if stream is not None:
                     stream.close()
-            lock_path = daemon.lock_path(root)
-            snapshot = lock_path.read_bytes() if lock_path.exists() else None
-            if snapshot is not None:
-                identity = json.loads(snapshot)
-                daemon.request_shutdown(
-                    root, expected_instance_id=identity["instance_id"], timeout=3,
-                )
-                deadline = time.monotonic() + 5
-                while ipc.probe(root, timeout=0.1) and time.monotonic() < deadline:
-                    threading.Event().wait(0.05)
-                if ipc.probe(root, timeout=0.1) and lock_path.read_bytes() == snapshot:
-                    host.DaemonSupervisor._terminate(identity["pid"], timeout=3)
+            shutdown_daemon_and_wait(
+                root, timeout=5, terminate=host.DaemonSupervisor._terminate,
+            )
 
 
 def test_exit_cleanup_holds_host_identity_until_owned_root_is_reaped():
     import socket
 
-    from tianshu import daemon, ipc
+    from tianshu import ipc
 
     first_script = r"""
 import sys,time
@@ -1938,18 +1885,9 @@ raise SystemExit(host.run_host(
                 if proc is not None and proc.poll() is None:
                     proc.kill()
                     proc.wait(timeout=10)
-            lock_path = daemon.lock_path(root)
-            snapshot = lock_path.read_bytes() if lock_path.exists() else None
-            if snapshot is not None:
-                identity = json.loads(snapshot)
-                daemon.request_shutdown(
-                    root, expected_instance_id=identity["instance_id"], timeout=3,
-                )
-                deadline = time.monotonic() + 5
-                while ipc.probe(root, timeout=0.1) and time.monotonic() < deadline:
-                    threading.Event().wait(0.05)
-                if ipc.probe(root, timeout=0.1) and lock_path.read_bytes() == snapshot:
-                    host.DaemonSupervisor._terminate(identity["pid"], timeout=3)
+            shutdown_daemon_and_wait(
+                root, timeout=5, terminate=host.DaemonSupervisor._terminate,
+            )
 
 
 def test_failed_owned_readiness_reaps_the_started_root(monkeypatch):
@@ -2194,18 +2132,9 @@ raise SystemExit(host.run_host(
             if daemon_proc is not None and daemon_proc.poll() is None:
                 daemon_proc.kill()
                 daemon_proc.wait(timeout=10)
-            lock_path = daemon.lock_path(root)
-            snapshot = lock_path.read_bytes() if lock_path.exists() else None
-            if snapshot is not None:
-                identity = json.loads(snapshot)
-                daemon.request_shutdown(
-                    root, expected_instance_id=identity["instance_id"], timeout=3,
-                )
-                deadline = time.monotonic() + 5
-                while ipc.probe(root, timeout=0.1) and time.monotonic() < deadline:
-                    threading.Event().wait(0.05)
-                if ipc.probe(root, timeout=0.1) and lock_path.read_bytes() == snapshot:
-                    host.DaemonSupervisor._terminate(identity["pid"], timeout=3)
+            shutdown_daemon_and_wait(
+                root, timeout=5, terminate=host.DaemonSupervisor._terminate,
+            )
 
 
 @pytest.mark.parametrize("replace_after_failure", [False, True])

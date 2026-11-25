@@ -825,14 +825,21 @@ def _summarize_samples(
 # --------------------------------------------------------------------------- Suite 2 开发观测
 
 
+def _same_lock_root(left: Path, right: Path) -> bool:
+    try:
+        return left.samefile(right)
+    except OSError:
+        return False
+
+
 def _require_state_pressure_test_isolation(expected_lock_root: Path | None = None) -> None:
     configured = os.environ.get("TIANSHU_TEST_LOCK_ROOT")
     if not (os.environ.get("PYTEST_CURRENT_TEST") and configured):
         raise SloConfigError("state 背压诊断仅能在仓库隔离的 pytest 夹具内运行")
-    lock_root = Path(configured).resolve()
-    if (
-        (expected_lock_root is not None and lock_root != expected_lock_root.resolve())
-        or maintenance._lock_root().resolve() != lock_root  # noqa: SLF001
+    lock_root = Path(configured)
+    if not _same_lock_root(lock_root, maintenance._lock_root()) or (  # noqa: SLF001
+        expected_lock_root is not None
+        and not _same_lock_root(lock_root, expected_lock_root)
     ):
         raise SloConfigError("state 背压诊断的测试锁根未生效；不启动子进程")
 
