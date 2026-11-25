@@ -255,5 +255,19 @@ sample mutation failed on `p50_ms`, the upload-guard mutation failed on the exac
 `2c4251296c1fdac7bdddd02b7d6a590a8839662d3bb9fe55755c0f34c635ff04`,
 `325240c79d01befb460ea1f46c425363d26c9b00acae2fffd9410494a6b39169`, and
 `ddcfb5ed6f0080f1e08a9803305e35d2a8b3d56c33823d434bdbee016641bb6b`.
-Fresh hosted required CI remains pending; the earlier `417826…` full-suite
-result is not reused as v44b acceptance evidence.
+Hosted required CI for code head `abe8c24c70e28a0b3677166c80ad9916013a250f`
+completed [run 45631717528](https://github.com/lorek666/tianshu-agent/actions/runs/45631717528)
+as `success`, attempt `1`, base
+`a755e2abf7d75b6baf36a1e47f47646142f0bc8d`, synthetic merge
+`059d0e963daf03deab1242367f05514fe2eecddd`; its parents were verified as exactly
+that base and head. All 10 jobs and all four required checks succeeded. Both
+artifact ZIP digests and the raw reports were verified locally; strict verifiers
+accepted all 5735 collected nodes across two macOS and four Windows shards. The
+native Windows SLO node passed in worker shard 3 with raw-sample recomputation,
+cold-start p95 `1863.893ms` against the frozen `2200ms` limit, no timeouts, soak
+`PASS` with no orphan PIDs, and restore T1 `PASS`. The complete CI evidence record
+SHA256 is
+`093f436b8ae9ad1271780f8821da3e13e417acf0b8728084b6cdb096e86db3ae`.
+This documentation backfill leaves normative tree `44e961…` unchanged; the final
+documentation-only head still requires its own hosted checks. The earlier
+`417826…` full-suite result is not reused as v44b acceptance evidence.
