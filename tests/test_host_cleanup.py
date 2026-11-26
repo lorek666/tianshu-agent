@@ -112,7 +112,7 @@ if mode.startswith('host:'):
             try:
                 original_lock(fd)
             except OSError:
-                if not lock_notified:
+                if not lock_notified and (root / 'observe-owner-contention').exists():
                     send({'blocked': True})
                     lock_notified = True
                 raise
@@ -629,7 +629,11 @@ def test_running_host_exits_without_stopping_daemon_when_identity_is_replaced() 
                 replacement = host.HostInfo(
                     current.pid + 1, 0, "replacement", current.started_at + 1
                 )
-                host.write_host_info(root, replacement, expected=current)
+                with host._host_info_guard(root):
+                    host._write_host_info(root, replacement, expected=current)
+                    # 先确认真实锁竞争，再释放 guard 让原 Host 读取替代身份。
+                    (root / "observe-owner-contention").touch()
+                    assert running.receive() == {"blocked": True}
                 assert running.receive() == {
                     "exit": 1, "bridge_closed": True, "monitor_alive": False, "log_open": False
                 }
