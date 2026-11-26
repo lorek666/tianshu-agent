@@ -1,4 +1,4 @@
-"""Two Windows CI shards: preserve file order and verify complete pytest evidence.
+"""Windows CI shards: preserve file order and verify complete pytest evidence.
 
 This is development-only CI evidence, not a product contract.
 The upstream job result also matters: the stack wrapper can fail after pytest exits.
@@ -27,6 +27,10 @@ import pytest
 # file intervals from RED run 45050478841. Goal and online-soak observations use
 # run 45058496468; its timeout was cumulative and is not passing acceptance.
 # These are fixed scheduling hints, not acceptance limits or runner guarantees.
+SLO_FIRST_NODE = (
+    "tests/test_slo_and_soak.py::test_measure_slo_smoke_and_run_soak_real_subprocesses"
+)
+
 _FILE_WEIGHTS = {
     'tests/test_acceptance.py': 27,
     'tests/test_agent_control.py': 23,
@@ -239,7 +243,7 @@ def require(condition, message):
 
 def partition(full, count):
     """Balance estimated work by whole file; retain original collection order."""
-    require(type(count) is int and count == 2, "exactly two shards are required")
+    require(type(count) is int and count in (2, 4), "exactly two or four shards are required")
     require(isinstance(full, list) and full, "empty or invalid full collection")
     for pair in full:
         require(isinstance(pair, list) and len(pair) == 2
@@ -262,6 +266,15 @@ def partition(full, count):
     return groups
 
 
+def ordered_shard(full, count, index):
+    selected = partition(full, count)[index]
+    # Timing-sensitive SLO must not inherit resource pressure from earlier tests.
+    if SLO_FIRST_NODE in selected:
+        selected.remove(SLO_FIRST_NODE)
+        selected.insert(0, SLO_FIRST_NODE)
+    return selected
+
+
 def pytest_addoption(parser):
     group = parser.getgroup("ci-shards")
     group.addoption("--ci-shard-index", type=int)
@@ -275,8 +288,9 @@ def pytest_configure(config):
     if index is None and count is None and report is None:
         return
     try:
-        require(count == 2 and index in (0, 1) and report is not None and report.is_absolute(),
-                "use index 0/1, count 2 and an absolute report path")
+        require(count in (2, 4) and index in range(count)
+                and report is not None and report.is_absolute(),
+                "use count 2/4, a valid index and an absolute report path")
         selectors = ("keyword", "markexpr", "ignore", "ignore_glob", "deselect", "lf",
                      "failedfirst", "newfirst", "stepwise", "stepwise_skip", "stepwise_reset",
                      "maxfail", "collectonly", "pyargs")
@@ -317,12 +331,13 @@ class Shard:
             self.data["selected"] = []
             return
         require(snapshot() == full, "another plugin filtered or reordered the full collection")
-        selected = partition(full, self.data["shard_count"])[self.data["shard_index"]]
+        selected = ordered_shard(full, self.data["shard_count"], self.data["shard_index"])
         self.data["selected"] = selected
         selected_set = set(selected)
         config.hook.pytest_deselected(items=[item for item in items
                                             if item.nodeid not in selected_set])
-        items[:] = [item for item in items if item.nodeid in selected_set]
+        by_node = {item.nodeid: item for item in items}
+        items[:] = [by_node[node] for node in selected]
 
     @pytest.hookimpl(wrapper=True, tryfirst=True)
     def pytest_collection_finish(self, session):
@@ -352,20 +367,38 @@ class Shard:
         temporary.replace(self.report)
 
 
+def shard_attempts(args):
+    expected = {str(index) for index in args.indices}
+    if args.run_attempts is None:
+        require(isinstance(args.run_attempt, str) and args.run_attempt.isdigit(),
+                "invalid run attempt")
+        return {index: args.run_attempt for index in expected}
+    attempts = json.loads(args.run_attempts)
+    require(isinstance(attempts, dict) and set(attempts) == expected,
+            "run attempt map must cover exactly the requested shards")
+    require(all(type(value) is str and value.isdigit() for value in attempts.values()),
+            "run attempt map values must be decimal strings")
+    return attempts
+
+
 def verify(args):
-    require(args.needs_result == "success", "Windows shard jobs did not all succeed")
-    require(args.count == 2 and args.indices == [0, 1], "expected shard indices 0 and 1")
+    require(args.needs_result == "success", "shard jobs did not all succeed")
+    require(args.count in (2, 4) and args.indices == list(range(args.count)),
+            "expected every index of count 2 or 4")
+    attempts = shard_attempts(args)
+    # Each runner owns exactly one report artifact, so a valid report cannot
+    # be laundered by moving it into another runner's download directory.
     paths = [args.reports_root / str(index) / "shard.json" for index in args.indices]
     require({p for p in args.reports_root.rglob("*") if p.is_file()} == set(paths),
             "missing or extra shard artifacts")
     documents = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
     full = documents[0]["full_collection"]
-    groups = partition(full, args.count)
+    groups = [ordered_shard(full, args.count, index) for index in range(args.count)]
     for index, doc in enumerate(documents):
         require(isinstance(doc, dict) and type(doc["version"]) is int and doc["version"] == 1,
                 "unsupported shard evidence version")
         expected = {"checkout_sha": args.sha, "github_sha": args.sha,
-                    "run_id": args.run_id, "run_attempt": args.run_attempt,
+                    "run_id": args.run_id, "run_attempt": attempts[str(index)],
                     "shard_index": index, "shard_count": args.count, "pytest_session_exit": 0}
         require(all(type(doc[key]) is type(value) and doc[key] == value
                     for key, value in expected.items()), "shard identity or pytest exit mismatch")
@@ -386,7 +419,7 @@ def verify(args):
             expected_phases = ({"setup", "teardown"} if node_phases.get("setup") == "skipped"
                                else {"setup", "call", "teardown"})
             require(set(node_phases) == expected_phases, "missing or unexpected phase report")
-    print(f"Verified {len(full)} collected nodes across two Windows shards")
+    print(f"Verified {len(full)} collected nodes across {args.count} Windows shards")
 
 
 def main():
@@ -395,7 +428,9 @@ def main():
     parser.add_argument("--reports-root", type=Path, required=True)
     parser.add_argument("--sha", required=True)
     parser.add_argument("--run-id", required=True)
-    parser.add_argument("--run-attempt", required=True)
+    attempt = parser.add_mutually_exclusive_group(required=True)
+    attempt.add_argument("--run-attempt")
+    attempt.add_argument("--run-attempts")
     parser.add_argument("--count", type=int, required=True)
     parser.add_argument("--indices", type=int, nargs="+", required=True)
     parser.add_argument("--needs-result", required=True)

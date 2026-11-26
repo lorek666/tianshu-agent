@@ -24,15 +24,20 @@
 
 ## 2. 当前状态速览
 
-- **Agent 主循环本地候选（2026-11-23，尚未合入）**：已集成通用 Mission、
+- **Agent 主循环本地候选（2026-11-26，尚未合入）**：已集成通用 Mission、
   结构化 Plan、独立 Verification、Goal V2 的手动/有限自动推进、累计请求预算、
   无进展与阻断恢复、有限人类授权及命令/MCP 执行准入。桌面可创建 V2 目标、
   确认图、人工验收、暂停/恢复和撤销有限授权。前轮冻结通过本机全量与独立复审，
-  但前两轮完整原生 CI 真实失败，后一轮 Windows 分片累计触及原有时限。
-  新候选 `ccce3e3` 校准实测分片成本并复用真实评测材料，已通过新的本机全量与独立
-  增量复审；完整 required CI 结果由最终 PR 对象的检查单独证明。不代表主干、发行版或完整
-  跨平台自主执行已交付。
-  精确验证、入口与 P0-E 未决范围见[实施记录](changelog/2026-11-23-agent-loop-implementation.md)。
+  但 `b1444a9` 的 hosted run `45720477289` 在 Windows 四片完整执行后，由 shard3 的
+  `restart_recovery_ms p95=2259.816ms > 2000.0ms` 真实拒绝；同轮单 macOS Python
+  runner 在99%触及25分钟上限。当前本地修复保持阈值、repeats、权重、完整覆盖与
+  required 名称不变，将 SLO/soak 固定到所属分片首位，并把 macOS Python 拆为 count2
+  独立 runner。`575ccda` 已通过本机全量、静态门禁与独立复审，且 hosted run
+  `45751111103` 的 Windows 四片、Ubuntu、UI 和 Rust 均成功；但 macOS shard1 暴露
+  `test_retry_exhausts_and_reports` 的平台相关夹具缺陷。确定性修复的新代码树已重新通过
+  本机全量、最终静态、有效变异与独立复审，P0/P1/P2 均无；新 head 的 hosted required CI
+  仍须完成。这不代表主干、发行版或完整跨平台自主执行已交付。精确验证与未决范围见
+  [本轮 CI 修复记录](changelog/2026-11-26-pr225-ci-slo-isolation.md)。
 - **Goal 模式 G1 候选（2026-11-22，本地未合入）**：支持 `/goal`、目标配置、
   每轮手动推进和逐项人工验收；创建只保存配置，不启动模型。状态由事件及 Run
   派生，失败、空正文及 `partial/unknown` 结果均阻断继续与验收。已整合固定主干
@@ -173,7 +178,7 @@
 
 **派生硬约束**：安全不能靠用户配置（默认值必须正确）；默认可写就必须默认可撤销；单用户假设必须显式声明。
 
-- **Windows CI 分片决定（2026-11-14）**：保留四 required 名称与25分钟上限，以两个独立 runner 按整文件分片，避免同 runner 并发引入端口/进程/资源竞争。汇总 job 在 Ubuntu 核验真实 Windows job 的结论与开发报告；完整收集快照先于其它筛选，最终列表再核，不用选后列表倒推全集。报告不是独立执行证明，必须与上游 job success 一起使用；不新增产品契约、依赖或 skip。
+- **Windows CI 分片决定（2026-11-14；2026-11-26 拓扑同步）**：保留四 required 名称与25分钟上限，以四个独立 runner 各执行一个 count4 整文件分片。历史两 runner 单 worker 会累计超时；两 runner 各并行两个 worker 又在 #228 的 hosted run `45705494683` 两个 attempt 污染冷启动 SLO，因此不串行退回半套测试，也不同机并行 worker。汇总 job 在 Ubuntu 按每个 shard 的真实 artifact attempt 分别下载并核验四个报告；完整收集快照先于其它筛选，最终列表再核，不用选后列表倒推全集。报告不是独立执行证明，必须与上游 job success 一起使用；不降低权重或 SLO 阈值，不新增产品契约、依赖或 skip。下游 #225 只同步拓扑与证据归属，不覆盖本分支权重表。
 
 ### 收尾轮实现决策（2026-11-11，PR #66–#72）
 
@@ -585,6 +590,9 @@
 - **能推翻结论的实验要留提交，但不进产品（2026-11-13）**：`codex/debug-windows-diagnostic`、`codex/debug-host-stop-diagnostic` 刻意停在分支——纯标准库反例证明「原生定时转储会在动态 frame 负载下崩」，但那是证据不是产品。教训：反例实验要有自己可复现的提交与 run，可以永远不合 main；历史误红保留原样，「当时现场」与「本次结论」分开写，既不倒推找回已丢的 stderr，也不把实验成功当产品通过。
 - **「只在某平台红」先假设是代码（2026-11-13 issue #50 收口）**：长期结论是「生产不受影响、必须实机才能定位」，实际根因是 `load_authkey()` 缺 `O_BINARY`：Windows 文本模式把随机 `LF` 扩成 `CRLF`，创建者返回原 key、后续进程读到另一个 key；GitHub 托管 runner 稳定复现。教训：跨平台默认值（编码、换行、文本/二进制模式、路径分隔符）一律显式写死；把平台差异当环境噪声，一个真缺陷可以挂上几个月。
 - **第二读者要换的是上下文，不是措辞（2026-11-13）**：本轮复审在新会话 + detached 工作树执行，作者不为自己批准，只按已冻结的验收项逐条对照，记录完整 SHA、范围、命令、输出与未决项。教训：同一上下文里「再检查一遍」用的还是同一套错误假设；复审的成本主要在**重建独立观察环境**，省掉这一步就等于自审。
+- **分片隔离 worker，不等于隔离长进程内的累计负载（2026-11-26）**：四个独立 Windows runner 消除了同机 paired-worker 的 SLO 污染，但 hosted run `45720477289` 仍在长 pytest 进程后段出现 `restart_recovery` 超限，`45722985924` 又出现 `startup_cold` 超限。修复不是提高阈值、减少 repeats 或重跑洗白，而是保持文件权重和 `full_collection` 不变，只把时序敏感的 SLO/soak 节点移到所属分片首位，并让 pytest items 与 verifier 使用同一确定性顺序。该顺序只隔离同分片前序测试的累积压力，不保证消除 OS/宿主 runner 抖动；macOS 单 runner 的99%超时另用 count2 独立 runner 解决。
+- **测试临时根也要给原生端点留长度（2026-11-26）**：本机全量两次在 SLO warmup 报 Daemon `exit=2`，单节点却通过；真实根因是 `TIANSHU_TEST_TMP_ROOT` 命名过长，使 `warmup_cold/run/daemon.sock` 达到 104/105 字节，超过 macOS `sockaddr_un` 的 103 字节可绑定上限，而非前序测试污染。排查时必须同时检查路径长度与平台原生限制，不能把环境调用错误误记成产品回归，也不能靠重跑洗白。
+- **连接拒绝测试不能依赖宿主 TCP 时序（2026-11-26）**：bound-but-not-listening 端口在 macOS 可能等待到连接超时；总 deadline 烧尽后按契约不再尝试，旧测试却要求两次。把 `conn.connect()` 的 `ConnectionRefusedError` 做成确定性夹具，既保留 OSError 分类证据，也避免 Linux/macOS 的拒绝与超时差异随机翻红。
 
 ## 6. 流程规则（风险分级门禁 + 隔离纪律）
 
@@ -597,6 +605,15 @@
 - 细节见 [CONTRIBUTING.md](../CONTRIBUTING.md) 与 [AGENTS.md](../AGENTS.md)。
 
 ## 7. 已知限制 / 未决问题
+
+- **SLO-first 与 macOS count2 仍待新冻结的 hosted 证明（2026-11-26）**：
+  本地真子进程测试证明 SLO/soak 在所属分片首位执行、完整 collection 与分组权重不变，
+  verifier 也拒绝换回后置顺序的伪造报告；这证明调度契约，不证明 hosted runner 的 SLO
+  必然通过。旧 Windows SLO 红与 macOS 99% 超时保留；`575ccda` 的本机全量、静态与
+  独立复审通过，hosted run `45751111103` 的 Windows 四片也全部成功，但 macOS shard1
+  因网络重试测试把平台相关连接超时误当成立即拒绝而失败。确定性测试修复的新代码树已重新
+  完成本机全量、静态、两项有效变异与独立复审，下一步必须用新 head 的 hosted required CI
+  收口，不能用旧绿或重跑后的绿覆盖旧失败。
 
 - **Mission / MCP 接缝候选不等于自动隔离交付（2026-11-22）**：
   pending/frozen 输入和稳定语义版本仅修复路由与发现顺序；受管 stdio 正向测试使用
