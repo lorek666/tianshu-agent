@@ -347,6 +347,11 @@ class JobStore:
         轮询认领它只会每轮涨一次 claim_epoch，把用户刚批的审批作废。
         """
         for _ in range(max_attempts):
+            # 空队列是热路径；只读确认没有候选，避免每轮 poll 都抢写锁。
+            if self._conn.execute(
+                "SELECT 1 FROM jobs WHERE state IN ('pending','claimed') LIMIT 1"
+            ).fetchone() is None:
+                return None
             # 判定与认领必须在**同一个写事务**里：`BEGIN IMMEDIATE` 一拿到写锁，
             # 别的进程就没法在"我看见它是 pending"和"我把它改成 claimed"之间
             # 插进来。分开做的话会出一个很难复现的洞——B 在旧快照上看到 pending，

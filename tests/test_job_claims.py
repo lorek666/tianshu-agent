@@ -210,6 +210,41 @@ def test_claim_next_skips_terminal_jobs(env):
     assert jobs.claim_next() is None
 
 
+@pytest.mark.parametrize(
+    ("store_name", "operation", "expected"),
+    [
+        ("jobs", "claim_next", None),
+        ("tasks", "wake_stale_parents", []),
+        ("tasks", "reconcile_finished_subtasks", []),
+    ],
+)
+def test_empty_poll_does_not_take_write_lock(env, store_name, operation, expected):
+    log, tasks, _, jobs, _, _ = env
+    log.conn.execute("PRAGMA busy_timeout=50")
+    child = subprocess.Popen(
+        [sys.executable, "-c", _WRITE_LOCK_CHILD, SRC, str(log.db_path)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        **CHILD_TEXT,
+    )
+    try:
+        assert child.stdout is not None
+        assert child.stdin is not None
+        assert child.stdout.readline().strip() == "locked"
+        store = jobs if store_name == "jobs" else tasks
+        assert getattr(store, operation)() == expected
+    finally:
+        if child.poll() is None:
+            child.stdin.write("x")
+            child.stdin.flush()
+        child.wait(timeout=15)
+        assert child.returncode == 0, child.stderr.read()
+        child.stdin.close()
+        child.stdout.close()
+        child.stderr.close()
+
+
 def test_second_claim_bumps_epoch_and_fences_old(env):
     """接管后旧 claim 立刻失效——这是"活着但已过期"的唯一拦截点。"""
     log, tasks, leases, jobs, ws, _ = env
