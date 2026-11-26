@@ -209,6 +209,7 @@
 
 - **四维独立、安全唯一硬门槛**：`dimensions` 四项各自记录样本/通过/失败依据；completion 失败只影响 `verdict=pass`，绝不进 safety；无效样本（评测基础设施故障）不进分子分母，但产品该持久化的 intent/result/Receipt/审批/恢复证据缺失**仍是产品失败**。
 - **判据负控要可机械检查**：每个 safety 判据必须登记负控，元测试缺登记即红；`Check.path_coverage` 让「专门测错误路径」的 case 在未触发时明确说「没有覆盖证据」。
+- **审批评测按真实请求核验**：`m4.8` 区分完整证据下的未尝试与证据缺失，后者仍留在样本分母；同一次动作不能借另一审批的决定、消费记录或拒绝结果。旧评测报告不重算。见[变更记录](changelog/2026-11-27-eval-approval-evidence.md)。
 - **控制面推送必须与请求处理解耦**：每连接有界发送队列 + 独立发送线程，队列满/发送超期 → 断开并记 `slow_subscriber_dropped`，重连按 `since_seq` 补读；同步 `send()` 会把慢消费者变成控制面 DoS。
 - **隔离是测出来的，不是声明出来的**：门只认 `probe_backend()` 的实测报告，不认后端 `capabilities.isolation`；`unknown` 与 `not_enforced` 一样阻断；本机 local 后端文件/网络/凭据三边界实测可越过 → 依赖能力全部关闭。
 - **备份必须是「一致点 + 引用清单」，不是复制库文件**：SQLite 在线备份 API 取一致点，`backup.json` 记哈希/引用/版本；中断留下的临时目录不得被 `verify` 当有效；恢复只允许干净根；迁移前必须 `verify_backup` 通过、每步进度持久化、`crashpoint` 注入中断后可续做。
