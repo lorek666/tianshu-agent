@@ -195,6 +195,58 @@ def _dummy_valid_slo_report(thresholds: dict, sha: str) -> dict:
     }
 
 
+@pytest.mark.parametrize("slow_startup", [False, True])
+def test_slo_startup_diagnostic_write_failure_preserves_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    slow_startup: bool,
+) -> None:
+    thresholds, sha, _ = slo_mod.load_and_validate_thresholds()
+    fixture = _dummy_valid_slo_report(thresholds, sha)
+    cold_ms = thresholds["metrics"]["startup_cold_ms"]["max_ceiling"] + 1 if slow_startup else 5.0
+    monkeypatch.setattr(slo_mod, "collect_hardware_metadata", lambda: fixture["environment"])
+    monkeypatch.setattr(
+        slo_mod, "run_suite1_startup",
+        lambda *args, **kwargs: ([cold_ms], [5.0], fixture["dataset"]),
+    )
+    monkeypatch.setattr(
+        slo_mod, "run_suite2_cancel_and_approval",
+        lambda *args, **kwargs: (
+            [5.0], [5.0], [5.0], fixture["slow_subscriber"], fixture["in_flight_effects"],
+        ),
+    )
+    monkeypatch.setattr(
+        slo_mod, "run_suite3_crash_recovery",
+        lambda *args, **kwargs: ([5.0], fixture["recovery_audit"]),
+    )
+    # A real file where the writer requires a directory fails on all platforms.
+    collision = tmp_path / "not-a-directory"
+    collision.write_bytes(b"keep")
+    samples = tmp_path / "samples.json"
+    gate_json = tmp_path / "gate.json"
+    gate_md = tmp_path / "gate.md"
+
+    code = slo_mod.main([
+        "--smoke", "--repeats", "1", "--output-startup-phases-json", str(collision / "phases.json"),
+        "--output-samples-json", str(samples), "--output-json", str(gate_json),
+        "--output-md", str(gate_md),
+    ])
+
+    captured = capsys.readouterr()
+    assert code == 1
+    assert "startup_phases_write_failed" in captured.err
+    assert str(tmp_path) not in captured.err
+    assert collision.read_bytes() == b"keep"
+    report = json.loads(gate_json.read_text(encoding="utf-8"))
+    verdict = "FAIL" if slow_startup else "PASS"
+    assert report["verdict"] == json.loads(captured.out)["verdict"] == verdict
+    assert gate_md.read_text(encoding="utf-8") == slo_mod.render_markdown_report(report)
+    raw = json.loads(samples.read_text(encoding="utf-8"))["samples"]
+    assert set(raw) == set(slo_mod.REQUIRED_SLO_METRICS)
+    assert raw["startup_cold_ms"] == [cold_ms]
+    assert raw["approval_rpc_ms"] == raw["restart_recovery_ms"] == [5.0]
+    assert bool(report["failures"]) is slow_startup
+
+
 def test_slo_schema_and_frozen_thresholds_binding() -> None:
     thresholds, sha, defs = slo_mod.load_and_validate_thresholds(
         THRESHOLDS_PATH, schema_path=SCHEMA_PATH

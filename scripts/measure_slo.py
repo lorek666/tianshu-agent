@@ -2956,6 +2956,7 @@ def run_all_benchmarks(
     startup_phases: dict[str, _StartupPhaseSamples] | None = (
         {"cold": [], "warm": []} if startup_phases_path is not None else None
     )
+    startup_phases_failed = False
 
     try:
         cold_samples, warm_samples, dataset_info = run_suite1_startup(
@@ -2971,10 +2972,16 @@ def run_all_benchmarks(
         if startup_phases_path is not None and startup_phases is not None:
             # Preserve completed startup evidence even if a later suite fails.
             phases = {"schema_version": "slo-startup-phases-v1", **startup_phases}
-            atomic_write_bytes(
-                startup_phases_path,
-                (json.dumps(phases, indent=2, allow_nan=False) + "\n").encode("utf-8"),
-            )
+            try:
+                atomic_write_bytes(
+                    startup_phases_path,
+                    (json.dumps(phases, indent=2, allow_nan=False) + "\n").encode("utf-8"),
+                )
+            except (OSError, ValueError) as exc:
+                startup_phases_failed = True
+                # Keep the benchmark and its reports independent of this diagnostic.
+                print(f"[slo-gate] startup_phases_write_failed: {type(exc).__name__}",
+                      file=sys.stderr, flush=True)
         (
             cancel_ack_samples,
             cancel_stop_samples,
@@ -3052,13 +3059,14 @@ def run_all_benchmarks(
     }
     extra_redact = [str(temp_base), str(REPO_ROOT), str(Path.home())]
     redacted_report = _redact_obj(raw_report, extra_paths=extra_redact)
-    return evaluate_slo_gate(
+    report, exit_code = evaluate_slo_gate(
         redacted_report,
         thresholds,
         smoke=smoke,
         smoke_repeats=repeats,
         schema_defs=defs,
     )
+    return report, exit_code or int(startup_phases_failed)
 
 
 def _build_parser() -> argparse.ArgumentParser:
