@@ -1520,14 +1520,20 @@ class _Daemon:
                     raise TianshuError("续跑心跳生命周期尚未收拢，拒绝继续认领或驱动")
                 tasks = self.driver_stack.tasks
                 claims = self.driver_stack.claims
-                run = tasks.get_run(run_id)
-                if run is None or run.state in TERMINAL_STATES or run.state == RUN_FENCED:
-                    return
-                claim = engine.current_claim(run_id)
-                if claim is None:
-                    job = claims.job_for_run(run_id) if claims is not None else None
-                    if job is not None and job.state not in ("done", "cancelled"):
-                        claim = claims.claim(job.job_id)
+                with tasks.transaction():
+                    run = tasks.get_run(run_id)
+                    if run is None or run.state in TERMINAL_STATES or run.state == RUN_FENCED:
+                        return
+                    # Waiting jobs may receive a new epoch here, before the loop can
+                    # decode its cursor. Validate persisted provenance under the same lock.
+                    saved = tasks.load_cursor(run_id)
+                    if saved is not None:
+                        saved[0].has_exact_model_attempts()
+                    claim = engine.current_claim(run_id)
+                    if claim is None:
+                        job = claims.job_for_run(run_id) if claims is not None else None
+                        if job is not None and job.state not in ("done", "cancelled"):
+                            claim = claims.claim(job.job_id)
 
                 def settle() -> None:
                     if claim is not None:

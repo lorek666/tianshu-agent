@@ -143,11 +143,12 @@ class _Progress:
             turns=int(ledger.get("turns", 0) or 0),
             # 旧游标没有尝试次数键：以完成轮次为**下限**（每次成功至少一次
             # 尝试），并标记 `model_attempts_known=False`——展示层据此说"不知道"，
-            # 而不是把一个下限当成精确值。resume 后新增的尝试继续累加。
+            # 而不是把一个下限当成精确值。resume 后新增的尝试继续累加，
+            # 但之前保存的 False 不能因计数键已存在而变成 True。
             model_attempts=int(
                 ledger.get("model_attempts", ledger.get("turns", 0)) or 0
             ),
-            model_attempts_known="model_attempts" in ledger,
+            model_attempts_known=cursor.has_exact_model_attempts(),
             tokens=int(ledger.get("tokens", 0) or 0),
             unknown_usage_calls=int(ledger.get("unknown_usage_calls", 0) or 0),
             cost_total_micros=int(ledger.get("cost_total_micros", 0) or 0),
