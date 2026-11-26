@@ -9,9 +9,9 @@ permissions:
 
 jobs:
   diagnostic:
-    name: Approval timing on Windows (diagnostic only)
+    name: Approval timing during Windows shard 3 (diagnostic only)
     runs-on: windows-latest
-    timeout-minutes: 10
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -23,23 +23,33 @@ jobs:
           path: frozen
           persist-credentials: false
       - uses: astral-sh/setup-uv@v5
-      - name: Reproduce the standalone approval workload and capture numeric spans
-        shell: pwsh
+        with:
+          enable-cache: true
+          cache-dependency-glob: frozen/uv.lock
+      - name: Prepare the frozen checkout
+        shell: bash
         working-directory: frozen
         run: |
-          $ErrorActionPreference = 'Stop'
-          $PSNativeCommandUseErrorActionPreference = $true
           uv python install 3.12
           uv lock --check
           uv sync --frozen
-          $probe = Join-Path $env:GITHUB_WORKSPACE 'probe/scripts/approval_rpc_diagnostic'
-          $root = Join-Path $env:RUNNER_TEMP 'approval-diagnostic'
-          $env:TIANSHU_CREDENTIAL_BACKEND = 'env'
-          $env:PYTHONPATH = "$probe/hooks;$PWD/scripts;$PWD/src"
-          New-Item -ItemType Directory -Path $root | Out-Null
-          foreach ($index in 0..2) {
-            uv run --frozen python "$probe/suite2.py" "$root/run-$index"
-          }
+          uv run --frozen ruff check .
+      - name: Run unmodified shard selection with approval observation enabled for the smoke test
+        shell: bash
+        working-directory: frozen
+        env:
+          PYTEST_ADDOPTS: ""
+          CI_SHARD_INDEX: "3"
+          CI_SHARD_REPORT: ${{ runner.temp }}/approval-diagnostic/shard.json
+          TIANSHU_SLO_DIAGNOSTICS_DIR: ${{ runner.temp }}/approval-diagnostic/slo
+          TIANSHU_APPROVAL_DIAGNOSTIC_OUTPUT: ${{ runner.temp }}/approval-diagnostic/timings
+        run: |
+          PYTHONPATH="$(cygpath -w ../probe/scripts/approval_rpc_diagnostic)"
+          export PYTHONPATH
+          uv run --frozen python scripts/pytest_with_stacks.py -p pytest_ci_shards \
+            --ci-shard-index=3 --ci-shard-count=4 --ci-shard-report="$CI_SHARD_REPORT" \
+            -o addopts="" -vv -rs --tb=short --durations=20 --stack-timeout=60 \
+            -p approval_trace_plugin
       - uses: actions/upload-artifact@v4
         if: always()
         with:

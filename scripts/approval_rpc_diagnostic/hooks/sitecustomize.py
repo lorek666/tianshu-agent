@@ -2,6 +2,7 @@
 
 import json
 import os
+import runpy
 import sys
 from contextlib import contextmanager
 from functools import wraps
@@ -111,8 +112,43 @@ def install_daemon():
         patch(cls, method, label)
 
 
-if os.environ.get(TRACE) and len(sys.argv) >= 3 and sys.argv[1] == "--_child-role":
-    if sys.argv[2] == "slo-host":
-        install_host()
-    elif sys.argv[2] == "slo-daemon":
-        install_daemon()
+def install_measurement(script):
+    # After the CLI defines _http_request, wrap it before main first measures.
+    # Remove tracing before the measured workload to avoid profiling call overhead.
+    assert sys.gettrace() is None
+
+    def on_entry(frame, event, _arg):
+        if (
+            event == "call"
+            and frame.f_code.co_name == "main"
+            and Path(frame.f_code.co_filename).resolve() == script
+        ):
+            sys.settrace(None)
+            saved = frame.f_globals["_http_request"]
+
+            @wraps(saved)
+            def http(port, method, path, token, body=None, **kwargs):
+                if isinstance(body, dict) and body.get("method") == APPROVAL:
+                    with record("client", "http"):
+                        return saved(port, method, path, token, body, **kwargs)
+                return saved(port, method, path, token, body, **kwargs)
+
+            frame.f_globals["_http_request"] = http
+        return None
+
+    sys.settrace(on_entry)
+
+
+if os.environ.get(TRACE):
+    isolation_hook = os.environ.get("TIANSHU_PRIVATE_APPROVAL_ISOLATION_HOOK")
+    if isolation_hook:
+        runpy.run_path(isolation_hook)
+    script = Path(sys.argv[0]).resolve()
+    if script.name == "measure_slo.py":
+        if len(sys.argv) >= 3 and sys.argv[1] == "--_child-role":
+            if sys.argv[2] == "slo-host":
+                install_host()
+            elif sys.argv[2] == "slo-daemon":
+                install_daemon()
+        elif isolation_hook:
+            install_measurement(script)
