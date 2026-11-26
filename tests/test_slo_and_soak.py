@@ -15,6 +15,7 @@ import copy
 import datetime as dt
 import hashlib
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -491,6 +492,7 @@ def test_measure_slo_smoke_and_run_soak_real_subprocesses(
     slo_json = tmp_path / "slo-smoke.json"
     slo_md = tmp_path / "slo-smoke.md"
     slo_samples = tmp_path / "slo-samples.json"
+    startup_phases = tmp_path / "slo-startup-phases.json"
     soak_dir = tmp_path / "soak-out"
     diagnostics_value = os.environ.get("TIANSHU_SLO_DIAGNOSTICS_DIR")
     diagnostics = Path(diagnostics_value) if diagnostics_value else None
@@ -511,6 +513,8 @@ def test_measure_slo_smoke_and_run_soak_real_subprocesses(
                 str(slo_md),
                 "--output-samples-json",
                 str(slo_samples),
+                "--output-startup-phases-json",
+                str(startup_phases),
             ],
             env=dict(os.environ),
         )
@@ -553,6 +557,7 @@ def test_measure_slo_smoke_and_run_soak_real_subprocesses(
             slo_json,
             slo_md,
             slo_samples,
+            startup_phases,
             soak_dir / "soak-report.json",
             soak_dir / "samples.jsonl",
             soak_dir / "status.json",
@@ -566,7 +571,7 @@ def test_measure_slo_smoke_and_run_soak_real_subprocesses(
             "cpu_count": os.cpu_count(),
             "platform": slo_mod.platform.platform(),
             "pytest_worker": os.environ.get("PYTEST_XDIST_WORKER"),
-            "ci_shard_index": os.environ.get("TIANSHU_CI_SHARD_INDEX"),
+            "ci_shard_index": os.environ.get("CI_SHARD_INDEX"),
             "timeouts": timeouts,
         },
     )
@@ -585,6 +590,25 @@ def test_measure_slo_smoke_and_run_soak_real_subprocesses(
     samples_report = json.loads(slo_samples.read_text(encoding="utf-8"))
     assert samples_report["schema_version"] == "slo-samples-v1"
     assert set(samples_report["samples"]) == set(slo_mod.REQUIRED_SLO_METRICS)
+    phases = json.loads(startup_phases.read_text(encoding="utf-8"))
+    assert set(phases) == {"schema_version", "cold", "warm"}
+    assert phases["schema_version"] == "slo-startup-phases-v1"
+    boundaries = ("process_spawned_ms", "host_ready_ms", "state_ready_ms", "task_created_ms")
+    for kind in ("cold", "warm"):
+        totals = samples_report["samples"][f"startup_{kind}_ms"]
+        assert len(phases[kind]) == len(totals)
+        for sample, total in zip(phases[kind], totals, strict=True):
+            assert set(sample) == {*boundaries, "daemon_internal_ready_ms"}
+            offsets = [sample[name] for name in boundaries]
+            assert all(type(value) in (int, float) and math.isfinite(value) for value in offsets)
+            assert 0 <= offsets[0] <= offsets[1] <= offsets[2] <= offsets[3] == total
+            internal = sample["daemon_internal_ready_ms"]
+            assert internal is None or (type(internal) in (int, float) and math.isfinite(internal)
+                                        and internal >= 0)
+    if diagnostics is not None:
+        assert (diagnostics / startup_phases.name).read_bytes() == startup_phases.read_bytes()
+        context = json.loads((diagnostics / "run-context.json").read_text(encoding="utf-8"))
+        assert context["ci_shard_index"] == os.environ.get("CI_SHARD_INDEX")
     for name, samples in samples_report["samples"].items():
         metric = slo_report["metrics"][name]
         config = thresholds["metrics"][name]

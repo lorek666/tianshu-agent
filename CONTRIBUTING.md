@@ -118,6 +118,12 @@ macOS 与每个 Windows worker 把 state 背压诊断写入严格报告树之外
 [#229](https://github.com/lorek666/tianshu-agent/pull/229) 早先上传 runner 临时目录下的
 单个 JSON；本批每片沿用上述诊断目录中的文件，同一报告每片只上传一次。
 
+运行 SLO 冒烟测试的分片还会在同一诊断工件中保存 `slo-startup-phases.json`。
+冷、热样本分开记录，从同一起点计到进程拉起、Host 就绪、HTTP `/state` 可读和
+首个 `task.create` 成功；Daemon 内部就绪耗时另列，不与这些时间点相减。
+诊断只含数值、固定字段和版本，启动套件完成后即写出。冷、热样本的最终时间仍由原
+SLO 门禁验收，诊断不改变计时口径、样本数或阈值。
+
 Windows
 在四个独立 `windows-latest` runner 上使用原包装器，每台只执行一个真实 pytest 分片，
 避免同机并行测试 worker 污染冷启动 SLO。执行以下命令（`INDEX` 为 0 至 3，

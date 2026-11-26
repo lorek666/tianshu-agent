@@ -62,6 +62,7 @@ from tianshu.capability import CapabilityProfile  # noqa: E402
 from tianshu.diagnostics_export import redact_diagnostic_text  # noqa: E402
 from tianshu.events import EventLog  # noqa: E402
 from tianshu.execution_admission import process_birth_identity  # noqa: E402
+from tianshu.fsutil import atomic_write_bytes  # noqa: E402
 from tianshu.leases import pid_alive  # noqa: E402
 from tianshu.loop import AgentLoop, Limits, build_stack  # noqa: E402
 from tianshu.model import (  # noqa: E402
@@ -1548,6 +1549,9 @@ def _seed_warm_template(
     }
 
 
+type _StartupPhaseSamples = list[dict[str, float | None]]
+
+
 def _measure_one_host_startup(
     data_root: Path,
     *,
@@ -1556,6 +1560,7 @@ def _measure_one_host_startup(
     lock_root: Path,
     expect_warm_events: int,
     tracked_pids: TrackedPids,
+    phase_samples: _StartupPhaseSamples | None = None,
 ) -> tuple[float, float | None]:
     env = _isolated_env(
         data_root=data_root,
@@ -1582,6 +1587,7 @@ def _measure_one_host_startup(
         ],
         env=env,
     )
+    spawned_at = time.perf_counter() if phase_samples is not None else t0
     _record_pid(proc.pid, tracked_pids)
     try:
         remaining = startup_deadline - time.monotonic()
@@ -1590,6 +1596,7 @@ def _measure_one_host_startup(
         info = _wait_host_ready(
             proc, data_root, stderr_log, timeout=remaining,
         )
+        ready_at = time.perf_counter() if phase_samples is not None else t0
         if time.monotonic() >= startup_deadline:
             raise RuntimeError("Host 在 30s 内未进入就绪状态")
         while True:
@@ -1617,6 +1624,7 @@ def _measure_one_host_startup(
                 raise RuntimeError("Host 在 30s 内未进入就绪状态")
             time.sleep(0.005)
 
+        state_at = time.perf_counter() if phase_samples is not None else t0
         st_create, create_resp = _http_request(
             info.port,
             "POST",
@@ -1634,6 +1642,14 @@ def _measure_one_host_startup(
         records = metrics_mod.read_metrics(data_root)
         ready_vals = metrics_mod.metric_values(records, metrics_mod.STARTUP_READY_MS)
         internal_ms = ready_vals[-1] if ready_vals else None
+        if phase_samples is not None:
+            phase_samples.append({
+                "process_spawned_ms": (spawned_at - t0) * 1000.0,
+                "host_ready_ms": (ready_at - t0) * 1000.0,
+                "state_ready_ms": (state_at - t0) * 1000.0,
+                "task_created_ms": elapsed_ms,
+                "daemon_internal_ready_ms": internal_ms,
+            })
         return elapsed_ms, internal_ms
     finally:
         _record_lock_pids(data_root, tracked_pids, phase="startup_before_stop")
@@ -1659,6 +1675,7 @@ def run_suite1_startup(
     authority_root: Path,
     lock_root: Path,
     tracked_pids: TrackedPids,
+    startup_phases: dict[str, _StartupPhaseSamples] | None = None,
 ) -> tuple[list[float], list[float], dict[str, Any]]:
     ui_dir = REAL_UI_DIST if (REAL_UI_DIST / "index.html").is_file() else base_dir / "empty_ui"
     ui_dir.mkdir(parents=True, exist_ok=True)
@@ -1689,6 +1706,7 @@ def run_suite1_startup(
             lock_root=lock_root,
             expect_warm_events=0,
             tracked_pids=tracked_pids,
+            phase_samples=None if startup_phases is None else startup_phases["cold"],
         )
         cold_samples.append(ms)
         if internal is not None:
@@ -1718,6 +1736,7 @@ def run_suite1_startup(
             lock_root=lock_root,
             expect_warm_events=seed_stats["warm_events"],
             tracked_pids=tracked_pids,
+            phase_samples=None if startup_phases is None else startup_phases["warm"],
         )
         warm_samples.append(ms)
         if internal is not None:
@@ -2907,6 +2926,7 @@ def run_all_benchmarks(
     thresholds_path: Path = DEFAULT_THRESHOLDS_PATH,
     schema_path: Path = DEFAULT_SCHEMA_PATH,
     samples_path: Path | None = None,
+    startup_phases_path: Path | None = None,
 ) -> tuple[dict[str, Any], int]:
     thresholds, thresholds_sha, defs = load_and_validate_thresholds(
         thresholds_path, schema_path=schema_path
@@ -2933,6 +2953,9 @@ def run_all_benchmarks(
         else min(150, int(ds_profile["warm_events_min"]))
     )
     event_bytes_min = int(ds_profile["slow_subscriber_event_bytes_min"])
+    startup_phases: dict[str, _StartupPhaseSamples] | None = (
+        {"cold": [], "warm": []} if startup_phases_path is not None else None
+    )
 
     try:
         cold_samples, warm_samples, dataset_info = run_suite1_startup(
@@ -2943,7 +2966,15 @@ def run_all_benchmarks(
             authority_root=authority_root,
             lock_root=lock_root,
             tracked_pids=tracked_pids,
+            startup_phases=startup_phases,
         )
+        if startup_phases_path is not None and startup_phases is not None:
+            # Preserve completed startup evidence even if a later suite fails.
+            phases = {"schema_version": "slo-startup-phases-v1", **startup_phases}
+            atomic_write_bytes(
+                startup_phases_path,
+                (json.dumps(phases, indent=2, allow_nan=False) + "\n").encode("utf-8"),
+            )
         (
             cancel_ack_samples,
             cancel_stop_samples,
@@ -3075,6 +3106,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="额外写出未聚合的数值样本，供 CI 性能失败诊断",
     )
+    parser.add_argument(
+        "--output-startup-phases-json",
+        type=Path,
+        default=None,
+        help="额外写出每次冷、热启动的分段时间，供 CI 性能失败诊断",
+    )
     # 内部受控子进程参数（--data-root 与 host.run_host 的子进程约定保持一致）
     parser.add_argument("--_child-role", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--data-root", default=None, help=argparse.SUPPRESS)
@@ -3106,6 +3143,7 @@ def main(argv: list[str] | None = None) -> int:
             thresholds_path=args.thresholds,
             schema_path=args.schema,
             samples_path=args.output_samples_json,
+            startup_phases_path=args.output_startup_phases_json,
         )
     except SloConfigError as exc:
         print(f"[slo-gate] 配置或契约错误：{exc}", file=sys.stderr)
