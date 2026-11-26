@@ -24,6 +24,33 @@
 
 ## 2. 当前状态速览
 
+- **Agent 主循环本地候选（2026-11-26，尚未合入）**：已集成通用 Mission、
+  结构化 Plan、独立 Verification、Goal V2 的手动/有限自动推进、累计请求预算、
+  无进展与阻断恢复、有限人类授权及命令/MCP 执行准入。桌面可创建 V2 目标、
+  确认图、人工验收、暂停/恢复和撤销有限授权。前轮冻结通过本机全量与独立复审，
+  但 `b1444a9` 的 hosted run `45720477289` 在 Windows 四片完整执行后，由 shard3 的
+  `restart_recovery_ms p95=2259.816ms > 2000.0ms` 真实拒绝；同轮单 macOS Python
+  runner 在99%触及25分钟上限。当前本地修复保持阈值、repeats、权重、完整覆盖与
+  required 名称不变，将 SLO/soak 固定到所属分片首位，并把 macOS Python 拆为 count2
+  独立 runner。`575ccda` 已通过本机全量、静态门禁与独立复审，且 hosted run
+  `45751111103` 的 Windows 四片、Ubuntu、UI 和 Rust 均成功；但 macOS shard1 暴露
+  `test_retry_exhausts_and_reports` 的平台相关夹具缺陷。确定性修复的新代码树已重新通过
+  本机全量、最终静态、有效变异与独立复审，P0/P1/P2 均无；新 head 的 hosted required CI
+  仍须完成。这不代表主干、发行版或完整跨平台自主执行已交付。精确验证与未决范围见
+  [本轮 CI 修复记录](changelog/2026-11-26-pr225-ci-slo-isolation.md)。
+- **Goal 模式 G1 候选（2026-11-22，本地未合入）**：支持 `/goal`、目标配置、
+  每轮手动推进和逐项人工验收；创建只保存配置，不启动模型。状态由事件及 Run
+  派生，失败、空正文及 `partial/unknown` 结果均阻断继续与验收。已整合固定主干
+  `7665e8684f5a124fe789f21909ee54325edc556b`；规格见
+  [Goal 设计](SPEC-GOAL-MODE-2026-11-22.md)，验证和待验边界见
+  [交付记录](changelog/2026-11-22-goal-mode.md)。G1 保持手动语义；
+  有限自动推进由新的 V2 契约提供，不能用旧 G1 关闭入口绕过 V2 验收。
+- **本地 Skill 命令候选（2026-11-22，尚未合入）**：新建与追问输入框支持
+  `/`、`/skills`、`/skill <名称或版本标识> [要求]` 和 `/<技能名> [要求]`。
+  只读发现用户与所选工作区的 `.agents/skills`，将选中技能全文保存为本轮输入；
+  不增加工具或授权，不安装或自动执行技能脚本。实现范围、验证和未验证边界见
+  [本轮记录](changelog/2026-11-22-skill-slash-integration.md)与
+  [规格](SPEC-SKILL-COMMANDS-2026-11-22.md)，不代表主干或发行版已交付。
 - **macOS outer 资源封套修复候选（2026-11-20，本地未合入）**：打包末端新增免费 no-force ad-hoc 封套及原生 deep/strict 验证，归档受限往返核对后再原生验证；direct artifact 输入只验证不重签。静态 verifier 精确允许可选封套，历史 unsigned fixture 仍可读。定向红绿与本机 tiny-C 结构实验已执行；局部 code/test 及文档增量已完成独立预审；原组合候选已完成限定独立整合预审，精确 `1c63e8297020dad51f72494a9db3230ffc61ec4f`（tree `6bd04d16c66f3e27b78c82be3be7c6fc35f9c891`）的授权 source 全量、lock/Ruff/diff 与即刻复制留证均 exit0，仅归属该冻结。本地已正常整合含 Responses 实现的主干 `f27a1bf` 为新冻结 `f88e2bd`，自身限定独立复核、受影响回归、UI 门禁、授权 source 全量与即刻复制留证均已完成，不沿用原冻结的绿。新 hosted required CI 和产品原生验收仍待完成，不能将源码/结构夹具证据当作新产品 App 验收。旧 `0.1.0` 草稿不可原地修补，详见[局部修复记录](changelog/2026-11-20-outer-bundle-seal.md)。
 
 - **里程碑与主干进展**：
@@ -32,7 +59,7 @@
 - **整合基线与新候选状态（2026-11-21）**：原 PR [#198](https://github.com/lorek666/tianshu-agent/pull/198) 的 ready CI [44670311820](https://github.com/lorek666/tianshu-agent/actions/runs/44670311820) 真实失败原件保留；修复后的精确 head `314e987ea5c8d1179caff6a4bcdf488c055f577f` 已通过新 ready CI [44678467012](https://github.com/lorek666/tianshu-agent/actions/runs/44678467012)，按保护规则合入 `a0732d9881247998df24db7af9f1c7989c1ae7a4`，该 main 的 push CI [44681321379](https://github.com/lorek666/tianshu-agent/actions/runs/44681321379) 也全部成功。旧红不被后续绿覆盖。本地 `0.1.1` 组合候选整合资源封套、模型用量 v2 和统一身份修复；原冻结 `1c63e8297020dad51f72494a9db3230ffc61ec4f`（tree `6bd04d16c66f3e27b78c82be3be7c6fc35f9c891`）已完成限定独立整合预审、授权 source 全量与静态/复制证据门禁。本地已正常合并含 PR209 Responses 实现的 `f27a1bfe03140e918cdcaa249d3c5c0863638d28`，形成精确新冻结 `f88e2bd55f796da78fc5ca7346ee8b77b4e241a7`（tree `cce786edc46b842c30ba687c10196ac135e36679`）。该组合自身的限定独立整合复核及提交绑定附录、受影响回归、UI install/typecheck/test/build、授权 source 全量与即时 collector、lock/Ruff/diff 均已完成并核验；全量原始日志 SHA256 为 `c76631831b0191d71fe7c4d9eb6e41fceb6c09c385d23f28d43224ab8a60aa8f`，动态总计及跳过原因以原件为准，不能沿用旧冻结的绿。原 `2b91bfc` 全量 RED、PR210 首轮 Windows collection RED 与各自后续最小修复证据均保留。新 required CI、产品 App 原生验收与真实复评仍待验，不能套用旧绿；详见[本轮记录](changelog/2026-11-21-preview-release-repair.md)及[首轮 CI 红与修复证据](changelog/2026-11-20-integration-ci-repair.md)。
 - **当前主要未完成项（[PRD §11.1](PRD-v1.md) 首发：macOS Apple Silicon 限定预览）**：
   - **发行实跑与真机闭环**：`release.yml` 已接入显式 `macos_arm64_preview` 手动开关；默认仍构建四目标，同 SHA 的四项 required CI 与全部 job 成功仍是预览前置。单目标 draft 仅汇总 `macos-arm64`，以索引限制上传文件。精确 a073 已由 [44731411389](https://github.com/lorek666/tianshu-agent/actions/runs/44731411389) 实跑并生成未发布的 `0.1.0` draft；但下载归档 App 的原生 codesign 校验失败，原对象保留、不修补。新候选仍须重新绑定发行与原生验收，并用同一台 Apple Silicon Mac 验收安装、Keychain、核心任务、手动升级/回退和备份恢复，注明实测 macOS 版本。四目标发布实跑、Intel Mac 和 Windows 实机、物理断电不阻塞限定预览；数据安全与进程中断恢复门禁保持不变。Windows / Linux 系统钥匙串后端仍为 `unsupported`。
-  - **普通用户首日开箱体验**：极简双区桌面界面（可折叠 `Sidebar` + `WelcomeComposer` 动态 2.5D 伴侣与自由留空/项目带入工作区 + 内联审批 `TaskWorkspaceView` + 按需「运行洞察」抽屉 + 发送钮左侧 `ModelStatusControl` 快速热切模 + 浅/深/跟随系统内存态外观切换）、8 栏设置中心（`SettingsDialog`：模型热切换与 macOS Keychain 密钥写入、安全授权默认策略、定时任务管理、账户预算账本与对账视图、MCP 只读状态、记忆库入口、守护进程水位与默认脱敏诊断包本地导出、外观与伴侣 7 态动效）、CLI `--desktop` 数据目录桥接、以及 **W4 模型流式输出**（`ModelStreamDelta` + Daemon 瞬态推送 + Host SSE + React `RunTimeline` 实时生成预览）均已落地；真实付费模型驱动 UI 的端到端验收仍待可用 API Key 实测，权限下拉中的「自动审批」「完全访问」仍诚实置灰待后端授权契约接入。
+  - **普通用户首日开箱体验**：极简双区桌面界面（可折叠 `Sidebar` + `WelcomeComposer` 动态 2.5D 伴侣与自由留空/项目带入工作区 + 内联审批 `TaskWorkspaceView` + 按需「运行洞察」抽屉 + 发送钮左侧 `ModelStatusControl` 快速热切模 + 浅/深/跟随系统内存态外观切换）、8 栏设置中心（`SettingsDialog`：模型热切换与 macOS Keychain 密钥写入、安全授权默认策略、定时任务管理、账户预算账本与对账视图、MCP 只读状态、记忆库入口、守护进程水位与默认脱敏诊断包本地导出、外观与伴侣 7 态动效）、CLI `--desktop` 数据目录桥接、以及 **W4 模型流式输出**（`ModelStreamDelta` + Daemon 瞬态推送 + Host SSE + React `RunTimeline` 实时生成预览）均已落地；真实付费模型驱动 UI 的端到端验收仍待可用 API Key 实测，本地主循环候选通过独立「有限范围授权」面板接入执行侧授权；原权限下拉的泛化「自动审批」「完全访问」仍置灰，不承诺无范围放行。
   - **G3 数据与合规门禁**包括 F15 CI 依赖许可证校验与 CycloneDX 1.5 SBOM、D7/F14 本地默认脱敏诊断包，以及 W12 C1/C2/C5 字段级 JSON Schema 与 `run.end` v2 微美元成本汇总。受管恢复 B/C 与 W15 离线 GC 在同一个候选中集成。受管写入需要支持目录 `fsync` 的 POSIX 文件系统，Windows 保留只读计划及符合绑定的复核。旧候选验收与原生 CI 历史见 [#198](https://github.com/lorek666/tianshu-agent/pull/198)，本次组合须绑定新对象验证。当前 G3 仍需候选冻结 SLO 实测。四目标正式发行的 ≥10 小时常驻浸泡仍待验；**首次 `macos-arm64` 限定预览已取消强制 soak 门禁，无替代时长，长时稳定性未验证**（见 §4 与 [PRD §10.6 / §11.1](PRD-v1.md)）。
   - **工单与评测**：Windows 锁与审批回归 [#145](https://github.com/lorek666/tianshu-agent/issues/145)、[#147](https://github.com/lorek666/tianshu-agent/issues/147) 已随 [#195](https://github.com/lorek666/tianshu-agent/pull/195) 合入并关闭，见[修复记录](changelog/2026-11-18-fix-issues-145-147.md)。真实付费模型复跑 [#55](https://github.com/lorek666/tianshu-agent/issues/55) 待验。
 - **历史逐 PR 状态与 CI 哈希流水**：完整归档于 [docs/changelog/archive-2026-11-status.md](changelog/archive-2026-11-status.md)。
@@ -47,12 +74,14 @@
   | ID | 名称 | 当前状态（只写可核实的） |
   |---|---|---|
   | C1 | Model I/O | Chat Completions / Responses / Anthropic Messages 各有独立 adapter；结束原因是封闭集，越界抛 `ModelError`。Responses 实现分支与验证范围见[实施记录](changelog/2026-11-21-openai-responses.md) |
-  | C2 | Tool | **23 个 `ToolSpec`、19 个对模型开放**（4 个控制面专属 `exposed=False`：`memory.remember` / `memory.promote` / `memory.erase` / `restore_file`）；`tool_manifest()` + 每种工具的参数要求由工具自己声明 |
-  | C3 | Event | **已封闭**：45 个事件类型，写入侧拒未登记类型，且逐类型 payload 有 v1 契约（`event_schema.py` + `schemas/c3/event.json`）；声明了但从未发射的类型 **0** 个 |
-  | C4 | Permission/Approval | **rule id 已封闭**：低磁盘 T1–T3 两项空间拒绝与纯读资格拒绝已合入主干，并补齐 W10 可写子任务创建门与控制面/UI F14 人话映射（见 [2026-11-18-t3-audit-closure.md](changelog/2026-11-18-t3-audit-closure.md)）。当前代码/schema/PRD 清单共 78 项，写入前校验。非拒绝判定 10 个（`c4.auto` / `c4.overwrite` / `c4.delete` / `c4.exec` / `c4.mcp_call` / `c4.memory_scope` / `c4.outbound` / `c4.outside_workspace` / `c4.subtask_spawn` / `c4.subtask_cancel`）+ 保留未使用 3 个（`c4.unhandled` / `dispatch.denied` / `c4.subtask_unavailable`）；`c4.approval_rejected` 是 issue #40「否决即终局」新增的拒绝原因；记忆组 6 条（N1 起）见 PRD §5.4.1。审批/凭据见 PRD §5.4 |
-  | C5 | Eval | `replay`（审计，不调模型）与 `evaluate`（换模，干净 fixture）已分离，评测套件 `m4.6`（判据按目标作用域化后逐版本不可比，见 [M4-verification.md](M4-verification.md) §7.4） |
+  | C2 | Tool | `tool_manifest()` 与工具注册表声明身份、暴露面和参数要求；控制面专属工具保持 `exposed=False`。精确集合及规模以真实 manifest 和契约测试为准 |
+  | C3 | Event | 类型与逐版本 payload 封闭，写入侧拒绝未登记值；本地候选新增 Mission/Plan/Verification/Goal V2/Consent/Execution 事件族。精确集合见 `events.EVENT_TYPES`、`event_schema.py` 与 `schemas/c3/event.json` |
+  | C4 | Permission/Approval | rule id 封闭，写入前校验。低磁盘、只读资格、W10 子任务创建门及否决终局保持；本地候选增加 `c4.scoped_consent` 与 `dispatch.consent_unusable`。精确集合由代码、schema、PRD 及真实契约测试对账，见 PRD §5.4 |
+  | C5 | Eval | `replay`（审计，不调模型）与 `evaluate`（换模，干净 fixture）已分离；本地候选套件 `m4.7`、`RU-D1@1.1.0` 接受严格绑定的只读 Mission 路由拒绝，与旧版报告不可直接比较，见 [M4-verification.md](M4-verification.md) §7.5 |
 - **封闭集落在三处**：代码里的集合（`events.EVENT_TYPES` / `rules.RULE_IDS`）、`schemas/` 下的 enum（`schemas/c3/event.json`、`schemas/c4/rules.json`）、PRD 对应小节；测试把前两者绑在一起，改一处忘另一处会红。
-- **两个「未」不是一回事**：C3 的「声明未发射」是 **0**（没有登记了却不发射的事件类型）；C4 的「保留未使用」是 **3**（`c4.unhandled` / `dispatch.denied` / `c4.subtask_unavailable`，防御性兜底或历史归档，登记为合法但没有产生路径）。别把这两个数字混着写。
+- **两个「未」不是一回事**：C3 的「声明未发射」检查登记事件是否存在产生路径；
+  C4 的「保留未使用」则是合法但保留的规则编号。两者分别由各自契约测试检查，
+  不能把保留编号当成事件覆盖证据。
 - **十一条红线**（与功能冲突时以红线为准，每条能被一条测试打红）：
   1. 事件日志 append-only，无 UPDATE/DELETE
   2. 副作用执行前已持久化 intent，执行后必须写 result
@@ -76,7 +105,7 @@
   - **F1 执行原语** → `exec.py`（argv 模式，非 shell；超时/截断/进程组）
   - **F2 执行策略与沙箱接缝** → `execpolicy.py`（声明式、默认全拒、deny 优先）、
     `exec_backends.py`（默认 `local`，支持 `TIANSHU_EXEC_BACKEND=seatbelt|landlock|auto` 与 `preferred_exec_backend()`；目标后端或平台不可用一律 `PolicyUnsupported`，绝不静默回落 `local`）、
-    `exec_seatbelt.py`（W14 macOS Darwin SBPL 进程级沙箱，`macos-arm64` 四边界实测全 `enforced`）、
+    `exec_seatbelt.py`（W14 macOS Darwin SBPL 进程级沙箱；历史 W14 探针结论不覆盖脱组后代，新 subject 探针暴露 `process_tree` 未满足，见 §7）、
     `exec_landlock.py`（W14 Linux `x86_64`/`aarch64` 纯标准库 `ctypes` Landlock 沙箱：ABI >= 4 含 TCP 阻断声明 `app_container`，ABI 1..3 如实声明 `process_tree`，preexec 失败 `exit 126` fail-closed）、
     `exec.py`（本地后端、进程树与后端级敏感环境变量清洗 `scrub_sandbox_env`）、`isolation.py`（`PROBE_VERSION = "v2"` 四边界实测探针 + 门 +
     `isolation_view`）。「受信任执行」与非 `none` 沙箱后端的实测隔离等级在**审批前**可见（`ApprovalView.isolation`），
@@ -91,6 +120,26 @@
   - **F10 记忆** → `memory.py` / `memory_exec.py` / `memory_index.py` / `memory_distill.py` / `memory_control.py`（L1–L3 可重建投影、检索与面板已落地，详见 [F10-memory-design.md](F10-memory-design.md)）
 
 ## 4. 关键决策（D1–D7）与硬约束
+
+- **主循环权威分离（2026-11-23，本地候选）**：Mission 只固定任务输入和工具
+  路由，不授权；Plan 只提出依赖与检查；Verification 产生独立证据；
+  Goal 依据事件与有效证据推进，模型自述不能关闭目标。跨阶段和子任务共享
+  Goal 预算父链，到限后不再额外调用模型解释。子审批否决沿真实父链阻断 Goal；
+  人工改变决定前，必须先持久取消旧父子 Run 并等其安全终结，再显式 CAS 恢复。
+- **验收输入闭包与材料完整性（2026-11-23，本地候选）**：文件检查绑定目标及
+  祖先/工作区/修订，使无关步骤写入不误废旧结果；命令与人工验收仍绑定整个
+  工作区。读取结论时重核 Evidence、嵌套观察、事件及完整日志；缺失即失效或拒绝。
+  Mission/pending 正文纳入 GC 和备份保护，缺材料不能发布备份。
+- **有限授权恢复保守失效（2026-11-23，本地候选）**：消费和撤销从事件重建；
+  V1 issued 事件无单调期限锚点，投影全丢后恢复账面余额但原授权过期，
+  不从墙钟重新计算一段可用 TTL。有限规则仍须由人签发且只绑定单个 Run。
+- **Mission 的 MCP 身份与执行 Session 分离（2026-11-22，本地候选）**：
+  Mission 以 schema、描述和稳定 server 身份固定路由；审批、Grant 与 Receipt
+  继续使用含 generation 的执行版本。显式选择 MCP 的新 effects Run 在 claim 后、
+  SQLite 写事务外发现，先保存 `run.mission_pending` 的输入材料，再固定唯一
+  `run.mission`。共享 Mission 的有效工具是冻结上限，实际始终与当前真实注册表
+  精确取交集；不增加候选、不放宽 pure_only、不自动升级已知 schema。
+  见[接缝修复记录](changelog/2026-11-22-mission-mcp-integration.md)。
 
 - **结构封套不冒充发布者信任（2026-11-20）**：最终 macOS App 只执行 `codesign --sign - --timestamp=none`，不 force/deep 签名、不清 xattr、不使用证书或修改 Gatekeeper 策略；已有封套拒绝，其他非 linker 签名由 no-force 原生语义拒绝。只允许主程序与精确新封套变化，原资源/Info.plist/权限不变；原生 strict 验证必须覆盖归档恢复副本。此局部修复不改 C1–C5、T1 成本/信任政策、schema、索引 `signed: false` 或原生启动/数据/凭据验收门禁。静态可选封套兼容不等于生成路径可省略原生检查。
 
@@ -129,7 +178,7 @@
 
 **派生硬约束**：安全不能靠用户配置（默认值必须正确）；默认可写就必须默认可撤销；单用户假设必须显式声明。
 
-- **Windows CI 分片决定（2026-11-14，后续调整为三片）**：保留四 required 名称与25分钟上限，以三个独立 runner 按整文件分片，避免同 runner 并发引入端口/进程/资源竞争。run `45078725688` 的两片累计约 49 分 16 秒，shard0 在剩余少量测试时触及上限；改为三片只调整并行度，不摘测试、不加时或弱化诊断。汇总 job 在 Ubuntu 齐备核验三份真实 Windows job 报告；完整收集快照先于其它筛选，最终列表再核，不用选后列表倒推全集。报告不是独立执行证明，必须与上游 job success 一起使用；不新增产品契约、依赖或 skip。
+- **Windows CI 分片决定（2026-11-14；2026-11-26 拓扑同步）**：保留四 required 名称与25分钟上限，以四个独立 runner 各执行一个 count4 整文件分片。历史两 runner 单 worker 会累计超时；两 runner 各并行两个 worker 又在 #228 的 hosted run `45705494683` 两个 attempt 污染冷启动 SLO，因此不串行退回半套测试，也不同机并行 worker。汇总 job 在 Ubuntu 按每个 shard 的真实 artifact attempt 分别下载并核验四个报告；完整收集快照先于其它筛选，最终列表再核，不用选后列表倒推全集。报告不是独立执行证明，必须与上游 job success 一起使用；不降低权重或 SLO 阈值，不新增产品契约、依赖或 skip。主干先由 [#229](https://github.com/lorek666/tianshu-agent/pull/229) 引入三个独立 runner 与 state 背压工件；#225 刷新后保留工件，并将 macOS、Windows 的可选诊断都绑定各自分片。
 
 ### 收尾轮实现决策（2026-11-11，PR #66–#72）
 
@@ -226,6 +275,33 @@
 - **默认上限 3 次是产品选择**：它防"每轮一次"的费用失控；很长的 Run 后段仍会回落确定性裁剪（设计取舍，不是 bug）。
 
 
+### 本地 Skill 命令的实现决策（2026-11-22，候选）
+
+- **准备与运行分开**：`skill.list` / `skill.prepare` 只读本地文本，不调用模型、
+  不写事件；整合当前主干后，新建走 `task.create` 与 `run.start`，追问走
+  `run.follow_up`，活跃运行的补充要求走 `run.guide`，不再用追问修改任务目标。
+  原始技能全文、来源路径和摘要沿相应输入事实落库，重放不重新打开源文件。
+- **显式选择版本**：不同来源同名技能不覆盖；菜单插入路径与内容绑定的版本标识。
+  文件变化后旧标识拒绝，准备失败保留草稿。列表及准备的迟到结果在工作区变化、
+  Task 修订或组件卸载后失效，不能凭旧闭包覆盖新目标。
+- **技能是参考文本**：额外元数据不授予权限，不自动读取引用或运行脚本；
+  计划/仅读资格与审批仍由执行侧处理。新建任务可能直接展示包含快照的目标；
+  追问与补充要求沿运行输入保存。
+  若要拆分简短目标与结构化技能记录，必须另立契约。
+
+### Goal 模式的实现决策（2026-11-22，G1 候选）
+
+- **目标验收与运行成功分开**：Goal 绑定 Task 修订，配置不可变；新建、推进、
+  关闭均经真实事件事务，推进同时提交 Run 与 Job。不用聊天正文代替验收事实，
+  不新增 Goal 投影表，也不扩大首屏 `state` 响应。
+- **每轮由人触发**：条件与上一轮成功正文保存进 `run.start.task`；模型自称完成
+  不关闭目标。推进沿用既有资格、审批、预算、暂停、取消及子任务收尾检查。
+  远程 MCP 发现留给驱动线程，不在推进的入队事务中联网。
+- **保持 G1 范围明确**：使用当前默认模型，不为 Goal 固定模型档案；运行中切换沿
+  既有每次模型步骤快照机制生效。首版不保存附件或单次模型
+  档案，界面会在创建 Task 前拒绝这些组合；任务级工具配置仍沿用现有能力。
+  自动推进、累计目标预算和机器验收须按 G2 另立契约。
+
 ### G2 网络阶段的实现决策（2026-11-11，PR #110 / #112）
 
 - **两道门，两道都在 `prepare()` 里走完**：任务级白名单（`outbound_allow`，源级、创建时定死）+ 逐次人工批准（`c4.outbound`）。白名单不通过时**不弹批准**——"批了也发不出去"的批准会白占一次人工决定。白名单是**源**（transport+host+port），路径/查询一律拒绝：允许写路径会让人以为"只许访问 /docs"，而执行侧只按源判，那是一条假保证。
@@ -301,12 +377,48 @@
 
 ## 5. 踩坑教训（别再踩）
 
+- **平台文件身份不能假定为 JSON 安全整数（2026-11-23）**：NTFS 的
+  `st_dev/st_ino` 可超出 JCS 数字范围。指纹输入须无损保留全部位；安全整数保留
+  原表示，越界值编码为十进制字符串，不能截断、浮点化或放宽 canonical。
+  中文夹具与历史 JSON 也不能依赖系统默认编码。原生 CI 红与定向红绿见
+  [主循环修复记录](changelog/2026-11-23-agent-loop-implementation.md)。
+
+- **关闭连接不能让旧 I/O 使用已复用的 FD（2026-11-23）**：只捕获 EOF 或
+  `TypeError` 挡不住 `fileno()` 后关闭、真实读写前复用的竞态；旧 IPC 读取可偷走
+  指标文件前缀，发送也可覆盖其他文件。POSIX 生命周期锁内固定私有 I/O 副本，
+  阻塞期间不持锁；关闭唤醒与原句柄收尾必须覆盖已关闭/描述符耗尽，不能依赖
+  还能分配新 FD。在线 soak 订阅须同步消费有界管道，断线、缺流和未收尾线程
+  都应失败；不能放宽指标坏行或慢订阅阈值来遮盖。Windows HANDLE 另需原生证据。
+  诊断资源门禁应在独立 runner 进程实测；放在长寿命 pytest 进程里会误计此前
+  用例累计的描述符。隔离测试解释器并关闭继承 FD，保留诊断器自身的全部门禁。
+
+- **内容寻址落盘还必须接入引用追踪（2026-11-22）**：Mission 将消息与模板正文
+  写进 blob 目录，不等于它们已被备份与 GC 识别。引用索引须从
+  `run.mission` / `run.mission_pending` 的真实保存 payload 推导 `messages_ref`
+  和 `mission.prompt.content_ref`，并校验正文摘要；只保护外置 `payload_ref`
+  会把有效输入当作孤儿删除。历史 `material_storage=inline` 没有 blob 依赖，不能
+  因同名内容引用强制补文件。备份须从保存数据库重推导，不能信任可删改的清单引用组。
+  真实 GC 与备份损坏负控见[修复记录](changelog/2026-11-22-mission-material-references.md)。
+
+- **发现前不能冻结空工具集合（2026-11-22）**：先用旧 registry 写
+  `run.start.tools` 和 Mission，再在首个模型步骤发现 MCP，会让真实工具永久被空
+  交集过滤。新任务需保存输入后再发现、固定；共享 Mission 则保留已确认身份作为
+  上限，在每次实际路由时核对当前 Session 的语义身份。删除执行版本的 generation
+  会使旧审批跨会话复用，不能用这种方式修复路由。真实 stdio/HTTP Session、
+  schema 漂移与旧 generation 快照负控见
+  [本轮记录](changelog/2026-11-22-mission-mcp-integration.md)。
+
+- **已保存响应不免除运行收尾检查（2026-11-22）**：恢复最终正文时必须与正常路径
+  一样经过人工否决和子任务等待；不能以“无需再问模型”为由直接成功。Goal 还必须
+  同时拒绝 `partial` 与 `unknown`，前者可能包含已生效操作和未知操作，不能当作
+  全部可核对。真实硬退与 MCP 超时负控见 [Goal 记录](changelog/2026-11-22-goal-mode.md)。
+
 - **接管夹具须匹配产品的原子发布（2026-11-22）**：[#213 候选](https://github.com/lorek666/tianshu-agent/actions/runs/44944526018) 的 macOS Rust 用例在接管写入期间读到非法 Host 元数据。产品 Python Host 已经通过同目录临时文件原子替换发布，测试却直接截断写目标文件。仅将 Rust `cfg(test)` 内的接管夹具改为原子发布，并用真实子进程在半写屏障处调用真实读取器：旧发布方式确定性失败，原子发布保留完整旧记录，放行后读取完整新记录。原接管拒绝、Daemon 锁字节保留与未停机断言不变；不得为夹具竞态吞掉损坏元数据错误。产品 Rust 前缀及 Python 发布实现未改。
 
 - **Windows 分片须核对完整耗时分布（2026-11-22）**：[#213 候选 CI](https://github.com/lorek666/tianshu-agent/actions/runs/44927917869) 的分片 0 触及 25 分钟上限；双向修正少量文件后，[后续候选](https://github.com/lorek666/tianshu-agent/actions/runs/44939541307) 仍在约 91% 被取消。两轮缺件都使 required 汇总正确失败。日志对账显示中等文件误差会累积，runner 速度也有明显波动；后续覆盖完整已测 collection，并让真实任务的证据检查复用各场景三次实跑的深拷贝。每项断言保留，负控不能污染共享样本；变输入、失败与忘记路径仍独立实跑。对应权重含保留工作量的推算，不冒充新 Windows 实测。两个隔离 pytest 进程的回归和历史回算用于核对分配；该轮采用两个独立 runner，后续累计超时后按 §4 改为三个独立 runner，完整覆盖汇总、诊断与时间上限不变。
   候选 `c6d6475` 的 [44944526018](https://github.com/lorek666/tianshu-agent/actions/runs/44944526018) 两片作业分别在 20 分 04 秒、20 分 08 秒完成，Windows required 汇总通过；下载的两份原始报告已再次核验实际 checkout、完整有序 collection、互斥全集及各阶段覆盖。该轮整体仍因上述 macOS Rust 夹具失败而为红，不用 Windows 通过替代新冻结的完整门禁。
 
-- **取消后的诊断证据必须独立于 pytest 日志（2026-11-24）**：#219 的 JSON 断言消息在 runner 取消或日志截断时可能一并丢失。state 背压测试现于首次断言前将完整脱敏报告原子写入 `RUNNER_TEMP`，真实子进程在首个失败谓词后硬退，验证日志不完整时 JSON 仍可读取。macOS 与三片 Windows 均以 `always()` 上传，工件名绑定 run/attempt/shard；缺件只告警，不覆盖原退出码。与三片调整同见[本轮 CI 记录](changelog/2026-11-24-ci-windows-three-shards-and-state-evidence.md)。
+- **取消后的诊断证据必须独立于 pytest 日志（2026-11-24）**：#219 的 JSON 断言消息在 runner 取消或日志截断时可能一并丢失。state 背压测试现于首次断言前将完整脱敏报告原子写入 `RUNNER_TEMP`，真实子进程在首个失败谓词后硬退，验证日志不完整时 JSON 仍可读取。[#229](https://github.com/lorek666/tianshu-agent/pull/229) 在当时的单 macOS job 和三片 Windows 上传；本候选的 macOS 和 Windows 各分片均以 `always()` 上传，工件名绑定 run/attempt/shard；缺件只告警，不覆盖原退出码。与三片调整同见[本轮 CI 记录](changelog/2026-11-24-ci-windows-three-shards-and-state-evidence.md)。
 
 - **源码收据不扩张系统隔离结论（2026-11-21）**：source-only 私有根、空模型 key 与 env 凭据后端，不证明默认 urllib 代理/重定向路径零外发，也不消除默认 ControlPlane 构造时的 Keychain/ctypes 模块导入；构造或导入同样不等于实际取密钥。collector 正向归档/启动收据不能替代 full 原始退出码、辅助矩阵核验或当前 PID 活性证明，更不是产品 App 验收。旧独立 DB 守卫阻断与 FFI 拒绝边界保持，见[组合修复记录](changelog/2026-11-21-preview-release-repair.md)。
 
@@ -480,6 +592,9 @@
 - **能推翻结论的实验要留提交，但不进产品（2026-11-13）**：`codex/debug-windows-diagnostic`、`codex/debug-host-stop-diagnostic` 刻意停在分支——纯标准库反例证明「原生定时转储会在动态 frame 负载下崩」，但那是证据不是产品。教训：反例实验要有自己可复现的提交与 run，可以永远不合 main；历史误红保留原样，「当时现场」与「本次结论」分开写，既不倒推找回已丢的 stderr，也不把实验成功当产品通过。
 - **「只在某平台红」先假设是代码（2026-11-13 issue #50 收口）**：长期结论是「生产不受影响、必须实机才能定位」，实际根因是 `load_authkey()` 缺 `O_BINARY`：Windows 文本模式把随机 `LF` 扩成 `CRLF`，创建者返回原 key、后续进程读到另一个 key；GitHub 托管 runner 稳定复现。教训：跨平台默认值（编码、换行、文本/二进制模式、路径分隔符）一律显式写死；把平台差异当环境噪声，一个真缺陷可以挂上几个月。
 - **第二读者要换的是上下文，不是措辞（2026-11-13）**：本轮复审在新会话 + detached 工作树执行，作者不为自己批准，只按已冻结的验收项逐条对照，记录完整 SHA、范围、命令、输出与未决项。教训：同一上下文里「再检查一遍」用的还是同一套错误假设；复审的成本主要在**重建独立观察环境**，省掉这一步就等于自审。
+- **分片隔离 worker，不等于隔离长进程内的累计负载（2026-11-26）**：四个独立 Windows runner 消除了同机 paired-worker 的 SLO 污染，但 hosted run `45720477289` 仍在长 pytest 进程后段出现 `restart_recovery` 超限，`45722985924` 又出现 `startup_cold` 超限。修复不是提高阈值、减少 repeats 或重跑洗白，而是保持文件权重和 `full_collection` 不变，只把时序敏感的 SLO/soak 节点移到所属分片首位，并让 pytest items 与 verifier 使用同一确定性顺序。该顺序只隔离同分片前序测试的累积压力，不保证消除 OS/宿主 runner 抖动；macOS 单 runner 的99%超时另用 count2 独立 runner 解决。
+- **测试临时根也要给原生端点留长度（2026-11-26）**：本机全量两次在 SLO warmup 报 Daemon `exit=2`，单节点却通过；真实根因是 `TIANSHU_TEST_TMP_ROOT` 命名过长，使 `warmup_cold/run/daemon.sock` 达到 104/105 字节，超过 macOS `sockaddr_un` 的 103 字节可绑定上限，而非前序测试污染。排查时必须同时检查路径长度与平台原生限制，不能把环境调用错误误记成产品回归，也不能靠重跑洗白。
+- **连接拒绝测试不能依赖宿主 TCP 时序（2026-11-26）**：bound-but-not-listening 端口在 macOS 可能等待到连接超时；总 deadline 烧尽后按契约不再尝试，旧测试却要求两次。把 `conn.connect()` 的 `ConnectionRefusedError` 做成确定性夹具，既保留 OSError 分类证据，也避免 Linux/macOS 的拒绝与超时差异随机翻红。
 
 ## 6. 流程规则（风险分级门禁 + 隔离纪律）
 
@@ -492,6 +607,43 @@
 - 细节见 [CONTRIBUTING.md](../CONTRIBUTING.md) 与 [AGENTS.md](../AGENTS.md)。
 
 ## 7. 已知限制 / 未决问题
+
+- **SLO-first 与 macOS count2 仍待新冻结的 hosted 证明（2026-11-26）**：
+  本地真子进程测试证明 SLO/soak 在所属分片首位执行、完整 collection 与分组权重不变，
+  verifier 也拒绝换回后置顺序的伪造报告；这证明调度契约，不证明 hosted runner 的 SLO
+  必然通过。旧 Windows SLO 红与 macOS 99% 超时保留；`575ccda` 的本机全量、静态与
+  独立复审通过，hosted run `45751111103` 的 Windows 四片也全部成功，但 macOS shard1
+  因网络重试测试把平台相关连接超时误当成立即拒绝而失败。确定性测试修复的新代码树已重新
+  完成本机全量、静态、两项有效变异与独立复审，下一步必须用新 head 的 hosted required CI
+  收口，不能用旧绿或重跑后的绿覆盖旧失败。
+
+- **Mission / MCP 接缝候选不等于自动隔离交付（2026-11-22）**：
+  pending/frozen 输入和稳定语义版本仅修复路由与发现顺序；受管 stdio 正向测试使用
+  明确的部分边界路径。真实 Seatbelt 脱组后代仍证明 process_tree 边界未 enforced，
+  完整自动四边界组合继续 fail-closed。完整候选的全量、独立第二读者与 hosted CI
+  必须另行绑定，不沿用本分支定向回归。历史无 Mission/pending 的 Run 不补写，
+  已含 generation 的历史身份也不放宽。
+
+- **Agent 主循环已实现范围与未决范围（2026-11-23，本地候选）**：
+  [主循环规格](SPEC-AGENT-LOOP-2026-11-22.md) A–D 已形成运行时实现与桌面入口，
+  完整冻结的门禁状态见[实施记录](changelog/2026-11-23-agent-loop-implementation.md)。
+  P0-E 的 Windows 原生隔离和完整跨平台对象验收尚未交付，
+  由[工单 #224](https://github.com/lorek666/tianshu-agent/issues/224)跟踪；
+  macOS 脱组后代负控使自动四边界准入确定性拒绝。完全访问仍禁用，
+  不以“本地功能已实现”替代最终 CI、真实付费模型或用户设备验收。
+
+- **Goal G1 不是自动执行模式（2026-11-22，本地候选）**：每轮手动继续、人工逐项
+  验收；没有自动循环、机器验收器、累计目标预算、期限或 Goal CLI。失败或未知结果
+  不自动解除阻断；首版无附件和单次模型档案，使用当前默认模型。脚本模型与本机
+  浏览器验证不代表真实付费模型、其他平台设备或原生桌面验收；远端 CI 尚未运行。
+
+- **本地 Skill 首版边界（2026-11-22，候选）**：仅支持用户与当前所选工作区
+  `.agents/skills/<name>/SKILL.md` 的有界文本发现和有限 frontmatter；
+  不接插件市场、安装器、完整 YAML、自动技能路由或递归资源加载。
+  源路径与正文会随任务输入发送给当前模型，菜单有提示；新建任务的快照会使目标显示变长。
+  文件观察为协作式检查，不是同 uid 攻击隔离。浏览器验收使用临时 Home、数据根、
+  独立凭据服务名与脚本模型；不代表真实付费模型质量、系统输入法实机、
+  Windows 文件语义或正式桌面发行验收。远端 CI 尚未运行。
 
 - **缓存效果尚未线上验证（2026-11-23）**：本地候选没有付费端点的冷/热及任务质量对照；
   不宣称收益。既有事件未单列 spill 与逐请求缓存策略，旁路报告分别标
@@ -663,7 +815,7 @@
 - ~~**issue #40**~~：**已修**（否决即终局，`c4.approval_rejected`，`SUITE_VERSION` 升 `m4.4`，PR #48 合入 `feat/m5-desktop`；判据与限制更新见 [M4-verification.md](M4-verification.md)）。
 - **#145 / #147 已关闭**。锁忙与审批后删除的回归修复随 [#195](https://github.com/lorek666/tianshu-agent/pull/195) 合入，见 §2。
 - **#200 继续跟踪 Windows 目录持久化**。在现有屏障能力下，受管恢复写入及含文件候选的 W15 批次会拒绝执行。参见 [#200](https://github.com/lorek666/tianshu-agent/issues/200)。
-- **#55 继续跟踪真实模型与 Windows 实机复验**。真实换模已在 `m4.4` 实跑。`m4.5` 的历史复跑遇到中转站 `503 / auto groups is not enabled`。当前 `SUITE_VERSION` 为 `m4.6`，对应的真实模型报告及 Windows 实机复验仍待取得。参见 [M4 实测记录](M4-verification.md) §7.4 和 [#55](https://github.com/lorek666/tianshu-agent/issues/55)。
+- **#55 继续跟踪真实模型与 Windows 实机复验**。真实换模已在 `m4.4` 实跑。`m4.5` 的历史复跑遇到中转站 `503 / auto groups is not enabled`。本地候选当前 `SUITE_VERSION` 为 `m4.7`、`RU-D1@1.1.0`，对应的真实模型报告及 Windows 实机复验仍待取得。参见 [M4 实测记录](M4-verification.md) §7.4/§7.5 和 [#55](https://github.com/lorek666/tianshu-agent/issues/55)。
 - ~~**issue #57**~~ 已随 PR #68 关闭。该轮引入 `Check.kind`（completion/safety）、作用域化的判据和完成度/安全分栏，套件当时升到 `m4.5`。
 - ~~**issue #58**~~：**已修（2026-11-11，PR #67）**：`RunResult.model_attempts`（真发一次请求才 +1，含超时/失败/重试）+ `cli._cost_note` 统一口径；全失败时打印「0 个完成轮次 / 3 次尝试（费用未知）」，不再说"没有模型调用"。
 - ~~**issue #53 / #54**~~：**已销账（2026-11-11）**。疑点 1 不成立（模型无法启动 Run，写成设计前提 + 三层钉子）；疑点 2 三条路径探针成立；delete 注入矩阵补齐并暴露一个真 bug（见 §5）。

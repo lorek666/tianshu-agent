@@ -365,10 +365,10 @@ def test_fixture_digest_changes_when_a_check_kind_changes():
 
 
 def test_previous_suite_version_is_not_comparable():
-    """m4.6 的报告不能拿 m4.5 的报告当基线（判据口径变了）。"""
+    """新报告不能拿旧版报告当基线（Mission 拒绝证据口径变了）。"""
     current = {"schema": "tianshu.eval.v1", "suite_version": SUITE_VERSION, "repeat": 3}
-    assert SUITE_VERSION == "m4.6"
-    previous = {**current, "suite_version": "m4.5"}
+    assert SUITE_VERSION == "m4.7"
+    previous = {**current, "suite_version": "m4.6"}
     comparison = compare_reports(previous, current)
     assert comparison["comparable"] is False
     assert any("suite_version" in reason for reason in comparison["guards"])

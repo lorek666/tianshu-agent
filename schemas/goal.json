@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tianshu-agent/schemas/goal.json",
+  "title": "GoalView V1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "format_version": {
+      "const": 1,
+      "type": "integer"
+    },
+    "goal_id": {
+      "type": "string"
+    },
+    "task_id": {
+      "type": "string"
+    },
+    "goal_revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "criteria": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "maxItems": 12
+    },
+    "max_rounds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10
+    },
+    "execution_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "format_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "mode": {
+          "enum": [
+            "effects",
+            "pure_only"
+          ]
+        }
+      },
+      "required": [
+        "format_version",
+        "mode"
+      ]
+    },
+    "rounds_started": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 10
+    },
+    "latest_run_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "ready",
+        "running",
+        "awaiting_review",
+        "exhausted",
+        "blocked",
+        "stale",
+        "completed",
+        "cancelled"
+      ]
+    },
+    "confirmed_criteria": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "format_version",
+    "goal_id",
+    "task_id",
+    "goal_revision",
+    "criteria",
+    "max_rounds",
+    "execution_policy",
+    "rounds_started",
+    "latest_run_id",
+    "status",
+    "confirmed_criteria"
+  ]
+}

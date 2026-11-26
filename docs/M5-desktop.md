@@ -132,6 +132,8 @@ M5 不重新发明一套。
 | `task.list` | `{limit?}` | `{tasks}` | 按更新时间倒序 |
 | `task.create` | `{goal, workspaces:[{root_path, mode}], allow_exec_cmd?, outbound_allow?, mcp_servers?, max_subtasks?}` | `{task}` | 建任务不建 Run。工具范围复用 CLI 的任务级校验；缺省不启用，实际出网、MCP 调用和委派仍由执行侧单独审批。 |
 | `task.revise` | `{task_id, goal}` | `{task}` | 改目标 → `goal_revision+1`，旧 Run 被 fence |
+| `skill.list` | `{workspace_roots?: string[]}` | `{format_version:1, skills, issues}` | 本地只读技能目录；不返回正文，不调用模型。发现范围和机器副本见 [Skill 规格](SPEC-SKILL-COMMANDS-2026-11-22.md) |
+| `skill.prepare` | `{workspace_roots?: string[], skill, input}` | `{format_version:1, skill, goal}` | 准备单个技能全文快照；不修改 Task、不启动 Run、不增加授权。UI 将 goal 沿既有任务入口持久化 |
 | `run.start` | `{task_id, out_name?, mode?, execution_policy?, attachments?, model_profile?, fallback_profiles?}` | `{run}` | **只入队**，立即返回；执行由 Daemon 驱动 |
 | `run.follow_up` | `{task_id, source_run_id, message, execution_policy?, attachments?, model_profile?, fallback_profiles?}` | `{run}` | 从同一任务和同一目标版本下已成功运行的提交回答开始新 Run |
 | `run.guide` | `{run_id,text}` | `{request_seq}` | 补充要求在下一次模型调用前生效，已提出的工具动作继续按原参数审批 |

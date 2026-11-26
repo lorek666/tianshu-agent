@@ -14,7 +14,9 @@ SBPL 规则集，在不引入任何第三方运行时依赖的前提下同时收
    并在 SBPL 末尾显式封锁 `~/Library/Keychains`、`~/.ssh`、`~/.aws` 与
    `com.apple.securityd` 等系统凭据通道。
 4. `process_tree`：`sandbox-exec` 原地 `execvp` 目标程序，沿用 POSIX 新会话进程组
-   （`start_new_session=True` + `os.killpg(SIGKILL)`）超时整树清理。
+   （`start_new_session=True` + `os.killpg(SIGKILL)`）清理同组进程。这不能约束
+   后代 `setsid()` 脱组；自动执行须通过 `execution_admission` 的独立负控，
+   不把进程组消失当作整个进程树退出。
 """
 
 from __future__ import annotations

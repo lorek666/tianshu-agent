@@ -34,7 +34,7 @@ from .context import (
     budget_from_payload,
     compile_context,
 )
-from .conversation import GuidanceHistory, checked_conversation, seed_messages
+from .conversation import GuidanceHistory, checked_conversation
 from .errors import TianshuError
 from .events import Event, EventLog, canonical_bytes
 from .loop import initial_messages, message_source_seqs
@@ -166,17 +166,18 @@ def replay(log: EventLog, run_id: str) -> ReplayReport:
 
     start_text = start.payload.get("task", "")
     out_name = start.payload.get("out", "")
-    from .workflow import workflow_for, workflow_messages
+    from .mission import compile_initial_messages, mission_messages
+    from .workflow import workflow_for
 
     try:
         workflow = workflow_for(log, run_id)
-        initial = workflow_messages(initial_messages(start_text, out_name), workflow)
-        messages = seed_messages(
-            initial, checked_conversation(log, events), attachments_fact(events),
-            general=workflow is None or (workflow.mode == "execute" and not workflow.source_text),
+        frozen = mission_messages(log, run_id, events=events)
+        messages = frozen if frozen is not None else compile_initial_messages(
+            start_text, out_name, conversation=checked_conversation(log, events),
+            attachments=attachments_fact(events), workflow=workflow,
         )
     except TianshuError as exc:
-        problems.append(f"工作流来源无法核验：{exc}")
+        problems.append(f"Mission 或工作流来源无法核验：{exc}")
         messages = initial_messages(start_text, out_name)
 
     verified = 0

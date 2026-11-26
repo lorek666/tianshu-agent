@@ -67,6 +67,8 @@ RULE_IDS: frozenset[str] = frozenset(
         # ---- 审批不可用：批过，但那张批准不能用在这个动作上 ----
         "dispatch.approval_revoked",
         "dispatch.approval_unusable",
+        "dispatch.consent_unusable",
+        "c4.scoped_consent",
         "c4.no_approval",
         "c4.approval_run_mismatch",
         "c4.approval_mismatch",
@@ -192,6 +194,7 @@ DECLARED_UNUSED_RULE_IDS: frozenset[str] = frozenset(
 #: 判定结果（放行 / 需审批），不是拒绝。同样会写进 `payload.rule_id`。
 DECISION_RULE_IDS: frozenset[str] = frozenset(
     {
+        "c4.scoped_consent",
         "c4.auto",
         "c4.overwrite",
         "c4.delete",
@@ -234,6 +237,7 @@ RULE_GROUPS: dict[str, frozenset[str]] = {
     ),
     "审批不可用": frozenset(
         {
+            "dispatch.consent_unusable",
             "dispatch.approval_revoked",
             "dispatch.approval_unusable",
             "c4.no_approval",

@@ -27,7 +27,7 @@ def test_run_start_v2_only(tmp_path):
         for t in EVENT_TYPES - {"run.start", "run.end", "model.result", "run.model_turn"}
     )
     assert event_schema.known_versions("run.start") == frozenset({0, 1, 2})
-    history = json.loads((Path(__file__).parent / "fixtures/events/minimal_v1.json").read_text())
+    history = json.loads((Path(__file__).parent / "fixtures/events/minimal_v1.json").read_bytes())
     # 历史 schema 仍不认识新增字段；新写不能假装 v1。
     schema = event_schema.schema_for("run.start", 1)
     assert "execution_policy" not in schema["properties"]
@@ -651,13 +651,18 @@ def test_real_mcp_producer_preparation_and_low_disk_order(tmp_path, producer, lo
                 ),
             ).start(task.task_id)
             assert target_run.state == "succeeded", target_run.error
+        startup = tmp_path / "mcp-started"
+        server = Path(__file__).parent / "fixtures/fake_mcp_server.py"
         clients = McpClients(
             {
                 "fake": McpServerConfig(
                     name="fake",
                     command=(
                         sys.executable,
-                        str(Path(__file__).parent / "fixtures/fake_mcp_server.py"),
+                        "-c",
+                        "from pathlib import Path; import runpy; "
+                        f"Path({str(startup)!r}).write_bytes(b'started'); "
+                        f"runpy.run_path({str(server)!r}, run_name='__main__')",
                     ),
                 )
             }
@@ -700,14 +705,25 @@ def test_real_mcp_producer_preparation_and_low_disk_order(tmp_path, producer, lo
                 with pytest.raises((TianshuError, ControlError)):
                     produce()
                 assert clients.server("fake") is None
+                assert not startup.exists()
                 assert model.calls == 0
                 assert {
                     table: log.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
                     for table in before
                 } == before
             else:
-                produce()
-                assert clients.ready_names() == ("fake",)
+                produced = produce()
+                if producer == "control":
+                    # 入队事务不启动或发现 MCP；由后续驱动线程按 Run scope 准备。
+                    assert clients.ready_names() == ()
+                    assert not startup.exists()
+                    assert model.calls == 0
+                    run_id = produced["run"]["run_id"]
+                    assert stack.claims.job_for_run(run_id).state == "pending"
+                    assert not any(e.type == "model.request" for e in log.read_run(run_id))
+                else:
+                    assert clients.ready_names() == ("fake",)
+                    assert startup.read_bytes() == b"started"
         finally:
             clients.close_all()
 

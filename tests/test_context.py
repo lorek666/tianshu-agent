@@ -732,8 +732,9 @@ def _workspace(tmp_path: Path, files: dict[str, str]) -> Path:
 
 
 def _go(tmp_path: Path, ws: Path, responses, *, limits=None):
-    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
-    store = SnapshotStore(tmp_path / "artifacts")
+    root = tmp_path / "authority"
+    log = EventLog(root / "events.db", blob_dir=root / "blobs")
+    store = SnapshotStore(root / "artifacts")
     model = RecordingModel(responses)
     result = run(
         task="整理目录里的笔记",
@@ -775,9 +776,10 @@ def test_loop_records_context_on_every_intent(tmp_path):
         assert context["spill_threshold"] == TOOL_OUTPUT_SPILL_BYTES
         assert context["dropped_seqs"] == [], "默认预算下不该丢任何消息"
 
-    # 第一轮：历史与 run.start 重建出来的两条完全一致
-    first = initial_messages("整理目录里的笔记", "summary.md")
-    assert intents[0].payload["messages_hash"] == _digest(first)
+    # 新 Run 使用保存的 Mission；捕获的真实输入、快照与 intent 必须一致。
+    frozen = next(e for e in log.read_run(result.run_id) if e.type == "run.mission")
+    assert model.seen[0] == frozen.payload["messages"]
+    assert intents[0].payload["messages_hash"] == _digest(model.seen[0])
     assert intents[0].payload["context"]["source_seqs"] == [
         RUN_START_SEQ,
         RUN_START_SEQ,

@@ -72,6 +72,7 @@ from tianshu.model import (  # noqa: E402
 from tianshu.permissions import HumanIdentity  # noqa: E402
 from tianshu.receipt import receipts_of  # noqa: E402
 from tianshu.replay import replay  # noqa: E402
+from tianshu.restore_access import default_material_paths  # noqa: E402
 from tianshu.summaries import SUMMARY_MAX_BYTES, SummaryStore  # noqa: E402
 
 DEFAULT_SCHEMA_PATH = REPO_ROOT / "schemas" / "slo" / "slo-v1.json"
@@ -1055,7 +1056,7 @@ def _run_child_role(args: argparse.Namespace) -> int:
         ws.mkdir(parents=True, exist_ok=True)
         log = EventLog(
             data_root / "events.db",
-            blob_dir=data_root / "artifacts" / "blobs",
+            blob_dir=default_material_paths(data_root / "events.db", data_root)[1],
         )
         stack = build_stack(log, data_root=data_root)
         if scenario in (
@@ -1222,7 +1223,7 @@ def _seed_warm_template(
     _write_bytes_exact(ws / "readme.md", b"# Seed Workspace\n")
     log = EventLog(
         seed_root / "events.db",
-        blob_dir=seed_root / "artifacts" / "blobs",
+        blob_dir=default_material_paths(seed_root / "events.db", seed_root)[1],
     )
     stack = build_stack(log, data_root=seed_root)
     try:
@@ -2318,7 +2319,7 @@ def run_suite3_crash_recovery(
 
         log = EventLog(
             r_root / "events.db",
-            blob_dir=r_root / "artifacts" / "blobs",
+            blob_dir=default_material_paths(r_root / "events.db", r_root)[1],
         )
         try:
             events = log.read_run(run_id)

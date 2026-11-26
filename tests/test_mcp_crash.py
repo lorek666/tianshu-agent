@@ -550,7 +550,7 @@ def test_ise_error_result_is_applied_and_recovery_leaves_it_alone(tmp_path):
     ws.mkdir()
     data = tmp_path / "data"
     data.mkdir()
-    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    log = EventLog(data / "events.db", blob_dir=data / "blobs")
     clients = McpClients(
         {
             "fake": _config(
@@ -597,7 +597,7 @@ def test_ise_error_result_is_applied_and_recovery_leaves_it_alone(tmp_path):
         report = recover_run(
             log, run_id, ws, stack.snapshots,
             leases=stack.leases, data_root=data, memory=stack.memory,
-            blob_dir=tmp_path / "blobs",
+            blob_dir=data / "blobs",
         )
         assert report.ok and report.unresolved == [] and report.applied == []
         after = [

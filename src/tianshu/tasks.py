@@ -43,7 +43,7 @@ import contextlib
 import json
 import sqlite3
 import uuid
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -844,6 +844,8 @@ class TaskStore(_SubtaskStoreMixin, _TaskCursorRebuildMixin):
         data_root: Path | None,
         run_id: str,
         resources: list[ResourceIdentity | Path | str] | None = None,
+        *,
+        before_start: Callable[[], None] | None = None,
     ) -> Iterator[ExecutionPermit]:
         """进入实际文件操作前必须经过这里。
 
@@ -895,6 +897,8 @@ class TaskStore(_SubtaskStoreMixin, _TaskCursorRebuildMixin):
             )
             started_at = _now()
             with self._log.transaction() as tx:
+                if before_start is not None:
+                    before_start()
                 seq = tx.append(
                     run_id,
                     EXECUTION_STARTED,

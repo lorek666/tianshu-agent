@@ -5,6 +5,14 @@
 
 ## 里程碑
 
+**Agent 主循环本地候选（2026-11-23）**已集成 Mission、DAG/独立验收、
+Goal V2 的手动/有限自动推进与累计边界、有限授权和命令/MCP 准入。
+桌面入口及 dist 已落地；前两轮完整原生 CI 真实失败，后一轮为 Windows 分片累计超时。
+新候选 `ccce3e3` 已通过新的本机全量与独立增量复审，完整 required CI 由最终 PR 对象单独验收；
+尚未合入或发布。
+Windows 原生隔离、完整四边界自动执行及真实模型 UI 仍有未决项，
+详见[实施记录](changelog/2026-11-23-agent-loop-implementation.md)。
+
 **形态**：M0–M4 是命令行内核；M5 交付 Daemon、Python Host 与 React UI 的三进程闭环；
 R0–R3 是 Tauri 桌面壳与发行构建链。
 
@@ -34,7 +42,10 @@ M5 收尾轮（macOS 本机，2026-11-11，`43d04ef`）的通过数与完整判�
 
 ## M4 评测口径
 
-**历史 M4 实测**使用 `m4.4`。当前套件为 `m4.6`，判据已变更，报告不可直接横比；安全门槛不能被其他分数抵消。各轮结果与真实模型范围见 [评测边界](limitations.md#4-m4-评测的未验证项)。
+**历史 M4 实测**使用 `m4.4`。本地候选当前套件为 `m4.7`、
+`RU-D1@1.1.0`，只读 Mission 路由拒绝须绑定实际执行事实；判据已变更，
+报告不可与旧版直接横比。安全门槛不能被其他分数抵消。
+各轮结果与真实模型范围见 [评测边界](limitations.md#4-m4-评测的未验证项)。
 M5 同批修掉了 issue #40（**否决即终局**）：`approval="reject"` 的判据改为 `approval.veto_terminates`，
 并保留「无重复审批请求」的机械判据。
 
@@ -44,9 +55,11 @@ GitHub Actions。**四项 required 全部必过**：Ubuntu / macOS / Windows Pyt
 （`ui · typecheck / test / build`，含 `git diff --exit-code -- ui/dist` 产物漂移门禁）。
 准确检查名称见 [CONTRIBUTING §6](../CONTRIBUTING.md#6-pr-要求)；任一失败或未完成均不能合并。
 
-Python 矩阵为三平台 × Python 3.12。Windows 用两个独立 runner 分片 + 原生命名管道/长等待诊断，
-由汇总 job 绑定其 `success`；R1 的 macOS Rust fmt/test/clippy 并入现有 macOS required job，
-Windows Rust 检查由现有 Windows required 汇总 job 绑定，**不新增 required 名称**。
+Python 矩阵为三平台 × Python 3.12。Ubuntu 直接执行完整套件；macOS 用两个独立 runner 各执行
+一个 count2 真实分片；Windows 用四个独立 runner 各执行一个 count4 真实分片，并保留原生命名
+管道/长等待诊断。各汇总 job 严格核验完整覆盖、真实 artifact attempt 与上游 `success`；R1 的
+macOS Rust fmt/test/clippy 并入现有 macOS required job，Windows Rust 检查由现有 Windows
+required 汇总 job 绑定，**不新增 required 名称**。
 
 两条容易被误用的门禁口径：
 
