@@ -12,6 +12,8 @@ jobs:
     name: Approval timing during Windows shard 3 (diagnostic only)
     runs-on: windows-latest
     timeout-minutes: 25
+    env:
+      FROZEN_SHA: 281dd22261105d32910ae5838a7873f0a1c693f1
     steps:
       - uses: actions/checkout@v4
         with:
@@ -19,7 +21,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@v4
         with:
-          ref: 281dd22261105d32910ae5838a7873f0a1c693f1
+          ref: ${{ env.FROZEN_SHA }}
           path: frozen
           persist-credentials: false
       - uses: astral-sh/setup-uv@v5
@@ -38,15 +40,26 @@ jobs:
         shell: bash
         working-directory: frozen
         env:
+          WORKFLOW_SHA: ${{ github.sha }}
           PYTEST_ADDOPTS: ""
           CI_SHARD_INDEX: "3"
           CI_SHARD_REPORT: ${{ runner.temp }}/approval-diagnostic/shard.json
           TIANSHU_SLO_DIAGNOSTICS_DIR: ${{ runner.temp }}/approval-diagnostic/slo
           TIANSHU_APPROVAL_DIAGNOSTIC_OUTPUT: ${{ runner.temp }}/approval-diagnostic/timings
         run: |
+          frozen_sha="$(git rev-parse HEAD)"
+          probe_sha="$(git -C ../probe rev-parse HEAD)"
+          test "$frozen_sha" = "$FROZEN_SHA"
+          test "$probe_sha" = "$WORKFLOW_SHA"
+          mkdir -p "$(dirname "$CI_SHARD_REPORT")"
+          printf 'workflow_sha=%s\nprobe_checkout=%s\nfrozen_checkout=%s\nrun_id=%s\nrun_attempt=%s\n' \
+            "$WORKFLOW_SHA" "$probe_sha" "$frozen_sha" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
+            | tee "$(dirname "$CI_SHARD_REPORT")/diagnostic-identity.txt"
           PYTHONPATH="$(cygpath -w ../probe/scripts/approval_rpc_diagnostic)"
           export PYTHONPATH
-          uv run --frozen python scripts/pytest_with_stacks.py -p pytest_ci_shards \
+          # This recorder requires the tested checkout SHA, while the diagnostic
+          # workflow itself runs from a separate branch. Keep both in the artifact.
+          GITHUB_SHA="$frozen_sha" uv run --frozen python scripts/pytest_with_stacks.py -p pytest_ci_shards \
             --ci-shard-index=3 --ci-shard-count=4 --ci-shard-report="$CI_SHARD_REPORT" \
             -o addopts="" -vv -rs --tb=short --durations=20 --stack-timeout=60 \
             -p approval_trace_plugin
