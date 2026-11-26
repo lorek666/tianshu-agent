@@ -14,6 +14,7 @@ from __future__ import annotations
 import copy
 import datetime as dt
 import hashlib
+import io
 import json
 import math
 import os
@@ -196,9 +197,10 @@ def _dummy_valid_slo_report(thresholds: dict, sha: str) -> dict:
 
 
 @pytest.mark.parametrize("slow_startup", [False, True])
+@pytest.mark.parametrize("broken_stderr", [False, True], ids=["stderr-ok", "stderr-pipe-closed"])
 def test_slo_startup_diagnostic_write_failure_preserves_gate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
-    slow_startup: bool,
+    slow_startup: bool, broken_stderr: bool,
 ) -> None:
     thresholds, sha, _ = slo_mod.load_and_validate_thresholds()
     fixture = _dummy_valid_slo_report(thresholds, sha)
@@ -225,15 +227,25 @@ def test_slo_startup_diagnostic_write_failure_preserves_gate(
     gate_json = tmp_path / "gate.json"
     gate_md = tmp_path / "gate.md"
 
-    code = slo_mod.main([
-        "--smoke", "--repeats", "1", "--output-startup-phases-json", str(collision / "phases.json"),
-        "--output-samples-json", str(samples), "--output-json", str(gate_json),
-        "--output-md", str(gate_md),
-    ])
+    with ExitStack() as stack:
+        if broken_stderr:
+            read_fd, write_fd = os.pipe()
+            os.close(read_fd)
+            # Unbuffered writes surface the real pipe error at the diagnostic call.
+            pipe = stack.enter_context(io.TextIOWrapper(
+                os.fdopen(write_fd, "wb", buffering=0), write_through=True,
+            ))
+            stack.enter_context(monkeypatch.context()).setattr(sys, "stderr", pipe)
+        code = slo_mod.main([
+            "--smoke", "--repeats", "1", "--output-startup-phases-json",
+            str(collision / "phases.json"), "--output-samples-json", str(samples),
+            "--output-json", str(gate_json), "--output-md", str(gate_md),
+        ])
 
     captured = capsys.readouterr()
     assert code == 1
-    assert "startup_phases_write_failed" in captured.err
+    if not broken_stderr:
+        assert "startup_phases_write_failed" in captured.err
     assert str(tmp_path) not in captured.err
     assert collision.read_bytes() == b"keep"
     report = json.loads(gate_json.read_text(encoding="utf-8"))

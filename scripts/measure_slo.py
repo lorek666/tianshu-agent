@@ -2979,9 +2979,14 @@ def run_all_benchmarks(
                 )
             except (OSError, ValueError) as exc:
                 startup_phases_failed = True
-                # Keep the benchmark and its reports independent of this diagnostic.
-                print(f"[slo-gate] startup_phases_write_failed: {type(exc).__name__}",
-                      file=sys.stderr, flush=True)
+                try:
+                    print(
+                        f"[slo-gate] startup_phases_write_failed: {type(exc).__name__}",
+                        file=sys.stderr, flush=True,
+                    )
+                except OSError:
+                    # A failed warning must not prevent measurement or gate reporting.
+                    pass
         (
             cancel_ack_samples,
             cancel_stop_samples,
