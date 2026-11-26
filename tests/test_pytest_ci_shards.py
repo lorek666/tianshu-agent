@@ -89,12 +89,13 @@ def shards(tmp_path, files=None, extra=(), extra_env=None, count=2):
     return evidence, first_env, results, documents
 
 
-def verify(evidence, env, *, needs="success", extra=(), count=2, attempts=None):
+def verify(evidence, env, *, needs="success", extra=(), count=2, attempts=None, indices=None):
+    indices = range(count) if indices is None else indices
     identity = (["--run-attempts", json.dumps(attempts)] if attempts is not None
                 else ["--run-attempt", ATTEMPT])
     return run([sys.executable, str(VERIFIER), "verify", "--reports-root", str(evidence),
                 "--sha", env["GITHUB_SHA"], "--run-id", RUN_ID, *identity,
-                "--count", str(count), "--indices", *map(str, range(count)),
+                "--count", str(count), "--indices", *map(str, indices),
                 "--needs-result", needs, *extra],
                evidence.parent, env)
 
@@ -459,6 +460,18 @@ def test_actual_checkout_must_match_ci_sha(tmp_path):
     assert docs == [None, None]
 
 
+@pytest.mark.parametrize("count", [1, 3, 5])
+def test_runner_and_verifier_reject_other_shard_counts(tmp_path, count):
+    files = {f"tests/test_{i}.py": "def test_case(): pass\n" for i in range(count)}
+    evidence, env, results, reports = shards(tmp_path, files=files, count=count)
+    assert [r.returncode for r in results] == [4] * count
+    assert all("use count 2/4" in r.stderr for r in results)
+    assert reports == [None] * count
+    rejected = verify(evidence, env, count=count)
+    assert rejected.returncode == 1
+    assert "expected every index of count 2 or 4" in rejected.stderr
+
+
 @pytest.fixture(scope="module")
 def _complete_evidence_cache():
     return {}
@@ -478,6 +491,28 @@ def complete_evidence(tmp_path_factory, request, _complete_evidence_cache):
         assert verify(evidence, env, count=count).returncode == 0
         _complete_evidence_cache[count] = env, docs
     return _complete_evidence_cache[count]
+
+
+@pytest.mark.parametrize("invalid_plan", ["missing", "duplicate", "out-of-range"])
+def test_verifier_rejects_incomplete_or_duplicate_shard_indices(
+    complete_evidence, tmp_path, invalid_plan,
+):
+    env, docs = complete_evidence
+    count = len(docs)
+    for index, doc in enumerate(docs):
+        report = report_path(tmp_path, index, count)
+        report.parent.mkdir()
+        report.write_text(json.dumps(doc), encoding="utf-8")
+    indices = list(range(count))
+    if invalid_plan == "missing":
+        indices.pop()
+    elif invalid_plan == "duplicate":
+        indices[-1] = 0
+    else:
+        indices[-1] = count
+    rejected = verify(tmp_path, env, count=count, indices=indices)
+    assert rejected.returncode == 1
+    assert "expected every index of count 2 or 4" in rejected.stderr
 
 
 @pytest.mark.parametrize("mutation", [

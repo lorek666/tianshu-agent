@@ -365,7 +365,12 @@ def _assert_windows_independent_shards(workflow):
         "          --ci-shard-index=${{ matrix.shard }} --ci-shard-count=4\n"
         "          --ci-shard-report=\"$CI_SHARD_REPORT\""
     ) in workers
-    assert '--stack-timeout=60' in workers
+    for command in (
+        "uv python install 3.12", "uv lock --check", "uv sync --frozen",
+        "uv run --frozen ruff check .", 'PYTEST_ADDOPTS: ""',
+        '-o addopts="" -vv -rs --tb=short', "--durations=20 --stack-timeout=60",
+    ):
+        assert command in workers
     assert "path: ${{ runner.temp }}/windows-ci/shard.json\n" in workers
     assert "if-no-files-found: error" in workers
     assert "needs: [windows_shards, desktop_windows]" in summary
@@ -401,6 +406,8 @@ def test_windows_independent_runners_isolate_slo_and_keep_required_gates():
     ),
     ("timeout-minutes: 25", "timeout-minutes: 30"),
     ("--stack-timeout=60", "--stack-timeout=0"),
+    ("-vv -rs --tb=short", "-vv --tb=short"),
+    ("      actions: read\n", ""),
     (
         "CI_SHARD_INDEX: ${{ matrix.shard }}",
         "CI_SHARD_INDEX: 0",

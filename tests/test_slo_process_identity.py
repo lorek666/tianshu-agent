@@ -223,10 +223,34 @@ def test_native_python_child_bypasses_only_the_windows_launcher(
     assert env["KEEP"] == "yes"
     if windows:
         assert env["PYTHONPATH"] == os.pathsep.join([
-            *sys.path, os.pathsep.join(["startup", "src"]),
+            "startup", "src", *sys.path,
         ])
     else:
         assert env["PYTHONPATH"] == os.pathsep.join(["startup", "src"])
+
+
+def test_native_python_child_prefers_explicit_child_source(tmp_path, monkeypatch):
+    """Replacing a launcher must still import from the candidate being measured."""
+    child_source = tmp_path / "child-src"
+    parent_source = tmp_path / "parent-src"
+    for source, marker in ((child_source, "candidate"), (parent_source, "parent")):
+        source.mkdir()
+        (source / "slo_source_marker.py").write_text(f"MARKER = {marker!r}\n", encoding="utf-8")
+    launcher = str(tmp_path / "venv" / "python.exe")
+    native = sys.executable
+    with monkeypatch.context() as patch:
+        patch.setattr(slo.os, "name", "nt")
+        patch.setattr(sys, "path", [str(parent_source), *sys.path])
+        patch.setattr(sys, "executable", launcher)
+        patch.setattr(sys, "_base_executable", native)
+        argv, env = slo._native_python_child(
+            [launcher, "-c", "from slo_source_marker import MARKER; print(MARKER)"],
+            env={**os.environ, "PYTHONPATH": str(child_source)},
+        )
+    result = subprocess.run(
+        argv, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=10, check=True,
+    )
+    assert result.stdout.strip() == "candidate"
 
 
 def test_native_python_child_leaves_non_python_commands_unchanged(monkeypatch):

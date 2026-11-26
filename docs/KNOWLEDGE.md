@@ -24,28 +24,20 @@
 
 ## 2. 当前状态速览
 
-- **Agent 主循环 stacked 候选（2026-11-26，尚未合入）**：已集成通用 Mission、
-  结构化 Plan、独立 Verification、Goal V2 的手动/有限自动推进、累计请求预算、
-  无进展与阻断恢复、有限人类授权及命令/MCP 执行准入。桌面可创建 V2 目标、
-  确认图、人工验收、暂停/恢复和撤销有限授权。#225 确定性修复 head `d8b47a7`
-  的 hosted run `45756307163` 与 #227 文档收口 head `d55568f` 的 hosted run
-  `45762177178` 均完成 12 个 job 与四项 required checks；#228 再正常刷新，保留显式
-  macOS `seatbelt_leaf`、Host/停止身份修复、Windows 四独立 runner、state 背压诊断与
-  SLO-first 调度。冲突解决初稿漏合并 SLO-first 已由真实 RED/GREEN 检出并修复，最终
-  代码 head `a2e0ba0` 已通过本机全量、独立 Tier 1 复审与最终静态门禁；自己的 hosted
-  required CI 只按最终 PR 对象的实际 run 判定。不代表主干、发行版或完整跨平台自主执行已交付。
-  精确范围见
-  [实施记录](changelog/2026-11-23-agent-loop-implementation.md)、
-  [#227 刷新记录](changelog/2026-11-26-pr227-stack-refresh.md)与
-  [#228 刷新记录](changelog/2026-11-26-pr228-ci-slo-isolation.md)。
-- **Goal 模式 G1 候选（2026-11-22，本地未合入）**：支持 `/goal`、目标配置、
+- **Agent 主循环已随 [#225](https://github.com/lorek666/tianshu-agent/pull/225) 合入 `main`**：
+  Mission、结构化 Plan、独立 Verification、Goal V2 手动与有限自动推进、有限授权及命令/MCP 准入
+  通过[完整 CI 45851139045](https://github.com/lorek666/tianshu-agent/actions/runs/45851139045)。
+  #228 候选另补显式 macOS `seatbelt_leaf`、进程身份收尾和 SLO 诊断，已通过本机全量与独立复审；
+  平台范围以其实际合入对象的完整 CI 为准。[主循环实施记录](changelog/2026-11-23-agent-loop-implementation.md) ·
+  [#228 同步记录](changelog/2026-11-26-pr228-main-refresh.md)。
+- **Goal 模式 G1 基线（2026-11-22，随后随 #225 合入）**：支持 `/goal`、目标配置、
   每轮手动推进和逐项人工验收；创建只保存配置，不启动模型。状态由事件及 Run
   派生，失败、空正文及 `partial/unknown` 结果均阻断继续与验收。已整合固定主干
   `7665e8684f5a124fe789f21909ee54325edc556b`；规格见
   [Goal 设计](SPEC-GOAL-MODE-2026-11-22.md)，验证和待验边界见
   [交付记录](changelog/2026-11-22-goal-mode.md)。G1 保持手动语义；
   有限自动推进由新的 V2 契约提供，不能用旧 G1 关闭入口绕过 V2 验收。
-- **本地 Skill 命令候选（2026-11-22，尚未合入）**：新建与追问输入框支持
+- **本地 Skill 命令（2026-11-22，随后随 #225 合入）**：新建与追问输入框支持
   `/`、`/skills`、`/skill <名称或版本标识> [要求]` 和 `/<技能名> [要求]`。
   只读发现用户与所选工作区的 `.agents/skills`，将选中技能全文保存为本轮输入；
   不增加工具或授权，不安装或自动执行技能脚本。实现范围、验证和未验证边界见
@@ -561,6 +553,8 @@
   固定权重仍只是调度提示，不能保证未来 runner 耗时；完整 CI 需另绑新对象，
   见[本批失败与修复记录](changelog/2026-11-23-seatbelt-leaf-ci-balance.md)。
   候选 `c6d6475` 的 [44944526018](https://github.com/lorek666/tianshu-agent/actions/runs/44944526018) 两片作业分别在 20 分 04 秒、20 分 08 秒完成，Windows required 汇总通过；下载的两份原始报告已再次核验实际 checkout、完整有序 collection、互斥全集及各阶段覆盖。该轮整体仍因上述 macOS Rust 夹具失败而为红，不用 Windows 通过替代新冻结的完整门禁。
+
+- **取消后的诊断证据必须独立于 pytest 日志（2026-11-24）**：#219 的 JSON 断言消息在 runner 取消或日志截断时可能一并丢失。state 背压测试现于首次断言前将完整脱敏报告原子写入 `RUNNER_TEMP`，真实子进程在首个失败谓词后硬退，验证日志不完整时 JSON 仍可读取。[#229](https://github.com/lorek666/tianshu-agent/pull/229) 在当时的单 macOS job 和三片 Windows 上传；本候选的 macOS 和 Windows 各分片均以 `always()` 上传，工件名绑定 run/attempt/shard；缺件只告警，不覆盖原退出码。与三片调整同见[本轮 CI 记录](changelog/2026-11-24-ci-windows-three-shards-and-state-evidence.md)。
 
 - **源码收据不扩张系统隔离结论（2026-11-21）**：source-only 私有根、空模型 key 与 env 凭据后端，不证明默认 urllib 代理/重定向路径零外发，也不消除默认 ControlPlane 构造时的 Keychain/ctypes 模块导入；构造或导入同样不等于实际取密钥。collector 正向归档/启动收据不能替代 full 原始退出码、辅助矩阵核验或当前 PID 活性证明，更不是产品 App 验收。旧独立 DB 守卫阻断与 FFI 拒绝边界保持，见[组合修复记录](changelog/2026-11-21-preview-release-repair.md)。
 

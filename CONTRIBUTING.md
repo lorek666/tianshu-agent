@@ -115,6 +115,8 @@ macOS 与每个 Windows worker 把 state 背压诊断写入严格报告树之外
 完整 D7 脱敏 JSON，并用真实子进程在首个失败谓词后硬退，证明 pytest 日志被截断时文件仍可
 恢复。macOS 与 Windows 均以 `always()` step 上传，工件名绑定 run ID、attempt 和 shard；
 缺件只告警，不改变原 pytest/包装器退出码，也不改变分片、并发、阈值或 required 名称。
+[#229](https://github.com/lorek666/tianshu-agent/pull/229) 早先上传 runner 临时目录下的
+单个 JSON；本批每片沿用上述诊断目录中的文件，同一报告每片只上传一次。
 
 Windows
 在四个独立 `windows-latest` runner 上使用原包装器，每台只执行一个真实 pytest 分片，

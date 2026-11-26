@@ -32,19 +32,17 @@
 - 作者另建全新私有副本逐文件核对冻结 manifest，并回放 control 临界节点；日志
   `.omc/artifacts/pr227-refresh/review/fresh-parent-replay.log` 的 SHA256 为
   `021131b5b78532e5c1973ee02d1188360e5e73a28a8b36ee4ba420ccbaeba004`。
-- 文档收口 head `d55568f928d7d2b09bba167b41da05fb72871235` 的 hosted run
-  [`45762177178`](https://github.com/lorek666/tianshu-agent/actions/runs/45762177178) 已完成，
-  12 个 job 全部 success；`test (ubuntu-latest) · py3.12`、
-  `test (macos-latest) · py3.12`、`test (windows-latest) · py3.12` 与
-  `ui · typecheck / test / build` 四项 required checks 均为 completed/success。
-  GitHub synthetic merge SHA 为 `6474a37998fd7bcb394226be2d451ba5b4bd933d`，PR 保持 open、
-  mergeable/clean。run/check-runs/PR 证据 JSON 的 SHA256 分别为
-  `bde43ad6df54f816fe5f286a4d432e2c568cad204e21252fc3abe27aec54cbdd`、
-  `3c306357b0eee2c0e1b70377a9ff74760f4a112adf87858dc187a1eecf8e0823` 与
-  `7dfcbb0abc271ddf25e5c41fe1c716746e460e503ce89d35f3e84c159ccf44bc`。
 
 ## 门禁边界
 
-本记录证明上述冻结 code/review tree 的本地、独立复审与最终 head 的 hosted required CI。
-纯文档回填未改变 code/review tree；#225 的 hosted run `45756307163` 只证明其自身 head，
-不替代 #227 的 run。测试临时数据根与真实 Keychain、生产凭据和全局锁隔离。
+本记录只证明上述冻结 code/review tree 的本地与独立复审结果。#225 的 hosted run
+`45756307163` 已全绿，但 #227 刷新后的最终 head 仍必须绑定自己的 hosted required CI；
+不能用旧 head 或本机绿代替。测试临时数据根与真实 Keychain、生产凭据和全局锁隔离。
+
+## 基于实际主干的刷新
+
+#225 已合入 `3017f09740756da0c3db7e02d1568b2eeced4da3`。此次同步的非文档内容与本机
+预整合树 `748f2264c3c7645a8702ccc349f2ad975f0df78f` 完全一致；相对各自基线的
+`tests/` 二进制 diff 也逐字节一致。定向回归、裸 `uv run --frozen pytest`、lock、Ruff 和 diff
+通过。全量日志 SHA256：`96183f0ae79e3b24f655d480b5a35905c1f39941e27085fed37c6cdc8fd3bc2f`。
+本节记录本机验证，最终 PR 仍须绑定其当前 head/base 的完整 GitHub CI。
