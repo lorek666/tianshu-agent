@@ -131,13 +131,35 @@ def _assert_macos_complete_native_gates(workflow):
         assert "runs-on: macos-latest" in block
         assert "timeout-minutes: 25" in block
         assert "ref: ${{ github.sha }}" in block
+    assert "shard: [0, 1]" in python
+    assert "fail-fast: false" in python
     for command in (
         "uv python install 3.12", "uv lock --check", "uv sync --frozen",
         "uv run --frozen ruff check .",
         'scripts/check_licenses_and_sbom.py --out "${RUNNER_TEMP}/tianshu-sbom.cdx.json"',
-        'uv run --frozen pytest -o addopts="" -q -rs',
     ):
         assert command in python
+    assert "PYTHONPATH: scripts" in python
+    assert 'PYTEST_ADDOPTS: ""' in python
+    assert "CI_SHARD_INDEX: ${{ matrix.shard }}" in python
+    assert "CI_SHARD_ROOT: ${{ runner.temp }}/macos-ci" in python
+    assert (
+        'uv run --frozen pytest -o addopts="" -q -rs -p pytest_ci_shards\n'
+        '          --ci-shard-index="$CI_SHARD_INDEX" --ci-shard-count=2\n'
+        '          --ci-shard-report="$CI_SHARD_ROOT/shard.json"\n'
+        '          --basetemp="$CI_SHARD_ROOT-runtime"\n'
+        '          -o cache_dir="$CI_SHARD_ROOT-cache"'
+    ) in python
+    assert (
+        "      - name: 上传 macOS 分片原始报告\n"
+        "        if: always()\n"
+        "        uses: actions/upload-artifact@v4\n"
+        "        with:\n"
+        "          name: macos-pytest-${{ github.run_id }}-${{ github.run_attempt }}-"
+        "${{ matrix.shard }}\n"
+        "          path: ${{ runner.temp }}/macos-ci/shard.json\n"
+        "          if-no-files-found: error\n"
+    ) in python
     assert "cargo " not in python
     assert "working-directory: desktop/src-tauri" in desktop
     for command in (
@@ -149,6 +171,25 @@ def _assert_macos_complete_native_gates(workflow):
     assert "timeout-minutes: 25" in summary
     assert "name: test (macos-latest) · py3.12" in summary
     assert "needs: [macos_python, desktop_macos]" in summary
+    assert "permissions:\n      contents: read\n      actions: read" in summary
+    assert "id: shard_artifacts" in summary
+    assert "GITHUB_TOKEN: ${{ github.token }}" in summary
+    assert "uv run --frozen python scripts/ci_artifacts.py" in summary
+    assert '--repository "$GITHUB_REPOSITORY"' in summary
+    assert '--run-id "$GITHUB_RUN_ID"' in summary
+    assert "--prefix macos-pytest --indices 0 1" in summary
+    assert '--github-output "$GITHUB_OUTPUT"' in summary
+    assert "--run-attempts '${{ steps.shard_artifacts.outputs.attempts }}'" in summary
+    assert "--count 2 --indices 0 1" in summary
+    for index in range(2):
+        assert (
+            "name: ${{ steps.shard_artifacts.outputs.shard_"
+            f"{index}_name }}}}\n          path: "
+            "${{ runner.temp }}/macos-ci-shards/" + str(index)
+        ) in summary
+    assert (
+        "name: macos-pytest-${{ github.run_id }}-${{ github.run_attempt }}-"
+    ) not in summary
     assert "${{ needs.macos_python.result }}" in summary
     assert "${{ needs.desktop_macos.result }}" in summary
 
@@ -166,6 +207,35 @@ def test_macos_native_jobs_cannot_lose_exact_checkout(job, replacement):
     assert changed != block
     with pytest.raises(AssertionError):
         _assert_macos_complete_native_gates(workflow.replace(block, changed, 1))
+
+
+@pytest.mark.parametrize("old,new", [
+    ("shard: [0, 1]", "shard: [0]"),
+    ("--ci-shard-count=2", "--ci-shard-count=1"),
+    ("--prefix macos-pytest --indices 0 1", "--prefix macos-pytest --indices 0"),
+    ("--count 2 --indices 0 1", "--count 1 --indices 0"),
+    (
+        "--run-attempts '${{ steps.shard_artifacts.outputs.attempts }}'",
+        '--run-attempt "$GITHUB_RUN_ATTEMPT"',
+    ),
+    (
+        "name: ${{ steps.shard_artifacts.outputs.shard_0_name }}",
+        "name: macos-pytest-${{ github.run_id }}-${{ github.run_attempt }}-0",
+    ),
+    (
+        "      - name: 上传 macOS 分片原始报告\n        if: always()",
+        "      - name: 上传 macOS 分片原始报告\n        if: success()",
+    ),
+    (
+        "permissions:\n      contents: read\n      actions: read",
+        "permissions:\n      contents: read",
+    ),
+])
+def test_macos_shard_gate_rejects_weakened_workflow(old, new):
+    workflow = _workflow()
+    assert old in workflow
+    with pytest.raises(AssertionError):
+        _assert_macos_complete_native_gates(workflow.replace(old, new))
 
 
 @pytest.mark.parametrize("python_result", ["success", "failure", "cancelled", "skipped"])
@@ -307,6 +377,9 @@ def test_windows_independent_runner_guard_rejects_weakened_workflow(old, new):
 ])
 def test_windows_summary_rejects_current_attempt_artifact_assumption(old, new):
     workflow = _workflow()
-    assert old in workflow
+    block = _job_block(workflow, "windows_summary")
+    assert old in block
+    changed = block.replace(old, new, 1)
+    assert changed != block
     with pytest.raises(AssertionError):
-        _assert_windows_independent_shards(workflow.replace(old, new, 1))
+        _assert_windows_independent_shards(workflow.replace(block, changed, 1))

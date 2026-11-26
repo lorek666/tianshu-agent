@@ -55,9 +55,11 @@ GitHub Actions。**四项 required 全部必过**：Ubuntu / macOS / Windows Pyt
 （`ui · typecheck / test / build`，含 `git diff --exit-code -- ui/dist` 产物漂移门禁）。
 准确检查名称见 [CONTRIBUTING §6](../CONTRIBUTING.md#6-pr-要求)；任一失败或未完成均不能合并。
 
-Python 矩阵为三平台 × Python 3.12。Windows 用两个独立 runner 分片 + 原生命名管道/长等待诊断，
-由汇总 job 绑定其 `success`；R1 的 macOS Rust fmt/test/clippy 并入现有 macOS required job，
-Windows Rust 检查由现有 Windows required 汇总 job 绑定，**不新增 required 名称**。
+Python 矩阵为三平台 × Python 3.12。Ubuntu 直接执行完整套件；macOS 用两个独立 runner 各执行
+一个 count2 真实分片；Windows 用四个独立 runner 各执行一个 count4 真实分片，并保留原生命名
+管道/长等待诊断。各汇总 job 严格核验完整覆盖、真实 artifact attempt 与上游 `success`；R1 的
+macOS Rust fmt/test/clippy 并入现有 macOS required job，Windows Rust 检查由现有 Windows
+required 汇总 job 绑定，**不新增 required 名称**。
 
 两条容易被误用的门禁口径：
 

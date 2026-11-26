@@ -90,13 +90,17 @@ jobs:
         # 清空项目的 -q，避免重复传入后隐藏汇总；-rs 保留平台跳过原因。
         run: uv run --frozen pytest -o addopts="" -q -rs
 
-  # macOS 的完整 Python 与 Rust 门禁分别占用原生 runner；不共享25分钟预算，
-  # 不减测、不加时。原 required 名由 always 汇总严格要求两者成功。
+  # macOS Python 分到两个独立原生 runner，Rust 另占一个；各限25分钟。
+  # 保留直接 pytest 路径，不新增 watchdog；required 严格核验原始分片和 Rust。
   macos_python:
-    name: macos python suite · py3.12
+    name: macos python shard ${{ matrix.shard }} · py3.12
     runs-on: macos-latest
     if: github.event_name == 'push' || github.event.pull_request.draft == false
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1]
     defaults:
       run:
         shell: bash
@@ -115,7 +119,24 @@ jobs:
       - name: 开源许可证合规与 SBOM 门禁（F15）
         run: uv run --frozen python scripts/check_licenses_and_sbom.py --out "${RUNNER_TEMP}/tianshu-sbom.cdx.json"
       - name: Pytest
-        run: uv run --frozen pytest -o addopts="" -q -rs
+        env:
+          PYTHONPATH: scripts
+          PYTEST_ADDOPTS: ""
+          CI_SHARD_INDEX: ${{ matrix.shard }}
+          CI_SHARD_ROOT: ${{ runner.temp }}/macos-ci
+        run: >-
+          uv run --frozen pytest -o addopts="" -q -rs -p pytest_ci_shards
+          --ci-shard-index="$CI_SHARD_INDEX" --ci-shard-count=2
+          --ci-shard-report="$CI_SHARD_ROOT/shard.json"
+          --basetemp="$CI_SHARD_ROOT-runtime"
+          -o cache_dir="$CI_SHARD_ROOT-cache"
+      - name: 上传 macOS 分片原始报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-pytest-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/macos-ci/shard.json
+          if-no-files-found: error
 
   desktop_macos:
     name: desktop rust checks · macos
@@ -143,8 +164,49 @@ jobs:
     timeout-minutes: 25
     if: always() && (github.event_name == 'push' || github.event.pull_request.draft == false)
     needs: [macos_python, desktop_macos]
+    permissions:
+      contents: read
+      actions: read
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: astral-sh/setup-uv@v5
+      - run: uv python install 3.12
+      - run: uv sync --frozen
+      - name: 解析 macOS 分片实际 attempt
+        id: shard_artifacts
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: >-
+          uv run --frozen python scripts/ci_artifacts.py
+          --repository "$GITHUB_REPOSITORY" --run-id "$GITHUB_RUN_ID"
+          --prefix macos-pytest --indices 0 1 --github-output "$GITHUB_OUTPUT"
+      - name: 下载 macOS 分片 0
+        if: always()
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.shard_artifacts.outputs.shard_0_name }}
+          path: ${{ runner.temp }}/macos-ci-shards/0
+      - name: 下载 macOS 分片 1
+        if: always()
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.shard_artifacts.outputs.shard_1_name }}
+          path: ${{ runner.temp }}/macos-ci-shards/1
+      - name: 验证 macOS 上游结论与完整覆盖
+        if: always()
+        env:
+          SHARD_REPORTS: ${{ runner.temp }}/macos-ci-shards
+          UPSTREAM_RESULT: ${{ needs.macos_python.result }}
+        run: >-
+          uv run --frozen python scripts/pytest_ci_shards.py verify
+          --reports-root "$SHARD_REPORTS" --sha "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID"
+          --run-attempts '${{ steps.shard_artifacts.outputs.attempts }}'
+          --count 2 --indices 0 1 --needs-result "$UPSTREAM_RESULT"
       - name: Require complete native macOS gates
+        if: always()
         env:
           PYTHON_RESULT: ${{ needs.macos_python.result }}
           DESKTOP_RESULT: ${{ needs.desktop_macos.result }}

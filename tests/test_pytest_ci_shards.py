@@ -128,6 +128,41 @@ def test_expensive_file_is_accounted_for_by_runners_and_verifier(tmp_path):
     assert accepted.returncode == 0, accepted.stdout + accepted.stderr
 
 
+@pytest.mark.parametrize("count", [2, 4])
+def test_slo_runs_first_in_its_shard_without_changing_full_collection(tmp_path, count):
+    slo_file = "tests/test_slo_and_soak.py"
+    slo_node = f"{slo_file}::test_measure_slo_smoke_and_run_soak_real_subprocesses"
+    files = {
+        **FILES,
+        "tests/test_eval_real_tasks.py": "def test_case(): pass\n",
+        "tests/test_recovery.py": "def test_case(): pass\n",
+        "tests/test_low_disk_execution.py": "def test_case(): pass\n",
+        "tests/test_goal_v2.py": "def test_case(): pass\n",
+        "tests/test_m2_acceptance.py": "def test_case(): pass\n",
+        slo_file: "def test_other(): pass\n"
+                  "def test_measure_slo_smoke_and_run_soak_real_subprocesses(): pass\n",
+    }
+    evidence, env, results, docs = shards(tmp_path, files, count=count)
+    assert [result.returncode for result in results] == [0] * count, [
+        (result.stdout, result.stderr) for result in results]
+    owner = next(doc for doc in docs if slo_node in doc["selected"])
+    assert owner["selected"][0] == slo_node
+    assert len(owner["selected"]) > 1
+    assert owner["finished"] == owner["selected"]
+    assert owner["full_collection"] == docs[0]["full_collection"]
+    assert [node for node, _ in owner["full_collection"]] != owner["selected"]
+    accepted = verify(evidence, env, count=count)
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+
+    owner_index = docs.index(owner)
+    changed = deepcopy(owner)
+    changed["selected"][0], changed["selected"][1] = changed["selected"][1], changed["selected"][0]
+    changed["finished"] = list(changed["selected"])
+    report_path(evidence, owner_index, count).write_text(json.dumps(changed), encoding="utf-8")
+    rejected = verify(evidence, env, count=count)
+    assert rejected.returncode == 1, rejected.stdout + rejected.stderr
+
+
 def test_windows_file_weights_balance_observed_cost_in_a_reduced_collection(tmp_path):
     # Complete-file log windows from run 45058496468, rounded up to seconds.
     # Earlier observations predate the online-soak/Goal changes and corpus reuse.
@@ -540,15 +575,20 @@ def test_four_valid_reports_moved_between_runner_artifacts_are_rejected(
 ):
     env, docs = complete_evidence
     if len(docs) != 4:
-        return  # The two-shard historical format has only two artifacts.
+        pytest.skip("跨四 runner 搬运只适用于 count4")
+    paths = []
     for index, doc in enumerate(docs):
         path = report_path(tmp_path, index, 4)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(doc), encoding="utf-8")
+        paths.append(path)
     assert verify(tmp_path, env, count=4).returncode == 0
-    misplaced = tmp_path / "0" / "0" / "shard.json"
-    misplaced.parent.mkdir()
-    report_path(tmp_path, 0, 4).rename(misplaced)
+    contents = [path.read_bytes() for path in paths]
+    for path, content in zip(paths, contents[1:] + contents[:1], strict=True):
+        path.write_bytes(content)
+    assert {path.relative_to(tmp_path) for path in tmp_path.rglob("shard.json")} == {
+        path.relative_to(tmp_path) for path in paths
+    }
     assert verify(tmp_path, env, count=4).returncode == 1
 
 

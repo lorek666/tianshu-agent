@@ -27,6 +27,10 @@ import pytest
 # file intervals from RED run 45050478841. Goal and online-soak observations use
 # run 45058496468; its timeout was cumulative and is not passing acceptance.
 # These are fixed scheduling hints, not acceptance limits or runner guarantees.
+SLO_FIRST_NODE = (
+    "tests/test_slo_and_soak.py::test_measure_slo_smoke_and_run_soak_real_subprocesses"
+)
+
 _FILE_WEIGHTS = {
     'tests/test_acceptance.py': 27,
     'tests/test_agent_control.py': 23,
@@ -262,6 +266,15 @@ def partition(full, count):
     return groups
 
 
+def ordered_shard(full, count, index):
+    selected = partition(full, count)[index]
+    # Timing-sensitive SLO must not inherit resource pressure from earlier tests.
+    if SLO_FIRST_NODE in selected:
+        selected.remove(SLO_FIRST_NODE)
+        selected.insert(0, SLO_FIRST_NODE)
+    return selected
+
+
 def pytest_addoption(parser):
     group = parser.getgroup("ci-shards")
     group.addoption("--ci-shard-index", type=int)
@@ -318,12 +331,13 @@ class Shard:
             self.data["selected"] = []
             return
         require(snapshot() == full, "another plugin filtered or reordered the full collection")
-        selected = partition(full, self.data["shard_count"])[self.data["shard_index"]]
+        selected = ordered_shard(full, self.data["shard_count"], self.data["shard_index"])
         self.data["selected"] = selected
         selected_set = set(selected)
         config.hook.pytest_deselected(items=[item for item in items
                                             if item.nodeid not in selected_set])
-        items[:] = [item for item in items if item.nodeid in selected_set]
+        by_node = {item.nodeid: item for item in items}
+        items[:] = [by_node[node] for node in selected]
 
     @pytest.hookimpl(wrapper=True, tryfirst=True)
     def pytest_collection_finish(self, session):
@@ -379,7 +393,7 @@ def verify(args):
             "missing or extra shard artifacts")
     documents = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
     full = documents[0]["full_collection"]
-    groups = partition(full, args.count)
+    groups = [ordered_shard(full, args.count, index) for index in range(args.count)]
     for index, doc in enumerate(documents):
         require(isinstance(doc, dict) and type(doc["version"]) is int and doc["version"] == 1,
                 "unsupported shard evidence version")
