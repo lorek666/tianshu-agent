@@ -97,9 +97,13 @@ UI 无法从 `events.run` 重建**账户级**账本状态（上限设置、未�
 | 文件 | 职责 |
 |---|---|
 | `lib/budgetView.ts` | 纯函数 `buildBudgetView(events: EventView[]): BudgetView`：从 `run.start` 读 `limits`；从 `model.result` 累计 usage（显式整数才计，缺失的尝试进 `unknownUsageAttempts`）与费用（复用 `readEventCost` / `summarizeCost` 的口径，直接调用 `summarizeCost` 保证一致）；从 `policy.denied` / `dispatch.rejected` 按 `rule_id` 封闭集（`dispatch.budget_refused` / `dispatch.subtask_limit`）收集拒绝记录；统计 `model.intent` / `model.error` 计数。 |
-| `lib/subtasks.ts` | 纯函数 `buildSubtaskViews(events, runs): SubtaskRow[]`：按 `subtask_id` 合并 `subtask.spawned` + `subtask.finished`（后者缺 = 进行中）；usage / limits / error 透传；`child_run_id` 能在 `state.runs` 里找到时附子 Run 状态人话。 |
+| `lib/subtasks.ts` | 纯函数 `buildSubtaskViews(events, runs): SubtaskRow[]`：按 `subtask_id` 合并 `subtask.spawned` + `subtask.finished`；usage / limits / error 透传；`child_run_id` 能在 `state.runs` 里找到时附子 Run 状态。 |
 | `components/BudgetPanel.tsx` | 预算面板：限额（轮次 / 累计 token）→ 已用量（token 已知/未知、调用次数、已知/未知费用）→ 拒绝记录（C4 人话 + 详情折叠区原始 rule_id）。空输入返回 null（不渲染空卡片）。 |
 | `components/SubtaskPanel.tsx` | 子任务面板：每张卡片 = 目标摘要（goal_digest 前 8 位 + "子任务"）+ 状态 pill + 限额三项 + 用量 + 子 Run 状态；`error` 文本转义展示。无子任务返回 null。 |
+
+后续界面修正：没有 `subtask.finished` 只说明尚无委派结论。只有检测到对应子 Run 为
+`running` 才显示「进行中」；暂停、待批、对账显示子 Run 的实际状态，缺少对应 Run 时
+说明状态暂不可用。委派结论仍取自 `subtask.finished`，后端状态、恢复和数据版本不变。
 
 ### 2.3 接线与数据流
 
@@ -240,7 +244,7 @@ J12 `run-mode.test.tsx` demo 接线测试）；J13 = 上表 test 行；J14 见�
 |---|---|---|---|
 | NC1 | `budgetView.ts` `hasExplicitUsage` 改为恒真（usage 缺失按 0 处理） | `budgetView.test.ts > 用量口径（J3/J5） > token 只累计显式整数 usage；缺失 usage 的调用进未知计数，不当 0`、`run-panels.test.tsx > 限额、用量、费用与未知口径一起出现（J5/J6）` —— 2 red | 全绿（19 passed 定向 + 套件 123） |
 | NC2 | `BUDGET_REFUSAL_RULE_IDS` 删掉 `dispatch.budget_refused` | `budgetView.test.ts > budget_refused / subtask_limit 两条编号都进拒绝记录并带 reason`、`budgetView.test.ts > 拒绝记录按 seq 升序`、`run-panels.test.tsx > C4 拒绝编号渲染成人话` —— 3 red | 全绿（19 passed 定向） |
-| NC3 | `subtasks.ts` spawned 行 `finishedState` 初始化为 `"succeeded"`（未收尾冒充终态） | `subtasks.test.ts > 只有 spawned（未 finished）= 进行中`、`subtasks.test.ts > 多个子任务按派发顺序排列`、`run-panels.test.tsx > 进行中的子任务显示进行中与限额` —— 3 red | 全绿（套件 123 passed） |
+| NC3 | `subtasks.ts` spawned 行 `finishedState` 初始化为 `"succeeded"`（未收尾冒充终态） | `subtasks.test.ts` 的无委派结论与顺序测试、`run-panels.test.tsx` 的运行状态与限额测试 | 全绿（历史实测） |
 
 还原后核对两个源文件无残留变异标记（grep `负控变异` = 0）。
 
