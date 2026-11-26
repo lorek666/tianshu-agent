@@ -422,6 +422,13 @@ class RunCursor:
     resource_epochs: dict[str, int] = field(default_factory=dict)
     output_ref: str | None = None
 
+    def has_exact_model_attempts(self) -> bool:
+        ledger = self.budget_ledger or {}
+        known = ledger.get("model_attempts_known", True)
+        if not isinstance(known, bool):
+            raise TianshuError("cursor 的 model_attempts_known 必须是布尔值")
+        return "model_attempts" in ledger and known
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "messages": self.messages,
