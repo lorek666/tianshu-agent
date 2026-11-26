@@ -226,6 +226,130 @@ def test_abort_during_socket_read_cannot_consume_reused_file(tmp_path, monkeypat
     assert child.returncode == 0
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX AF_UNIX socket fd reuse")
+def test_aborted_reader_cannot_consume_new_connection_auth_frame(monkeypatch):
+    """Let a new authenticated connection take the old fd before the old read runs."""
+    from multiprocessing import connection as mp
+
+    child_code = """
+import sys
+from pathlib import Path
+from tianshu import ipc
+assert sys.stdin.buffer.read(1) == b'!'
+with ipc.Client(Path(sys.argv[1]), timeout=5) as client:
+    assert client.welcome == {'protocol': 1}
+print('authenticated')
+"""
+    entered, release, read_done = (threading.Event() for _ in range(3))
+    old_bytes, reader_results, new_fds, errors, fillers = [], [], [], [], []
+    with tempfile.TemporaryDirectory(prefix="tsh-auth-fd-", dir="/tmp") as directory:
+        root = Path(directory)
+        server = ipc.Server(root)
+        server.start()
+        accepted = []
+        initial = threading.Thread(target=lambda: accepted.append(server.accept()), daemon=True)
+        initial.start()
+        peer = mp.Client(server.endpoint, family="AF_UNIX", authkey=server.authkey)
+        initial.join(5)
+        assert len(accepted) == 1
+        old = accepted[0]
+        old_fd = old._conn.fileno()
+        original_read = mp.Connection._read
+
+        def held_read(fd, size):
+            if threading.current_thread() is not reader:
+                return original_read(fd, size)
+            entered.set()
+            try:
+                assert release.wait(5), "old read was not released"
+                data = original_read(fd, size)
+                old_bytes.append(data)
+                return data
+            finally:
+                read_done.set()
+
+        def receive_old():
+            try:
+                reader_results.append(old.recv(timeout=5))
+            except Exception as exc:  # noqa: BLE001 - pass back the actual thread error
+                errors.append(exc)
+
+        reader = threading.Thread(target=receive_old, daemon=True)
+        monkeypatch.setattr(mp.Connection, "_read", staticmethod(held_read))
+        original_deliver = mp.deliver_challenge
+
+        class AuthBarrier:
+            def __init__(self, conn):
+                self.conn = conn
+
+            def send_bytes(self, value):
+                self.conn.send_bytes(value)
+
+            def recv_bytes(self, maxlength):
+                new_fds.append(self.conn.fileno())
+                release.set()
+                assert read_done.wait(5), "old read did not complete during new authentication"
+                return self.conn.recv_bytes(maxlength)
+
+        def deliver_with_barrier(conn, authkey):
+            try:
+                return original_deliver(AuthBarrier(conn), authkey)
+            except BaseException:
+                # On bad framing the client must see EOF even if the test
+                # retains the server traceback for the failure diagnostic.
+                conn.close()
+                raise
+
+        def accept_new():
+            try:
+                connection = server.accept()
+                hello = connection.recv(timeout=5)
+                assert hello is not None and hello["method"] == "hello"
+                connection.send(ipc.ok(hello["id"], {"protocol": 1}))
+            except Exception as exc:  # noqa: BLE001 - pass back the actual thread error
+                errors.append(exc)
+
+        monkeypatch.setattr(mp, "deliver_challenge", deliver_with_barrier)
+        replacement = threading.Thread(target=accept_new, daemon=True)
+        child = subprocess.Popen(
+            [sys.executable, "-c", child_code, str(root)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        try:
+            while not fillers or fillers[-1] < old_fd:
+                fillers.append(os.open(os.devnull, os.O_RDONLY))
+            peer.send_bytes(b"{}")
+            reader.start()
+            assert entered.wait(5), "old socket did not reach the framed read"
+            old.abort()
+            replacement.start()
+            stdout, stderr = child.communicate(input=b"!", timeout=10)
+            replacement.join(5)
+            reader.join(5)
+            assert new_fds == [old_fd], "new authenticated socket did not really reuse the fd"
+            assert old_bytes in [[b""], [b"\x00\x00\x00\x02"]], (
+                "old socket consumed bytes from the replacement authentication frame",
+                old_bytes, errors,
+            )
+            assert child.returncode == 0, (stderr, old_bytes, errors)
+            assert stdout.strip() == b"authenticated"
+            assert not replacement.is_alive() and not reader.is_alive()
+            assert not errors
+            assert reader_results == [None]
+        finally:
+            release.set()
+            if child.poll() is None:
+                child.kill()
+            child.communicate(timeout=5)
+            peer.close()
+            server.close()
+            for worker in (reader, replacement):
+                if worker.ident is not None:
+                    worker.join(5)
+            for fd in fillers:
+                os.close(fd)
+
+
 @pytest.mark.skipif(os.name != "posix", reason="POSIX socket 文件描述符复用")
 @pytest.mark.parametrize("close_method", ["abort", "close"])
 def test_abort_during_socket_send_cannot_overwrite_reused_file(tmp_path, monkeypatch, close_method):
