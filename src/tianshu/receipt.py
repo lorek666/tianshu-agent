@@ -311,9 +311,9 @@ def build_mcp_receipt(
     """MCP 调用的凭据。
 
     副作用发生在 **server 那边**：我们不知道它动了哪些文件，所以 `before_state`
-    显式记 `"unknown"`、`after_state` 是执行摘要（`mcp:<sha256>`，由 server/tool/
-    请求 id/结果文本/isError 算出）。**磁盘核对不适用**——`verify_receipts()` 对
-    `backend=="mcp"` 只核对事件引用、结果字段与 `mcp_call` 证据是否一致。
+    显式记 `"unknown"`、`after_state` 是 canonical 结果摘要（旧 inline 结果保持
+    历史摘要算法）。新 content-ref 凭据实际读取 blob 并重算；旧 inline 凭据只核
+    事件引用、结果字段与 `mcp_call` 证据是否一致。
 
     为什么要有凭据：红线 6「每个副作用必须产出 Receipt，且可独立核对」。MCP 调用
     是副作用（server 可能改了它自己的状态），凭据至少要回答"哪次调用、调了谁、
@@ -848,6 +848,15 @@ def verify_receipts(log, run_id: str) -> list[str]:
             for field in ("server", "tool", "is_error", "duration_ms", "after_state"):
                 if field not in out.get("mcp", {}) if isinstance(out.get("mcp"), dict) else True:
                     problems.append(f"凭据 {label} 的 MCP 结果缺少审计字段：{field}")
+            nested = out.get("mcp")
+            if isinstance(nested, dict):
+                from .mcp_results import McpResultError, is_ref_output, read_mcp_result
+
+                if is_ref_output(out):
+                    try:
+                        read_mcp_result(out, log=log)
+                    except McpResultError as exc:
+                        problems.append(f"凭据 {label} 的 MCP canonical blob 无法核验：{exc}")
             if not str(p.get("after_state") or "").startswith("mcp:"):
                 problems.append(
                     f"凭据 {label} 的 MCP 执行摘要形状不对：{p.get('after_state')!r}"

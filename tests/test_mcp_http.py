@@ -256,10 +256,11 @@ def test_remote_tool_requires_approval_and_complete_result(
         assert "fixture-token" not in repr(rows)
         result_row = next(e.payload for e in rows if e.type == "tool.result")
         receipts = [e for e in rows if e.type == "receipt"]
-        assert result_row["effect_state"] == expected_effect
+        assert result_row["effect_state"] == expected_effect, result_row["output"]
         if expected_effect == "applied":
             assert result_row["status"] == "succeeded" and len(receipts) == 1
-            assert result_row["output"]["mcp"]["content"] == ["approved arg"]
+            assert "content" not in result_row["output"]["mcp"]
+            assert result_row["output"]["mcp"]["schema"] == "tianshu.mcp-result.v1"
             assert verify_receipts(log, run_id) == []
         else:
             assert result_row["status"] == "failed" and not receipts

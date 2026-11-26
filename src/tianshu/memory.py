@@ -682,7 +682,15 @@ class MemoryProjection(_MemoryApplyMixin):
             " AND erased_at IS NULL ORDER BY memory_id",
             (reference, exclude_memory_id),
         ).fetchall()
-        return len(rows), [str(row["memory_id"]) for row in rows]
+        owners = [str(row["memory_id"]) for row in rows]
+        try:
+            from .mcp_results import referenced_mcp_digests
+
+            if reference in referenced_mcp_digests(self._log):
+                owners.append("mcp:append-only-result")
+        except Exception:  # noqa: BLE001 - 数不清引用就不删，宁可留字节
+            owners.append("mcp:reference-projection-unavailable")
+        return len(owners), owners
 
     def read_content(self, memory: Memory) -> str | None:
         """读回这一版正文。blob 缺失或内容哈希不符时**不**回落到其他版本。"""

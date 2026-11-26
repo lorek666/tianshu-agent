@@ -89,6 +89,8 @@ def main(argv: list[str] | None = None) -> int:
             "late_on_call",
             "bad_json_at_runtime",
             "structured_output",
+            "content_ref",
+            "content_ref_oversize",
         ],
     )
     parser.add_argument("--tools-file", default="")
@@ -187,6 +189,21 @@ def main(argv: list[str] | None = None) -> int:
             if args.mode == "crash_on_call":
                 os._exit(3)
             if args.mode == "hang_on_call":
+                continue
+            if args.mode in {"content_ref", "content_ref_oversize"}:
+                sentinel = "MCP-CONTENT-SENTINEL-9f31\n中文\x00tail"
+                if args.mode == "content_ref_oversize":
+                    sentinel = "MCP-OVERSIZE-SENTINEL-4c72" + "x" * 700_000
+                _result(
+                    request_id,
+                    {
+                        "content": [
+                            {"type": "text", "text": sentinel},
+                            {"type": "image", "data": sentinel, "mimeType": "image/png"},
+                        ],
+                        "structuredContent": {"secret": sentinel, "empty": {}},
+                    },
+                )
                 continue
             if args.mode == "structured_output":
                 _result(

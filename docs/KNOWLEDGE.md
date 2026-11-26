@@ -400,6 +400,24 @@
   不再依赖缺失父预算掩盖未知预占；旧任务分母不可直接比较。
   本轮冻结与门禁见[记录](changelog/2026-11-23-summary-cache-telemetry.md)。
 
+### MCP 入站正文 content-ref（2026-11-24）
+
+- **完整结果与事件面分离**：`mcp_results.py` 用 canonical JSON 将客户端已观测的有序
+  content blocks、文本/unsupported、structured 与调用元数据编码为
+  `tianshu.mcp-result.v1`；size/sha256/after_state 绑定 canonical bytes。派发先原子写
+  blob，再在同一 `EventLog.transaction()` 登记内容对象/授权、`tool.result` 与 applied
+  Receipt，外部 MCP 调用不进入事务。失败保持 unknown，允许孤儿 blob，不产生悬空事件。
+- **ref-only 持久面不等于模型看不到正文**：事件/cursor 只存白名单 metadata 与
+  schema/ref/size/hash/after_state/持久定位；异根空定位只指向运行配置推导的默认快照目录。
+  live、resume/cursor rebuild、replay 与
+  context 编译前水合临时副本，三路径消息等价。旧 inline 不迁移；缺 blob、损坏、
+  schema/size/hash/metadata 不符显式失败。Receipt 实际读 blob 并重算摘要/after_state，
+  不只比较事件哈希。
+- **引用保护来自 append-only 事实**：memory erase 从 `tool.result` 投影同 digest MCP
+  引用，引用仍在或投影不可用都保留 blob；不新增表或事件 schema。canonical result 与
+  structured 分别有有限存储上限，超限 fail closed、不重发。设计、验证与未验范围见
+  [本轮记录](changelog/2026-11-24-mcp-result-content-ref.md)。
+
 ## 5. 踩坑教训（别再踩）
 
 - **显式续跑不能用认领前的游标快照**：上一位持有人可能在交还作业前保存了新游标。
@@ -570,6 +588,8 @@
   固定权重仍只是调度提示，不能保证未来 runner 耗时；完整 CI 需另绑新对象，
   见[本批失败与修复记录](changelog/2026-11-23-seatbelt-leaf-ci-balance.md)。
   候选 `c6d6475` 的 [44944526018](https://github.com/lorek666/tianshu-agent/actions/runs/44944526018) 两片作业分别在 20 分 04 秒、20 分 08 秒完成，Windows required 汇总通过；下载的两份原始报告已再次核验实际 checkout、完整有序 collection、互斥全集及各阶段覆盖。该轮整体仍因上述 macOS Rust 夹具失败而为红，不用 Windows 通过替代新冻结的完整门禁。
+
+- **新增文件会改变整文件分片的连锁分配（2026-11-24）**：[#235 候选 CI](https://github.com/lorek666/tianshu-agent/actions/runs/45335797049) 的 当时的两片方案中 shard0 完成（pytest 21m44s），shard1 没有测试失败，但在 pytest 24m47s、约 91% 处被 25 分钟 job 上限取消，因而没有 `shard.json`，汇总按缺件拒绝。新增 MCP 节点只落入 shard0，却触发贪心分组让 52 个既有文件换片；旧权重还把新增 `test_prompt_cache.py` 当作 100 个慢节点，而完整日志区间只有约 2 秒。当时的校准只用已完成文件的状态区间，缺失文件回退到完整 run `45055708214`。当前整合保留主干的 4+2 分片、25 分钟上限、完整覆盖和缺件即红；不沿用旧轮验收结论。
 
 - **源码收据不扩张系统隔离结论（2026-11-21）**：source-only 私有根、空模型 key 与 env 凭据后端，不证明默认 urllib 代理/重定向路径零外发，也不消除默认 ControlPlane 构造时的 Keychain/ctypes 模块导入；构造或导入同样不等于实际取密钥。collector 正向归档/启动收据不能替代 full 原始退出码、辅助矩阵核验或当前 PID 活性证明，更不是产品 App 验收。旧独立 DB 守卫阻断与 FFI 拒绝边界保持，见[组合修复记录](changelog/2026-11-21-preview-release-repair.md)。
 
@@ -821,6 +841,8 @@
 
 - **受限网页表单候选（2026-11-21）**：支持同一次运行中已保存的同源静态表单，经逐次批准执行一次无凭据 HTTPS POST。确认收到完整响应时落网络 Receipt；传输不明不自动重发。没有脚本执行、登录态或文件上传，见[本轮记录](changelog/2026-11-21-browser-form.md)。
 - **产品能力补齐候选（2026-11-21）**：网页导航限于公开 HTML 和本 Run 的同源链接；没有通用浏览器自动化。Webhook 接收器只监听回环，公网 HTTPS 代理尚未部署或验收。HTTPS MCP 只支持固定端点的 JSON/SSE 请求响应，不支持 OAuth 和自动重连。Responses 自动压缩须模型端点显式支持；本地超过预算时若没有可用的已提交压缩边界，会停止而不会裁剪密文。真实模型、真实第三方 MCP 服务和用户设备未验。实施与使用边界见[本轮记录](changelog/2026-11-21-agent-product-capabilities.md)。
+
+- **MCP content-ref 的保留边界（2026-11-24）**：canonical blob 保存的是客户端已观测且未被既有传输上限截断的结果，不恢复 server 未发送的字节；canonical result 与 structured 分别有有限存储上限，超限保持 unknown 且不自动重发，尚无分页读取工具。新持久输出不含 endpoint/spawn/env，受管本地调用仍通过后端准入，并在执行事件中绑定调用与生命周期。旧 inline 事件/cursor/Receipt 继续兼容，真实第三方 server 与用户设备未验。见[本轮记录](changelog/2026-11-24-mcp-result-content-ref.md)。
 
 - **旧材料空树复核不是物理快照（2026-11-20）**：`7b4d80b` 通过最终扁平真实列举弥补已下降目录中迟到材料被 stale stat 隐藏的缺口，但有限观察仍不能排除某目录最后一次观察后的同 uid 修改，也不是物理隔离。该修复不改变 Windows 受管恢复写入的 `durability_unavailable` 边界，不解决下述自定义路径 #204；本地全量/能力投影不替代新托管 Windows/Mac CI 或用户设备验收。
 
