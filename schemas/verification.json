@@ -1,0 +1,392 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "verification",
+  "$ref": "#/$defs/verification",
+  "$defs": {
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "format_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "mission_id": {
+          "type": "string"
+        },
+        "mission_digest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "format_version": {
+                    "type": "integer",
+                    "const": 1
+                  },
+                  "check_id": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{1,64}$"
+                  },
+                  "criterion_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_.-]{1,128}$"
+                    },
+                    "minItems": 1
+                  },
+                  "required": {
+                    "type": "boolean",
+                    "const": true
+                  },
+                  "kind": {
+                    "type": "string",
+                    "const": "file_exists"
+                  },
+                  "inputs": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "workspace_binding_id": {
+                        "type": "string",
+                        "pattern": "^(0|[1-9][0-9]{0,3})$"
+                      },
+                      "relative_path": {
+                        "type": "string"
+                      },
+                      "file_kind": {
+                        "type": "string",
+                        "const": "regular"
+                      }
+                    },
+                    "required": [
+                      "workspace_binding_id",
+                      "relative_path",
+                      "file_kind"
+                    ]
+                  }
+                },
+                "required": [
+                  "format_version",
+                  "check_id",
+                  "criterion_ids",
+                  "required",
+                  "kind",
+                  "inputs"
+                ]
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "format_version": {
+                    "type": "integer",
+                    "const": 1
+                  },
+                  "check_id": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{1,64}$"
+                  },
+                  "criterion_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_.-]{1,128}$"
+                    },
+                    "minItems": 1
+                  },
+                  "required": {
+                    "type": "boolean",
+                    "const": true
+                  },
+                  "kind": {
+                    "type": "string",
+                    "const": "file_hash"
+                  },
+                  "inputs": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "workspace_binding_id": {
+                        "type": "string",
+                        "pattern": "^(0|[1-9][0-9]{0,3})$"
+                      },
+                      "relative_path": {
+                        "type": "string"
+                      },
+                      "file_kind": {
+                        "type": "string",
+                        "const": "regular"
+                      },
+                      "algorithm": {
+                        "type": "string",
+                        "const": "sha256"
+                      },
+                      "expected_digest": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      }
+                    },
+                    "required": [
+                      "workspace_binding_id",
+                      "relative_path",
+                      "file_kind",
+                      "algorithm",
+                      "expected_digest"
+                    ]
+                  }
+                },
+                "required": [
+                  "format_version",
+                  "check_id",
+                  "criterion_ids",
+                  "required",
+                  "kind",
+                  "inputs"
+                ]
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "format_version": {
+                    "type": "integer",
+                    "const": 1
+                  },
+                  "check_id": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{1,64}$"
+                  },
+                  "criterion_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_.-]{1,128}$"
+                    },
+                    "minItems": 1
+                  },
+                  "required": {
+                    "type": "boolean",
+                    "const": true
+                  },
+                  "kind": {
+                    "type": "string",
+                    "const": "command_exit"
+                  },
+                  "inputs": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "executable": {
+                        "type": "string"
+                      },
+                      "executable_digest": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      },
+                      "argv": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        },
+                        "minItems": 1
+                      },
+                      "cwd_binding_id": {
+                        "type": "string",
+                        "pattern": "^(0|[1-9][0-9]{0,3})$"
+                      },
+                      "env_profile_digest": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      },
+                      "expected_exit_codes": {
+                        "type": "array",
+                        "items": {
+                          "type": "integer"
+                        },
+                        "minItems": 1
+                      },
+                      "timeout_ms": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "isolation_profile_digest": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      }
+                    },
+                    "required": [
+                      "executable",
+                      "executable_digest",
+                      "argv",
+                      "cwd_binding_id",
+                      "env_profile_digest",
+                      "expected_exit_codes",
+                      "timeout_ms",
+                      "isolation_profile_digest"
+                    ]
+                  }
+                },
+                "required": [
+                  "format_version",
+                  "check_id",
+                  "criterion_ids",
+                  "required",
+                  "kind",
+                  "inputs"
+                ]
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "format_version": {
+                    "type": "integer",
+                    "const": 1
+                  },
+                  "check_id": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{1,64}$"
+                  },
+                  "criterion_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_.-]{1,128}$"
+                    },
+                    "minItems": 1
+                  },
+                  "required": {
+                    "type": "boolean",
+                    "const": true
+                  },
+                  "kind": {
+                    "type": "string",
+                    "const": "source_reference"
+                  },
+                  "inputs": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "content_ref": {
+                        "type": "string",
+                        "pattern": "^content://sha256:[0-9a-f]{64}$"
+                      },
+                      "source_event_seq": {
+                        "type": "integer",
+                        "minimum": 1
+                      },
+                      "cited_digest": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      },
+                      "locator": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "content_ref",
+                      "source_event_seq",
+                      "cited_digest",
+                      "locator"
+                    ]
+                  }
+                },
+                "required": [
+                  "format_version",
+                  "check_id",
+                  "criterion_ids",
+                  "required",
+                  "kind",
+                  "inputs"
+                ]
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "format_version": {
+                    "type": "integer",
+                    "const": 1
+                  },
+                  "check_id": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{1,64}$"
+                  },
+                  "criterion_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^[A-Za-z0-9_.-]{1,128}$"
+                    },
+                    "minItems": 1
+                  },
+                  "required": {
+                    "type": "boolean",
+                    "const": true
+                  },
+                  "kind": {
+                    "type": "string",
+                    "const": "human"
+                  },
+                  "inputs": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                      "question": {
+                        "type": "string"
+                      },
+                      "required_artifact_ids": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9_-]{1,64}$"
+                        },
+                        "minItems": 0
+                      },
+                      "required_check_ids": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "pattern": "^[A-Za-z0-9_-]{1,64}$"
+                        },
+                        "minItems": 0
+                      }
+                    },
+                    "required": [
+                      "question",
+                      "required_artifact_ids",
+                      "required_check_ids"
+                    ]
+                  }
+                },
+                "required": [
+                  "format_version",
+                  "check_id",
+                  "criterion_ids",
+                  "required",
+                  "kind",
+                  "inputs"
+                ]
+              }
+            ]
+          },
+          "minItems": 1
+        }
+      },
+      "required": [
+        "format_version",
+        "mission_id",
+        "mission_digest",
+        "checks"
+      ]
+    }
+  }
+}

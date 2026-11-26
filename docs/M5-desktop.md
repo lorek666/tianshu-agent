@@ -132,6 +132,8 @@ M5 不重新发明一套。
 | `task.list` | `{limit?}` | `{tasks}` | 按更新时间倒序 |
 | `task.create` | `{goal, workspaces:[{root_path, mode}], allow_exec_cmd?, outbound_allow?, mcp_servers?, max_subtasks?}` | `{task}` | 建任务不建 Run。工具范围复用 CLI 的任务级校验；缺省不启用，实际出网、MCP 调用和委派仍由执行侧单独审批。 |
 | `task.revise` | `{task_id, goal}` | `{task}` | 改目标 → `goal_revision+1`，旧 Run 被 fence |
+| `skill.list` | `{workspace_roots?: string[]}` | `{format_version:1, skills, issues}` | 本地只读技能目录；不返回正文，不调用模型。发现范围和机器副本见 [Skill 规格](SPEC-SKILL-COMMANDS-2026-11-22.md) |
+| `skill.prepare` | `{workspace_roots?: string[], skill, input}` | `{format_version:1, skill, goal}` | 准备单个技能全文快照；不修改 Task、不启动 Run、不增加授权。UI 将 goal 沿既有任务入口持久化 |
 | `run.start` | `{task_id, out_name?, mode?, execution_policy?, attachments?, model_profile?, fallback_profiles?}` | `{run}` | **只入队**，立即返回；执行由 Daemon 驱动 |
 | `run.follow_up` | `{task_id, source_run_id, message, execution_policy?, attachments?, model_profile?, fallback_profiles?}` | `{run}` | 从同一任务和同一目标版本下已成功运行的提交回答开始新 Run |
 | `run.guide` | `{run_id,text}` | `{request_seq}` | 补充要求在下一次模型调用前生效，已提出的工具动作继续按原参数审批 |
@@ -298,7 +300,7 @@ Responses 的「自动压缩阈值」另行设置；只有兼容端点返回已�
 | 场景 | 行为 |
 |---|---|
 | 关浏览器 / 刷新 | 无影响 |
-| `tianshu host stop` | CLI `POST /shutdown`（**只接受 POST + token**，GET 回 405）→ Host 用已冻结的 Daemon `instance_id` 在同一条握手连接上绑定身份，再让 Daemon 走 `shutdown{reason:"user"}`：停驱动线程 → 关连接 → 关 listener → 释放锁 → 退出（等 5s；超时只终止发请求时已核实的同一实例）；**Daemon 收掉之后**才关 UI 桥、清 `host.lock`、放主线程退出 |
+| `tianshu host stop` | CLI `POST /shutdown`（**只接受 POST + token**，GET 回 405）→ Host 用已冻结的 Daemon `instance_id` 在同一条握手连接上绑定身份，再让 Daemon 走 `shutdown{reason:"user"}`：停驱动线程 → 关连接 → 关 listener → 释放锁 → 退出。保留默认完整 5s 优雅窗口；超时后的升级与最终核验共享额外 3s。自有子进程必须对同一 `Popen` 完成 wait，附着实例只可在锁快照仍相同时升级并继续核对端点。核验成功才关 UI 桥、清 `host.lock`、放主线程退出；失败保留原 Host、桥、锁和自有对象，CLI 非零，允许重试原实例 |
 | Host 被杀 | Daemon 是独立进程，继续跑到下一次显式 shutdown（这正是"关 UI 任务继续"） |
 | Daemon 崩溃 | Host 监护：指数退避重启（1s/2s/4s/8s，上限 30s），重启时走 §4.1 的恢复扫描 |
 | 机器重启 | 下次启动时锁文件是陈旧的（连不上端点），Daemon 接管并恢复 |
@@ -311,6 +313,20 @@ Responses 的「自动压缩阈值」另行设置；只有兼容端点返回已�
   描述符协议绑定，调用时多塞一个 handler 实例，`TypeError` 让清理静默不执行；
 - 主线程必须等"Daemon 已收掉"才退出：先放主线程，进程结束会把清理线程一起带走，
   `stop` 报"Host 已退出"，Daemon 却留成孤儿继续接活。
+- 停止先禁止新启动，再确认监控线程退出；monitor join 未完成不能报告成功。
+  启动就绪时先将同一连接的握手身份与锁快照对应，自有实例另核对锁 PID 与
+  原生 `Popen` PID；停止不能改绑后来出现的 owner。内置 Daemon 命令使用直接
+  原生解释器，任意外部命令不改写。认证及停止 RPC 在受管辅助进程内执行，
+  受启动预算或剩余优雅预算约束，超时回收辅助根；就绪失败也要收尾已经启动的根。
+  Daemon 就绪后若 UI 桥绑定失败，Host 退出时同样只回收本监督器持有的 `Popen`；
+  当前 Host 锁核验与 owned 回收必须处于同一元数据临界区，避免次 Host 在检查和
+  停止之间接管后被旧 Host 误停。已被替代 Host 接管时不停止共享 Daemon，也不停止
+  附着实例。旧根仍活时监控器不得覆盖句柄并启动下一代。附着端点只有明确
+  `ENOENT` 且不存在时才可确认消失，超时和权限错误保持未确认。
+  自有 `Popen` 的终止请求后仍须 wait，已回收对象不再发信号。附着实例没有自有
+  OS 句柄，端点消失与 owned launcher 退出均不能证明任意后代已退出。
+  以上停止修复属于 PR #228 候选，验证范围见
+  [修复记录](changelog/2026-11-23-host-stop-instance-evidence.md)。
 - 退出请求必须与实例身份在同一连接内绑定：`tests/test_daemon.py` 的真实 Daemon
   回归证明错误 `expected_instance_id` 返回拒绝且进程/锁不变；
   `tests/test_host.py` 证明 supervisor 遇到替代实例或缺失身份时既不发送未绑定

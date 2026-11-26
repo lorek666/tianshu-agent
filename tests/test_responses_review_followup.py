@@ -21,6 +21,7 @@ from tianshu.errors import TianshuError
 from tianshu.events import EventLog, canonical_bytes
 from tianshu.model import ModelError
 from tianshu.replay import replay
+from tianshu.restore_access import default_material_paths
 from tianshu.tools import tool_manifest
 
 
@@ -64,7 +65,9 @@ def child(case, root):
     assert os.environ["TIANSHU_AUTHORITY_ROOT"] == str(root / "authority")
     ws = root / "ws"
     ws.mkdir()
-    with closing(EventLog(root / "db", blob_dir=root / "blobs")) as log:
+    with closing(EventLog(
+        root / "db", blob_dir=default_material_paths(root / "db", root)[1],
+    )) as log:
         stack = stack_for(log, data_root=root)
         task = stack.tasks.create_task("inspect local fixtures", [str(ws)])
         if case == "late_tool":
@@ -106,7 +109,9 @@ def child(case, root):
 @pytest.mark.parametrize("restore_first", [False, True], ids=["direct", "explicit-rebuild"])
 def test_committed_tool_after_approval_checkpoint(tmp_path, restore_first):
     child_process(tmp_path, "late_tool")
-    with closing(EventLog(tmp_path / "db", blob_dir=tmp_path / "blobs")) as log:
+    with closing(EventLog(
+        tmp_path / "db", blob_dir=default_material_paths(tmp_path / "db", tmp_path)[1],
+    )) as log:
         stack = stack_for(log, data_root=tmp_path)
         (run_id,) = log.conn.execute("SELECT run_id FROM runs").fetchone()
         before = log.read_run(run_id)
@@ -164,7 +169,9 @@ def test_committed_tool_after_approval_checkpoint(tmp_path, restore_first):
 @pytest.mark.parametrize("restore", ["retained", "dropped", "rebuilt"])
 def test_attempts_on_both_sides_of_checkpoint(tmp_path, case, restore):
     child_process(tmp_path, case)
-    with closing(EventLog(tmp_path / "db", blob_dir=tmp_path / "blobs")) as log:
+    with closing(EventLog(
+        tmp_path / "db", blob_dir=default_material_paths(tmp_path / "db", tmp_path)[1],
+    )) as log:
         stack = stack_for(log, data_root=tmp_path)
         (run_id,) = log.conn.execute("SELECT run_id FROM runs").fetchone()
         before = log.read_run(run_id)
@@ -209,7 +216,9 @@ def test_attempts_on_both_sides_of_checkpoint(tmp_path, case, restore):
 
 def test_parked_cursor_hash_round_trip(tmp_path):
     assert os.environ["TIANSHU_AUTHORITY_ROOT"] == str(tmp_path / "authority")
-    with closing(EventLog(tmp_path / "db", blob_dir=tmp_path / "blobs")) as log:
+    with closing(EventLog(
+        tmp_path / "db", blob_dir=default_material_paths(tmp_path / "db", tmp_path)[1],
+    )) as log:
         stack = stack_for(log, data_root=tmp_path)
         ws = tmp_path / "ws"
         ws.mkdir()
@@ -316,7 +325,9 @@ def test_nested_projection_types(left, right, valid):
 
 def test_control_crash_then_full_projection_rebuild(tmp_path):
     child_process(tmp_path, "no_checkpoint")
-    with closing(EventLog(tmp_path / "db", blob_dir=tmp_path / "blobs")) as log:
+    with closing(EventLog(
+        tmp_path / "db", blob_dir=default_material_paths(tmp_path / "db", tmp_path)[1],
+    )) as log:
         stack = stack_for(log, data_root=tmp_path)
         (rid,) = log.conn.execute("SELECT run_id FROM runs").fetchone()
         result = engine_for(stack, adapter(LocalTransport(answer([msg()])))).resume_run(rid)
@@ -337,7 +348,9 @@ def test_control_crash_then_full_projection_rebuild(tmp_path):
 
 
 def test_direct_resume_parked_when_derived_rows_missing(tmp_path):
-    with closing(EventLog(tmp_path / "db", blob_dir=tmp_path / "blobs")) as log:
+    with closing(EventLog(
+        tmp_path / "db", blob_dir=default_material_paths(tmp_path / "db", tmp_path)[1],
+    )) as log:
         stack = stack_for(log, data_root=tmp_path)
         ws = tmp_path / "ws"
         ws.mkdir()

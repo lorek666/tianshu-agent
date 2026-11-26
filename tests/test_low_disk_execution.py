@@ -742,8 +742,8 @@ def test_exec_cwd_and_pure_direct_begin_are_gated(tmp_path):
         assert not any(e.type == "execution.started" for e in log.read_run(pure_run.run_id))
 
 
-def test_pure_only_write_proposal_keeps_dispatch_and_result_audit(tmp_path):
-    """pure_only 的合法提案必须进入派发层拒绝，而不是在模型轮次被静默丢弃。"""
+def test_pure_only_write_proposal_keeps_mission_route_refusal_audit(tmp_path):
+    """pure_only 的写提案在 Mission 路由拒绝，原始提案与拒绝事实同时保留。"""
     from tianshu.loop import Limits
     from tianshu.model import ModelResponse, ScriptedModel, ToolCall
 
@@ -752,9 +752,6 @@ def test_pure_only_write_proposal_keeps_dispatch_and_result_audit(tmp_path):
     with closing(EventLog(tmp_path / "events.db")) as log:
         stack = build_stack(log, data_root=tmp_path / "data")
         task = stack.tasks.create_task("pure-only audit", [str(workspace)])
-        run, claim = _start(stack, task, "pure_only")
-        # 模拟旧版或伪造调用方已拿到租约：pure_only 资格仍须在派发层独立拒绝。
-        stack.leases.acquire([workspace], run.run_id)
         model = ScriptedModel(
             [
                 ModelResponse(
@@ -770,25 +767,52 @@ def test_pure_only_write_proposal_keeps_dispatch_and_result_audit(tmp_path):
                 ModelResponse("end_turn", content="proposal refused"),
             ]
         )
-        result = _drive_route(
-            stack,
-            model,
-            claim,
-            "drive",
-            limits=Limits(8, 20_000),
+        result = engine_for(stack, model, limits=Limits(8, 20_000)).start(
+            task.task_id, execution_policy=PURE_ONLY, out_name="",
         )
 
         events = log.read_run(result.run_id)
-        rejected = [e.payload for e in events if e.type == "dispatch.rejected"]
-        results = [e.payload for e in events if e.type == "tool.result"]
-        assert len(rejected) == len(results) == 1
-        assert rejected[0]["rule_id"] == "dispatch.run_effects_disallowed"
-        assert results[0]["call_id"] == "write-1"
-        assert results[0]["status"] == "rejected"
-        assert results[0]["effect_state"] == "none_applied"
-        assert results[0]["output"]["rule_id"] == "dispatch.run_effects_disallowed"
-        assert not any(e.type == "tool.not_dispatched" for e in events)
+        frozen, = [e for e in events if e.type == "run.mission"]
+        assert "create_report" not in {
+            tool["tool_id"] for tool in frozen.payload["effective_tools"]
+        }
+        proposal = next(e for e in events if e.type == "model.result")
+        assert proposal.payload["tool_calls"][0]["call_id"] == "write-1"
+        refused, = [e for e in events if e.type == "tool.not_dispatched"]
+        assert refused.actor_kind == "core"
+        assert refused.payload["call_id"] == "write-1"
+        assert refused.payload["tool_id"] == "create_report"
+        assert "Mission" in refused.payload["reason"]
+        assert frozen.seq < proposal.seq < refused.seq
+        assert not any(e.type in ("tool.intent", "tool.result", "approval.requested")
+                       for e in events)
         assert not (workspace / "must-not-exist.md").exists()
+
+
+def test_pure_only_direct_write_dispatch_still_rejects_with_audit(tmp_path):
+    """绕过模型路由且已取得租约时，Dispatcher 仍独立拒绝 pure_only 写入。"""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    with closing(EventLog(tmp_path / "events.db")) as log:
+        stack = build_stack(log, data_root=tmp_path / "data")
+        task = stack.tasks.create_task("pure-only direct dispatch", [str(workspace)])
+        run, claim = _start(stack, task, "pure_only")
+        stack.leases.acquire([workspace], run.run_id)
+        target = workspace / "must-not-exist.md"
+        args = {"name": target.name, "content": "forbidden"}
+        request = _request(
+            stack, task, run, claim, "create_report", target, args, call_id="direct-write",
+        )
+        decision = stack.dispatcher.prepare(request, claim, args=args)
+        assert decision.is_rejected
+        assert decision.rule_id == "dispatch.run_effects_disallowed"
+        events = log.read_run(run.run_id)
+        refused, = [e for e in events if e.type == "dispatch.rejected"]
+        assert refused.payload["request_id"] == request.request_id
+        assert refused.payload["rule_id"] == "dispatch.run_effects_disallowed"
+        assert not any(e.type in ("tool.intent", "execution.started", "approval.requested")
+                       for e in events)
+        assert not target.exists()
 
 
 @pytest.mark.parametrize("boundary", ["begin", "memory_begin"])

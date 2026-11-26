@@ -583,7 +583,7 @@ from tianshu.model import ModelResponse, ToolCall
 db = Path({db!r})
 ws = Path({ws!r})
 log = EventLog(db, blob_dir=db.parent / "blobs")
-stack = build_stack(log, data_root=db.parent / "data")
+stack = build_stack(log, data_root=db.parent)
 
 
 class M:
@@ -639,7 +639,7 @@ def _spawn_crash(tmp_path: Path, ws: Path, rounds: int) -> subprocess.CompletedP
     src = str(Path(__file__).resolve().parents[1] / "src")
     code = _CHILD.format(
         src=src,
-        db=str(tmp_path / "events.db"),
+        db=str(tmp_path / "data" / "events.db"),
         ws=str(ws),
         rounds=rounds,
         budget=BUDGET_BYTES,
@@ -664,7 +664,7 @@ def test_crash_after_summary_call_leaves_pending_without_retry(tmp_path):
     assert proc.returncode == 77, f"未在摘要注入点硬退：rc={proc.returncode}\n{proc.stderr}"
     assert "[failpoint] summary-after-call" in proc.stderr
 
-    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    log = EventLog(tmp_path / "data" / "events.db", blob_dir=tmp_path / "data" / "blobs")
     stack = build_stack(log, data_root=tmp_path / "data")
     store = _store(log)
     rows = store.versions(

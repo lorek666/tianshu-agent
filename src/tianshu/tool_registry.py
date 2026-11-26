@@ -98,6 +98,8 @@ class McpToolBinding:
     description_hash: str
     narrowed: tuple[str, ...] = ()
     remote_identity: str = ""
+    server_generation: str = ""
+    semantic_tool_version: str = ""
 
     @property
     def uri(self) -> str:
@@ -163,7 +165,7 @@ def tool_id_for_server(server: str, tool: str) -> str:
 
 def tool_version_for(
     *, server: str, tool: str, raw_schema: dict[str, Any], normalized: dict[str, Any],
-    description: str, remote_identity: str = "",
+    description: str, remote_identity: str = "", server_generation: str = "",
 ) -> str:
     payload = {
         "server": server,
@@ -174,6 +176,9 @@ def tool_version_for(
     }
     if remote_identity:
         payload["remote_identity"] = remote_identity
+    if server_generation:
+        payload["server_generation"] = server_generation
+    if remote_identity or server_generation:
         return "mcp1:" + _digest(payload)
     return "mcp1:" + _digest(payload)[:16]
 
@@ -201,6 +206,8 @@ def _admit_one(
     rejected: list[RejectedMcpTool],
     remote_identity: str = "",
     remote_url: str = "",
+    server_generation: str = "",
+    semantic_remote_identity: str = "",
 ) -> AdmittedMcpTool | None:
     """把一个发现到的工具归一/绑定成 `ToolSpec`；任何一步不成立就记拒绝原因。"""
     from .tools import ToolSpec, description_digest, schema_digest
@@ -251,12 +258,19 @@ def _admit_one(
             normalized=normalized,
             description=description,
             remote_identity=remote_identity,
+            server_generation=server_generation,
         ),
         schema_hash=schema_digest(normalized),
         raw_schema_hash=_digest(tool.raw.get("inputSchema", {})),
         description_hash=description_digest(description),
         narrowed=narrowed,
         remote_identity=remote_identity,
+        server_generation=server_generation,
+        semantic_tool_version=tool_version_for(
+            server=server, tool=tool.name,
+            raw_schema=tool.raw.get("inputSchema", {}), normalized=normalized,
+            description=description, remote_identity=semantic_remote_identity,
+        ),
     )
     spec = ToolSpec(
         tool_id=tool_id,
@@ -344,6 +358,10 @@ def admit_mcp_tools(
         remote_url = getattr(config, "url", "")
         item = _admit_one(server, tool, rejected=rejected,
                           remote_identity=clients.remote_identity(server) if remote_url else "",
+                          server_generation=clients.server_generation(server),
+                          semantic_remote_identity=(
+                              remote_url + "\n" + config.bearer_token_env if remote_url else ""
+                          ),
                           remote_url=remote_url)
         if item is None:
             continue

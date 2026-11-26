@@ -40,6 +40,7 @@
         "c4.outside_workspace_unsupported",
         "c4.overwrite",
         "c4.readonly_binding",
+        "c4.scoped_consent",
         "c4.subtask_cancel",
         "c4.subtask_not_configured",
         "c4.subtask_spawn",
@@ -52,6 +53,7 @@
         "dispatch.call_id_reused",
         "dispatch.claim_lost",
         "dispatch.claim_mismatch",
+        "dispatch.consent_unusable",
         "dispatch.create_over_existing",
         "dispatch.denied",
         "dispatch.disk_space_low",
@@ -172,7 +174,9 @@
     "dispatch.workspace_blocked": "工作区被阻断检查拦下（未知副作用未澄清）。",
     "dispatch.run_effects_disallowed": "pure_only Run 请求真实非 pure 工具；只能显式新开 effects Run，不升级原 Run。",
     "dispatch.disk_space_low": "实际必需位置的当前用户可用空间低于 2 GiB（含真实 0）；清理对应卷或显式新建 pure_only Run。",
-    "dispatch.disk_space_unknown": "测量失败、无效或必需 context/实例不完整，无法证明空间；修复配置或探测后重试。"
+    "dispatch.disk_space_unknown": "测量失败、无效或必需 context/实例不完整，无法证明空间；修复配置或探测后重试。",
+    "dispatch.consent_unusable": "有限授权已撤销、到期、耗尽或动作绑定失效；已准备动作不得静默改用另一条规则。",
+    "c4.scoped_consent": "判定结果：认证本机人类控制面签发的有限授权匹配；具体动作仍需原子兑现一次性 Grant。"
   },
   "x-rule-groups": {
     "身份失配": [
@@ -297,6 +301,7 @@
     "c4.outbound",
     "c4.outside_workspace",
     "c4.overwrite",
+    "c4.scoped_consent",
     "c4.subtask_cancel",
     "c4.subtask_spawn"
   ]

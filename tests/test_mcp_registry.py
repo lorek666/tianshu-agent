@@ -33,7 +33,7 @@ FIXTURE = Path(__file__).parent / "fixtures" / "fake_mcp_server.py"
 
 
 class _StubClients:
-    """只实现准入用到的两个查询（`configs` / `states()`）。
+    """只实现准入查询；没有 Run scope 的旧会话 generation 为空。
 
     状态对象是真的 `McpServerState`，所以被测代码走的是生产形状，不是另造一套。
     """
@@ -48,6 +48,9 @@ class _StubClients:
 
     def states(self) -> tuple[McpServerState, ...]:
         return self._states
+
+    def server_generation(self, _name: str) -> str:
+        return ""
 
 
 def _tool(name: str, schema: dict, description: str = "") -> McpTool:

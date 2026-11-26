@@ -69,7 +69,14 @@ from .control import DAEMON_VERSION, ControlError, ControlPlane, event_view
 from .errors import TianshuError
 from .events import EventLog
 from .jobs import JobLost, JobStore, JobUnavailable, renew_claim
-from .leases import DEFAULT_TTL_MS, HEARTBEAT_MS, LeaseStore, ProcessIdentity
+from .leases import (
+    DEFAULT_TTL_MS,
+    GUARD_TIMEOUT_MS,
+    HEARTBEAT_MS,
+    LeaseStore,
+    ProcessIdentity,
+    execution_guard,
+)
 from .loop import AgentLoop, Limits, Stack, build_stack
 from .model import Model
 from .recovery import recover_run
@@ -174,6 +181,21 @@ def lock_path(data_root: Path) -> Path:
     return ipc.run_dir(Path(data_root)) / LOCK_NAME
 
 
+def daemon_lock_guard(run_dir: Path, *, timeout_ms: int = GUARD_TIMEOUT_MS):
+    """Serialize Daemon lock identity changes independently of Host metadata.
+
+    Host may hold its metadata guard while waiting for an owned Daemon to exit.
+    A separate advisory mutex avoids that wait/cleanup deadlock while still
+    giving stale takeover, creation, and identity-checked deletion one common
+    cross-process linearization point. ``run_dir`` is already ``ipc.run_dir``.
+    """
+    return execution_guard(
+        run_dir,
+        timeout_ms=timeout_ms,
+        guard_name="daemon.lock.guard",
+    )
+
+
 # --------------------------------------------------------------------------- 锁
 
 
@@ -244,30 +266,32 @@ def _unlink_lock(lock: DaemonLock) -> None:
     """只删属于本实例的锁。
 
     另一个 daemon 接管后会把锁写成它自己的；无条件删文件等于把别人的单实例
-    保护拆掉——下一次就有两个实例同时 bind。
+    保护拆掉——下一次就有两个实例同时 bind。身份读取、比较与 unlink 必须
+    同处 Daemon-lock 守卫，否则合法 takeover 可以插进 compare-delete 中间。
     """
-    deadline = time.monotonic() + LOCK_DELETE_RETRY_BUDGET_S
-    while True:
-        payload = _read_lock(lock.path)
-        if payload is None or payload.get("instance_id") != lock.instance_id:
-            return
-        try:
-            lock.path.unlink()
-            return
-        except FileNotFoundError:
-            return
-        except PermissionError as exc:
-            # Windows readers briefly hold a non-delete-sharing handle while
-            # Host polls the lock. Retry this platform-specific contention for
-            # a bounded window; POSIX permission errors are not transient.
-            remaining = deadline - time.monotonic()
-            if os.name != "nt" or remaining <= 0:
+    with daemon_lock_guard(lock.path.parent):
+        deadline = time.monotonic() + LOCK_DELETE_RETRY_BUDGET_S
+        while True:
+            payload = _read_lock(lock.path)
+            if payload is None or payload.get("instance_id") != lock.instance_id:
+                return
+            try:
+                lock.path.unlink()
+                return
+            except FileNotFoundError:
+                return
+            except PermissionError as exc:
+                # Windows readers briefly hold a non-delete-sharing handle while
+                # Host polls the lock. Retry this platform-specific contention for
+                # a bounded window; POSIX permission errors are not transient.
+                remaining = deadline - time.monotonic()
+                if os.name != "nt" or remaining <= 0:
+                    _log(f"删除 Daemon 锁失败：{exc}")
+                    return
+                time.sleep(min(LOCK_DELETE_RETRY_INTERVAL_S, remaining))
+            except OSError as exc:
                 _log(f"删除 Daemon 锁失败：{exc}")
                 return
-            time.sleep(min(LOCK_DELETE_RETRY_INTERVAL_S, remaining))
-        except OSError as exc:
-            _log(f"删除 Daemon 锁失败：{exc}")
-            return
 
 
 def acquire_lock(data_root: Path) -> DaemonLock:
@@ -300,7 +324,12 @@ def acquire_lock(data_root: Path) -> DaemonLock:
 
     for _ in range(LOCK_MAX_ATTEMPTS):
         try:
-            _write_lock(path, payload)
+            with daemon_lock_guard(run_dir):
+                # Guard contention is startup time, not lock age. Mint the
+                # freshness timestamp at the actual exclusive creation point.
+                started_at = int(time.time() * 1000)
+                payload["started_at"] = started_at
+                _write_lock(path, payload)
             break
         except FileExistsError:
             if ipc.probe(root):
@@ -312,15 +341,24 @@ def acquire_lock(data_root: Path) -> DaemonLock:
                 # 另一个 daemon 刚开始启动（或刚崩溃，还没过宽限窗）：等。
                 time.sleep(0.05)
                 continue
-            # 陈旧锁：再确认一次端点确实连不上，然后接管。
-            if ipc.probe(root):
-                raise ipc.IpcError(f"端点已被占用：{root}") from None
-            try:
-                path.unlink()
-            except FileNotFoundError:
-                pass
-            except OSError as exc:
-                raise ipc.IpcError(f"无法清理陈旧锁 {path}：{exc}") from exc
+            # Re-check endpoint and freshness under the same mutex as Host's
+            # final compare-delete. A replacement that won the race is kept.
+            with daemon_lock_guard(run_dir):
+                if ipc.probe(root):
+                    raise ipc.IpcError(f"端点已被占用：{root}") from None
+                existing = _read_lock(path)
+                if _lock_is_fresh(existing, path, int(time.time() * 1000)):
+                    fresh_replacement = True
+                else:
+                    fresh_replacement = False
+                    try:
+                        path.unlink()
+                    except FileNotFoundError:
+                        pass
+                    except OSError as exc:
+                        raise ipc.IpcError(f"无法清理陈旧锁 {path}：{exc}") from exc
+            if fresh_replacement:
+                time.sleep(0.05)
             continue
     else:
         raise ipc.IpcError(f"抢不到单实例锁（重试 {LOCK_MAX_ATTEMPTS} 次）：{path}")
@@ -1749,6 +1787,7 @@ __all__ = [
     "LOCK_NAME",
     "DaemonLock",
     "acquire_lock",
+    "daemon_lock_guard",
     "lock_path",
     "request_shutdown",
     "serve",

@@ -12,10 +12,15 @@
 from __future__ import annotations
 
 import copy
+import datetime as dt
 import hashlib
 import json
+import os
+import shutil
 import subprocess
 import sys
+import threading
+from contextlib import ExitStack
 from itertools import pairwise
 from pathlib import Path
 
@@ -32,6 +37,83 @@ import soak_observation as obs  # noqa: E402
 
 SCHEMA_PATH = REPO_ROOT / "schemas" / "slo" / "slo-v1.json"
 THRESHOLDS_PATH = REPO_ROOT / "schemas" / "slo" / "slo-thresholds-v1.json"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX 测试进程描述符噪声")
+def test_online_subscriber_probe_isolates_runner_fds(tmp_path, monkeypatch):
+    import resource
+
+    if resource.getrlimit(resource.RLIMIT_NOFILE)[0] < 2048:
+        pytest.skip("需要容纳测试进程与诊断器各自的描述符")
+    with ExitStack() as handles:
+        for _ in range(520):
+            handles.callback(os.close, os.open(os.devnull, os.O_RDONLY))
+        test_soak_online_subscriber_consumes_before_run_completion(tmp_path, monkeypatch, None)
+
+
+@pytest.mark.parametrize("fault", [None, "disconnect", "missing_stream"])
+def test_soak_online_subscriber_consumes_before_run_completion(tmp_path, monkeypatch, fault):
+    """真实 Host/Daemon 的模型流必须在 effects 轮次完成之前被消费。"""
+    # runner 资源门禁必须测独立诊断进程，不能把此前 pytest 用例的资源算进去。
+    monkeypatch.setenv("PYTHONIOENCODING", "utf-8")
+    probe = subprocess.run(
+        [
+            sys.executable, "-c",
+            "import json,sys\n"
+            "from pathlib import Path\n"
+            "import pytest\n"
+            "sys.path.insert(0,sys.argv[1])\n"
+            "from test_slo_and_soak import _assert_online_subscriber_progress\n"
+            "with pytest.MonkeyPatch.context() as patch:\n"
+            "    _assert_online_subscriber_progress(\n"
+            "        Path(sys.argv[2]),patch,json.loads(sys.argv[3]))\n",
+            str(REPO_ROOT / "tests"), str(tmp_path), json.dumps(fault),
+        ],
+        cwd=REPO_ROOT, capture_output=True, text=True, encoding="utf-8",
+        close_fds=True, timeout=90,
+    )
+    assert probe.returncode == 0, probe.stdout + probe.stderr
+
+
+def _assert_online_subscriber_progress(tmp_path, monkeypatch, fault):
+    first_stream = threading.Event()
+    original_call = soak_mod.ipc.Client.call
+    original_next_event = soak_mod.ipc.Client.next_event
+    first_run = True
+
+    def call(client, method, params=None, **kwargs):
+        nonlocal first_run
+        response = original_call(client, method, params, **kwargs)
+        if method == "run.start" and first_run:
+            first_run = False
+            assert first_stream.wait(5), "在线订阅者在等待 Run 完成时没有消费真实模型流"
+        return response
+
+    def next_event(client, **kwargs):
+        message = original_next_event(client, **kwargs)
+        if message is not None and message.get("push") == "model_stream":
+            first_stream.set()
+            if fault == "disconnect":
+                client.close()
+                return original_next_event(client, **kwargs)
+            if fault == "missing_stream":
+                return None
+        return message
+
+    monkeypatch.setattr(soak_mod.ipc.Client, "call", call)
+    monkeypatch.setattr(soak_mod.ipc.Client, "next_event", next_event)
+    report, code = soak_mod.run_soak(
+        duration_s=0.01, sample_interval_s=1.0, output_dir=tmp_path / "observation",
+    )
+    assert first_stream.is_set()
+    assert report["orphan_pids"] == []
+    if fault is None:
+        assert code == 0 and report["failures"] == [], report["failures"]
+        assert report["workloads"]["streamed_turns"] > 0
+        assert report["workloads"]["cursor_reconnects"] > 0
+    else:
+        assert code == 1 and report["verdict"] == "FAIL"
+        assert any("online_subscriber" in failure for failure in report["failures"])
 
 
 def _dummy_valid_slo_report(thresholds: dict, sha: str) -> dict:
@@ -337,16 +419,86 @@ def test_soak_workload_clock_rejects_rounded_up_ten_hours() -> None:
         obs.measure_workload_window({**window, "requested_ns": True}, [])
 
 
+def _run_child(
+    command: list[str],
+    env: dict[str, str],
+    *,
+    timeout: float,
+    label: str,
+    timeouts: dict[str, bool],
+) -> subprocess.CompletedProcess[str]:
+    timeouts[label] = False
+    try:
+        return subprocess.run(
+            command,
+            env=env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=timeout,
+            check=False,
+        )
+
+    except subprocess.TimeoutExpired as exc:
+        timeouts[label] = True
+
+        def _text(value: str | bytes | None) -> str:
+            if isinstance(value, bytes):
+                return value.decode("utf-8", errors="replace")
+            return value or ""
+
+        # 124 preserves a distinct timeout outcome for assertions and artifacts.
+        return subprocess.CompletedProcess(
+            command,
+            124,
+            stdout=_text(exc.stdout),
+            stderr=_text(exc.stderr),
+        )
+
+
+def _publish_slo_diagnostics(
+    root: Path | None,
+    *,
+    files: tuple[Path, ...],
+    processes: dict[str, subprocess.CompletedProcess[str]],
+    context: dict[str, object],
+) -> None:
+    if root is None:
+        return
+    root.mkdir(parents=True, exist_ok=True)
+    for source in files:
+        if source.is_file():
+            shutil.copyfile(source, root / source.name)
+    for label, process in processes.items():
+        for stream in ("stdout", "stderr"):
+            text = slo_mod.redact_diagnostic_text(getattr(process, stream) or "")
+            (root / f"{label}-{stream}.txt").write_text(text, encoding="utf-8")
+    payload = {
+        **context,
+        "returncodes": {label: process.returncode for label, process in processes.items()},
+    }
+    (root / "run-context.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
 def test_measure_slo_smoke_and_run_soak_real_subprocesses(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     defs = slo_mod.load_slo_schema_defs()
+    thresholds, _, _ = slo_mod.load_and_validate_thresholds()
     slo_json = tmp_path / "slo-smoke.json"
     slo_md = tmp_path / "slo-smoke.md"
+    slo_samples = tmp_path / "slo-samples.json"
     soak_dir = tmp_path / "soak-out"
+    diagnostics_value = os.environ.get("TIANSHU_SLO_DIAGNOSTICS_DIR")
+    diagnostics = Path(diagnostics_value) if diagnostics_value else None
+    started_at = dt.datetime.now(dt.UTC).isoformat()
+    timeouts: dict[str, bool] = {}
 
     def _run_slo() -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
+        command, env = slo_mod._native_python_child(  # noqa: SLF001
             [
                 sys.executable,
                 str(SCRIPTS_DIR / "measure_slo.py"),
@@ -357,16 +509,21 @@ def test_measure_slo_smoke_and_run_soak_real_subprocesses(
                 str(slo_json),
                 "--output-md",
                 str(slo_md),
+                "--output-samples-json",
+                str(slo_samples),
             ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
+            env=dict(os.environ),
+        )
+        return _run_child(
+            command,
+            env,
             timeout=120.0,
-            check=False,
+            label="slo",
+            timeouts=timeouts,
         )
 
     def _run_soak() -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
+        command, env = slo_mod._native_python_child(  # noqa: SLF001
             [
                 sys.executable,
                 str(SCRIPTS_DIR / "run_soak.py"),
@@ -377,16 +534,42 @@ def test_measure_slo_smoke_and_run_soak_real_subprocesses(
                 "--output-dir",
                 str(soak_dir),
             ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
+            env=dict(os.environ),
+        )
+        return _run_child(
+            command,
+            env,
             timeout=120.0,
-            check=False,
+            label="soak",
+            timeouts=timeouts,
         )
 
     # 顺序执行两个真实子进程套件，避免 2-vCPU CI 浸泡多进程负载干扰 SLO 毫秒级启动计时
     slo_proc = _run_slo()
     soak_proc = _run_soak()
+    _publish_slo_diagnostics(
+        diagnostics,
+        files=(
+            slo_json,
+            slo_md,
+            slo_samples,
+            soak_dir / "soak-report.json",
+            soak_dir / "samples.jsonl",
+            soak_dir / "status.json",
+            soak_dir / "soak-report.md",
+            soak_dir / "soak-observation.json",
+        ),
+        processes={"slo": slo_proc, "soak": soak_proc},
+        context={
+            "started_at_utc": started_at,
+            "finished_at_utc": dt.datetime.now(dt.UTC).isoformat(),
+            "cpu_count": os.cpu_count(),
+            "platform": slo_mod.platform.platform(),
+            "pytest_worker": os.environ.get("PYTEST_XDIST_WORKER"),
+            "ci_shard_index": os.environ.get("TIANSHU_CI_SHARD_INDEX"),
+            "timeouts": timeouts,
+        },
+    )
 
     assert slo_proc.returncode == 0, f"measure_slo 失败：{slo_proc.stdout}\n{slo_proc.stderr}"
     slo_report = json.loads(slo_json.read_text(encoding="utf-8"))
@@ -399,6 +582,19 @@ def test_measure_slo_smoke_and_run_soak_real_subprocesses(
         assert m["repeats"] >= 3
         assert m["p50_ms"] > 0 and m["p95_ms"] > 0
         assert m["passed"] is True
+    samples_report = json.loads(slo_samples.read_text(encoding="utf-8"))
+    assert samples_report["schema_version"] == "slo-samples-v1"
+    assert set(samples_report["samples"]) == set(slo_mod.REQUIRED_SLO_METRICS)
+    for name, samples in samples_report["samples"].items():
+        metric = slo_report["metrics"][name]
+        config = thresholds["metrics"][name]
+        assert len(samples) == metric["repeats"] + metric["unknown_count"]
+        assert slo_mod._summarize_samples(  # noqa: SLF001
+            samples,
+            p95_max=float(config["p95_max"]),
+            max_ceiling=float(config["max_ceiling"]),
+            min_repeats_required=3,
+        ) == metric
     assert set(slo_report["recovery_audit"]["scenarios_tested"]) == set(
         slo_mod.CRASH_SCENARIOS
     )
@@ -587,3 +783,65 @@ def test_measure_slo_smoke_and_run_soak_real_subprocesses(
             dropped.write_bytes(originals[dropped])
     for contents in originals.values():
         assert str(Path.home()).encode() not in contents
+
+
+def test_slo_diagnostics_preserve_raw_samples_and_redact_streams(tmp_path):
+    source = tmp_path / "slo-samples.json"
+    payload = b'{"samples":{"startup_cold_ms":[1.0,2.0]}}\n'
+    source.write_bytes(payload)
+    diagnostics = tmp_path / "diagnostics"
+    process = subprocess.CompletedProcess(
+        args=[], returncode=7,
+        stdout=f"failed under {Path.home()}/private", stderr="slo stderr",
+    )
+
+    _publish_slo_diagnostics(
+        diagnostics,
+        files=(source, tmp_path / "missing.json"),
+        processes={"slo": process},
+        context={"ci_shard_index": "3"},
+    )
+
+    assert (diagnostics / source.name).read_bytes() == payload
+    assert not (diagnostics / "missing.json").exists()
+    stdout = (diagnostics / "slo-stdout.txt").read_text(encoding="utf-8")
+    assert str(Path.home()) not in stdout
+    assert "PATH_REDACTED" in stdout
+    assert (diagnostics / "slo-stderr.txt").read_text(encoding="utf-8") == "slo stderr"
+    context = json.loads((diagnostics / "run-context.json").read_text(encoding="utf-8"))
+    assert context == {"ci_shard_index": "3", "returncodes": {"slo": 7}}
+
+
+def test_slo_timeout_is_published_as_failure_diagnostics(tmp_path):
+    timeouts: dict[str, bool] = {}
+    process = _run_child(
+        [
+            sys.executable,
+            "-c",
+            "import sys, threading; "
+            "print('before timeout', flush=True); "
+            "print('timeout stderr', file=sys.stderr, flush=True); "
+            "threading.Event().wait()",
+        ],
+        env=dict(os.environ),
+        timeout=2.0,
+        label="slo",
+        timeouts=timeouts,
+    )
+    assert process.returncode == 124
+    assert timeouts == {"slo": True}
+
+    diagnostics = tmp_path / "diagnostics"
+    _publish_slo_diagnostics(
+        diagnostics,
+        files=(),
+        processes={"slo": process},
+        context={"timeouts": timeouts},
+    )
+    context = json.loads((diagnostics / "run-context.json").read_text(encoding="utf-8"))
+    assert context == {
+        "timeouts": {"slo": True},
+        "returncodes": {"slo": 124},
+    }
+    assert (diagnostics / "slo-stdout.txt").is_file()
+    assert (diagnostics / "slo-stderr.txt").is_file()
