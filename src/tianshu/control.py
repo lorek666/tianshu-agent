@@ -87,7 +87,7 @@ from .tasks import (
 from .undo import UndoRefused, apply_undo, plan_undo
 
 #: daemon 的版本号。加字段不升协议版本（§3.3），这个号是给人看的。
-DAEMON_VERSION = "0.1.1"
+DAEMON_VERSION = "0.1.2"
 
 #: `state` / `task.list` 一次最多返回多少任务。首屏不该把十年历史全塞过去。
 DEFAULT_TASK_LIMIT = 50

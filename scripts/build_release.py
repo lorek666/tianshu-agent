@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -194,6 +195,57 @@ def verify_source_identity(repo_root: Path, commit: str) -> None:
     )
     if status:
         raise BuildError("发行构建要求干净工作树")
+
+
+def _source_string(path: Path, name: str) -> str | None:
+    match = re.search(
+        rf"(?m)^{re.escape(name)}\s*=\s*[\"']([^\"']+)[\"']\s*$",
+        path.read_text(encoding="utf-8"),
+    )
+    return match.group(1) if match else None
+
+
+def verify_source_version(repo_root: Path, version: str) -> None:
+    if _VERSION_RE.fullmatch(version) is None:
+        raise BuildError("version 必须匹配 0.x.y")
+    repo_root = Path(repo_root).resolve()
+    try:
+        project = tomllib.loads((repo_root / "pyproject.toml").read_text(encoding="utf-8"))
+        python_lock = tomllib.loads((repo_root / "uv.lock").read_text(encoding="utf-8"))
+        cargo = tomllib.loads(
+            (repo_root / "desktop" / "src-tauri" / "Cargo.toml").read_text(encoding="utf-8")
+        )
+        cargo_lock = tomllib.loads(
+            (repo_root / "desktop" / "src-tauri" / "Cargo.lock").read_text(encoding="utf-8")
+        )
+        tauri = json.loads(
+            (repo_root / "desktop" / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+        raise BuildError(f"无法读取发行版本身份文件：{exc}") from exc
+
+    python_packages = [p for p in python_lock.get("package", []) if p.get("name") == "tianshu"]
+    desktop_packages = [
+        p for p in cargo_lock.get("package", []) if p.get("name") == "tianshu-desktop"
+    ]
+    sites = {
+        "pyproject.toml": project.get("project", {}).get("version"),
+        "src/tianshu/__init__.py": _source_string(
+            repo_root / "src" / "tianshu" / "__init__.py", "__version__"
+        ),
+        "src/tianshu/control.py": _source_string(
+            repo_root / "src" / "tianshu" / "control.py", "DAEMON_VERSION"
+        ),
+        "uv.lock": python_packages[0].get("version") if len(python_packages) == 1 else None,
+        "desktop/src-tauri/Cargo.toml": cargo.get("package", {}).get("version"),
+        "desktop/src-tauri/Cargo.lock": (
+            desktop_packages[0].get("version") if len(desktop_packages) == 1 else None
+        ),
+        "desktop/src-tauri/tauri.conf.json": tauri.get("version"),
+    }
+    for path, actual in sites.items():
+        if actual != version:
+            raise BuildError(f"发行版本 {version!r} 与 {path} 的 {actual!r} 不一致")
 
 
 def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -1231,6 +1283,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cache-dir", type=Path, default=Path.home() / ".cache" / "tianshu")
     args = parser.parse_args(argv)
     verify_source_identity(args.repo_root, args.commit)
+    verify_source_version(args.repo_root, args.version)
     lock = load_committed_runtime_lock(args.repo_root, args.commit)
     entry = lock["targets"][args.target]
     runtime = args.runtime_archive or _download_runtime_from_lock(
