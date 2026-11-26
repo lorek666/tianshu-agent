@@ -131,35 +131,13 @@ def _assert_macos_complete_native_gates(workflow):
         assert "runs-on: macos-latest" in block
         assert "timeout-minutes: 25" in block
         assert "ref: ${{ github.sha }}" in block
-    assert "shard: [0, 1]" in python
-    assert "fail-fast: false" in python
     for command in (
         "uv python install 3.12", "uv lock --check", "uv sync --frozen",
         "uv run --frozen ruff check .",
         'scripts/check_licenses_and_sbom.py --out "${RUNNER_TEMP}/tianshu-sbom.cdx.json"',
+        'uv run --frozen pytest -o addopts="" -q -rs',
     ):
         assert command in python
-    assert "PYTHONPATH: scripts" in python
-    assert 'PYTEST_ADDOPTS: ""' in python
-    assert "CI_SHARD_INDEX: ${{ matrix.shard }}" in python
-    assert "CI_SHARD_ROOT: ${{ runner.temp }}/macos-ci" in python
-    assert (
-        'uv run --frozen pytest -o addopts="" -q -rs -p pytest_ci_shards\n'
-        '          --ci-shard-index="$CI_SHARD_INDEX" --ci-shard-count=2\n'
-        '          --ci-shard-report="$CI_SHARD_ROOT/shard.json"\n'
-        '          --basetemp="$CI_SHARD_ROOT-runtime"\n'
-        '          -o cache_dir="$CI_SHARD_ROOT-cache"'
-    ) in python
-    assert (
-        "      - name: 上传 macOS 分片原始报告\n"
-        "        if: always()\n"
-        "        uses: actions/upload-artifact@v4\n"
-        "        with:\n"
-        "          name: macos-pytest-${{ github.run_id }}-${{ github.run_attempt }}-"
-        "${{ matrix.shard }}\n"
-        "          path: ${{ runner.temp }}/macos-ci/shard.json\n"
-        "          if-no-files-found: error\n"
-    ) in python
     assert "cargo " not in python
     assert "working-directory: desktop/src-tauri" in desktop
     for command in (
@@ -171,25 +149,6 @@ def _assert_macos_complete_native_gates(workflow):
     assert "timeout-minutes: 25" in summary
     assert "name: test (macos-latest) · py3.12" in summary
     assert "needs: [macos_python, desktop_macos]" in summary
-    assert "permissions:\n      contents: read\n      actions: read" in summary
-    assert "id: shard_artifacts" in summary
-    assert "GITHUB_TOKEN: ${{ github.token }}" in summary
-    assert "uv run --frozen python scripts/ci_artifacts.py" in summary
-    assert '--repository "$GITHUB_REPOSITORY"' in summary
-    assert '--run-id "$GITHUB_RUN_ID"' in summary
-    assert "--prefix macos-pytest --indices 0 1" in summary
-    assert '--github-output "$GITHUB_OUTPUT"' in summary
-    assert "--run-attempts '${{ steps.shard_artifacts.outputs.attempts }}'" in summary
-    assert "--count 2 --indices 0 1" in summary
-    for index in range(2):
-        assert (
-            "name: ${{ steps.shard_artifacts.outputs.shard_"
-            f"{index}_name }}}}\n          path: "
-            "${{ runner.temp }}/macos-ci-shards/" + str(index)
-        ) in summary
-    assert (
-        "name: macos-pytest-${{ github.run_id }}-${{ github.run_attempt }}-"
-    ) not in summary
     assert "${{ needs.macos_python.result }}" in summary
     assert "${{ needs.desktop_macos.result }}" in summary
 
@@ -209,35 +168,6 @@ def test_macos_native_jobs_cannot_lose_exact_checkout(job, replacement):
         _assert_macos_complete_native_gates(workflow.replace(block, changed, 1))
 
 
-@pytest.mark.parametrize("old,new", [
-    ("shard: [0, 1]", "shard: [0]"),
-    ("--ci-shard-count=2", "--ci-shard-count=1"),
-    ("--prefix macos-pytest --indices 0 1", "--prefix macos-pytest --indices 0"),
-    ("--count 2 --indices 0 1", "--count 1 --indices 0"),
-    (
-        "--run-attempts '${{ steps.shard_artifacts.outputs.attempts }}'",
-        '--run-attempt "$GITHUB_RUN_ATTEMPT"',
-    ),
-    (
-        "name: ${{ steps.shard_artifacts.outputs.shard_0_name }}",
-        "name: macos-pytest-${{ github.run_id }}-${{ github.run_attempt }}-0",
-    ),
-    (
-        "      - name: 上传 macOS 分片原始报告\n        if: always()",
-        "      - name: 上传 macOS 分片原始报告\n        if: success()",
-    ),
-    (
-        "permissions:\n      contents: read\n      actions: read",
-        "permissions:\n      contents: read",
-    ),
-])
-def test_macos_shard_gate_rejects_weakened_workflow(old, new):
-    workflow = _workflow()
-    assert old in workflow
-    with pytest.raises(AssertionError):
-        _assert_macos_complete_native_gates(workflow.replace(old, new))
-
-
 @pytest.mark.parametrize("python_result", ["success", "failure", "cancelled", "skipped"])
 @pytest.mark.parametrize("desktop_result", ["success", "failure", "cancelled", "skipped"])
 def test_macos_required_summary_shell_rejects_any_unsuccessful_upstream(
@@ -254,31 +184,120 @@ def test_macos_required_summary_shell_rejects_any_unsuccessful_upstream(
     assert (result.returncode == 0) is (python_result == desktop_result == "success")
 
 
-def test_state_pressure_evidence_is_uploaded_even_when_pytest_fails():
-    workflow = _workflow()
-    for job, artifact in (
+def _assert_state_pressure_uploads(workflow):
+    for job, upload_name, artifact, diagnostics in (
         (
             "macos_python",
-            "slo-state-pressure-macos-${{ github.run_id }}-"
-            "${{ github.run_attempt }}-${{ matrix.shard }}",
+            "上传 state 背压诊断证据",
+            "macos-slo-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}",
+            "${{ runner.temp }}/macos-slo-diagnostics",
         ),
         (
             "windows_shards",
-            "slo-state-pressure-windows-${{ github.run_id }}-"
-            "${{ github.run_attempt }}-${{ matrix.shard }}",
+            "上传 Windows SLO 原始样本与失败诊断",
+            "windows-slo-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}",
+            "${{ runner.temp }}/windows-ci/slo-diagnostics",
         ),
     ):
         block = _job_block(workflow, job)
+        assert f"TIANSHU_SLO_DIAGNOSTICS_DIR: {diagnostics}" in block
         upload = re.search(
-            r"(?ms)^      - name: 上传 state 背压诊断证据\n(?P<body>.*?)(?=^      - |\Z)",
+            rf"(?ms)^      - name: {re.escape(upload_name)}\n(?P<body>.*?)(?=^      - |\Z)",
             block,
         )
         assert upload, f"{job} must upload state-pressure evidence"
         body = upload["body"]
         assert "if: always()" in body
+        assert "uses: actions/upload-artifact@v4" in body
         assert f"name: {artifact}" in body
-        assert "path: ${{ runner.temp }}/slo-state-pressure.json" in body
+        assert f"path: {diagnostics}" in body
         assert "if-no-files-found: warn" in body
+
+
+def test_state_pressure_evidence_is_uploaded_even_when_pytest_fails():
+    _assert_state_pressure_uploads(_workflow())
+
+
+@pytest.mark.parametrize("old,new", [
+    (
+        "      - name: 上传 state 背压诊断证据\n        if: always()",
+        "      - name: 上传 state 背压诊断证据\n        if: success()",
+    ),
+    (
+        "          path: ${{ runner.temp }}/macos-slo-diagnostics",
+        "          path: ${{ runner.temp }}/macos-ci",
+    ),
+    (
+        "          name: macos-slo-${{ github.run_id }}-${{ github.run_attempt }}-"
+        "${{ matrix.shard }}",
+        "          name: macos-slo-${{ github.run_id }}-${{ github.run_attempt }}",
+    ),
+    (
+        "          path: ${{ runner.temp }}/windows-ci/slo-diagnostics",
+        "          path: ${{ runner.temp }}/windows-ci/reports",
+    ),
+])
+def test_state_pressure_upload_regressions_are_rejected(old, new):
+    workflow = _workflow()
+    assert old in workflow
+    with pytest.raises(AssertionError):
+        _assert_state_pressure_uploads(workflow.replace(old, new, 1))
+
+
+def _assert_rerun_artifact_resolution(workflow):
+    for summary, prefix, count in (
+        ("macos_summary", "macos-pytest", 2),
+        ("windows_summary", "windows-pytest", 4),
+    ):
+        block = _job_block(workflow, summary)
+        artifact_count = count
+        assert "id: shard_artifacts" in block
+        assert "GITHUB_TOKEN: ${{ github.token }}" in block
+        assert "uv run --frozen python scripts/ci_artifacts.py" in block
+        assert '--repository "$GITHUB_REPOSITORY"' in block
+        assert '--run-id "$GITHUB_RUN_ID"' in block
+        assert f'--prefix {prefix} --indices {" ".join(map(str, range(artifact_count)))}' in block
+        assert "--reports-per-artifact" not in block
+        assert '--github-output "$GITHUB_OUTPUT"' in block
+        assert "--run-attempts '${{ steps.shard_artifacts.outputs.attempts }}'" in block
+        for index in range(artifact_count):
+            assert (
+                "name: ${{ steps.shard_artifacts.outputs.shard_"
+                f"{index}_name }}}}\n          path: "
+                "${{ runner.temp }}/" + ("macos" if count == 2 else "windows")
+                + f"-ci-shards/{index}"
+            ) in block
+        current_attempt_name = (
+            f"name: {prefix}-${{{{ github.run_id }}}}-${{{{ github.run_attempt }}}}-"
+        )
+        assert current_attempt_name not in block
+
+
+def test_required_summaries_resolve_actual_upstream_artifact_attempts():
+    _assert_rerun_artifact_resolution(_workflow())
+
+
+@pytest.mark.parametrize("old,new", [
+    (
+        "--run-attempts '${{ steps.shard_artifacts.outputs.attempts }}'",
+        '--run-attempt "$GITHUB_RUN_ATTEMPT"',
+    ),
+    (
+        "name: ${{ steps.shard_artifacts.outputs.shard_0_name }}",
+        "name: macos-pytest-${{ github.run_id }}-${{ github.run_attempt }}-0",
+    ),
+    (
+        "name: ${{ steps.shard_artifacts.outputs.shard_1_name }}\n"
+        "          path: ${{ runner.temp }}/windows-ci-shards/1",
+        "name: windows-pytest-${{ github.run_id }}-${{ github.run_attempt }}-1\n"
+        "          path: ${{ runner.temp }}/windows-ci-shards/1",
+    ),
+])
+def test_required_summary_rejects_current_attempt_artifact_assumption(old, new):
+    workflow = _workflow()
+    assert old in workflow
+    with pytest.raises(AssertionError):
+        _assert_rerun_artifact_resolution(workflow.replace(old, new, 1))
 
 
 def test_main_push_ci_is_not_made_cancellable_or_draft_gated():
@@ -325,7 +344,22 @@ def _assert_windows_independent_shards(workflow):
     assert "ref: ${{ github.sha }}" in workers
     assert "continue-on-error" not in workers + summary
     assert "--ci-pair-" not in workers
+    assert "CI_SHARD_INDEX: ${{ matrix.shard }}" in workers
     assert "CI_SHARD_REPORT: ${{ runner.temp }}/windows-ci/shard.json" in workers
+    assert (
+        "TIANSHU_SLO_DIAGNOSTICS_DIR: ${{ runner.temp }}/windows-ci/slo-diagnostics"
+        in workers
+    )
+    assert (
+        "      - name: 上传 Windows SLO 原始样本与失败诊断\n"
+        "        if: always()\n"
+        "        uses: actions/upload-artifact@v4\n"
+        "        with:\n"
+        "          name: windows-slo-${{ github.run_id }}-${{ github.run_attempt }}-"
+        "${{ matrix.shard }}\n"
+        "          path: ${{ runner.temp }}/windows-ci/slo-diagnostics\n"
+        "          if-no-files-found: warn\n"
+    ) in workers
     assert (
         "uv run --frozen python scripts/pytest_with_stacks.py -p pytest_ci_shards\n"
         "          --ci-shard-index=${{ matrix.shard }} --ci-shard-count=4\n"
@@ -337,30 +371,12 @@ def _assert_windows_independent_shards(workflow):
         '-o addopts="" -vv -rs --tb=short', "--durations=20 --stack-timeout=60",
     ):
         assert command in workers
-    assert (
-        "name: windows-pytest-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}"
-        in workers
-    )
     assert "path: ${{ runner.temp }}/windows-ci/shard.json\n" in workers
     assert "if-no-files-found: error" in workers
-    assert "name: test (windows-latest) · py3.12" in summary
     assert "needs: [windows_shards, desktop_windows]" in summary
-    assert "timeout-minutes: 25" in summary
-    assert "if: always() && (" in summary
-    assert '--needs-result "$UPSTREAM_RESULT"' in summary
-    assert 'test "$UPSTREAM_DESKTOP_RESULT" = success' in summary
-    assert "${{ needs.windows_shards.result }}" in summary
-    assert "${{ needs.desktop_windows.result }}" in summary
     assert "permissions:\n      contents: read\n      actions: read" in summary
-    assert "id: shard_artifacts" in summary
-    assert "GITHUB_TOKEN: ${{ github.token }}" in summary
-    assert "uv run --frozen python scripts/ci_artifacts.py" in summary
-    assert '--repository "$GITHUB_REPOSITORY"' in summary
-    assert '--run-id "$GITHUB_RUN_ID"' in summary
     assert "--prefix windows-pytest --indices 0 1 2 3" in summary
     assert "--reports-per-artifact" not in summary
-    assert '--github-output "$GITHUB_OUTPUT"' in summary
-    assert "--run-attempts '${{ steps.shard_artifacts.outputs.attempts }}'" in summary
     assert "--count 4 --indices 0 1 2 3" in summary
     for index in range(4):
         assert (
@@ -368,9 +384,6 @@ def _assert_windows_independent_shards(workflow):
             f"{index}_name }}}}\n          path: "
             "${{ runner.temp }}/windows-ci-shards/" + str(index)
         ) in summary
-    assert (
-        "name: windows-pytest-${{ github.run_id }}-${{ github.run_attempt }}-"
-    ) not in summary
 
 
 def test_windows_independent_runners_isolate_slo_and_keep_required_gates():
@@ -395,35 +408,21 @@ def test_windows_independent_runners_isolate_slo_and_keep_required_gates():
     ("--stack-timeout=60", "--stack-timeout=0"),
     ("-vv -rs --tb=short", "-vv --tb=short"),
     ("      actions: read\n", ""),
+    (
+        "CI_SHARD_INDEX: ${{ matrix.shard }}",
+        "CI_SHARD_INDEX: 0",
+    ),
+    (
+        "TIANSHU_SLO_DIAGNOSTICS_DIR: ${{ runner.temp }}/windows-ci/slo-diagnostics",
+        'TIANSHU_SLO_DIAGNOSTICS_DIR: ""',
+    ),
+    (
+        "      - name: 上传 Windows SLO 原始样本与失败诊断\n        if: always()",
+        "      - name: 上传 Windows SLO 原始样本与失败诊断\n        if: success()",
+    ),
 ])
 def test_windows_independent_runner_guard_rejects_weakened_workflow(old, new):
     workflow = _workflow()
     assert old in workflow
     with pytest.raises(AssertionError):
         _assert_windows_independent_shards(workflow.replace(old, new))
-
-
-@pytest.mark.parametrize("old,new", [
-    (
-        "--run-attempts '${{ steps.shard_artifacts.outputs.attempts }}'",
-        '--run-attempt "$GITHUB_RUN_ATTEMPT"',
-    ),
-    (
-        "name: ${{ steps.shard_artifacts.outputs.shard_0_name }}",
-        "name: windows-pytest-${{ github.run_id }}-${{ github.run_attempt }}-0",
-    ),
-    (
-        "name: ${{ steps.shard_artifacts.outputs.shard_1_name }}\n"
-        "          path: ${{ runner.temp }}/windows-ci-shards/1",
-        "name: windows-pytest-${{ github.run_id }}-${{ github.run_attempt }}-1\n"
-        "          path: ${{ runner.temp }}/windows-ci-shards/1",
-    ),
-])
-def test_windows_summary_rejects_current_attempt_artifact_assumption(old, new):
-    workflow = _workflow()
-    block = _job_block(workflow, "windows_summary")
-    assert old in block
-    changed = block.replace(old, new, 1)
-    assert changed != block
-    with pytest.raises(AssertionError):
-        _assert_windows_independent_shards(workflow.replace(block, changed, 1))

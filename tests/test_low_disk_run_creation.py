@@ -624,12 +624,15 @@ def test_real_mcp_producer_preparation_and_low_disk_order(tmp_path, producer, lo
     from tianshu.memory_control import remember
     from tianshu.resources import MemoryScope
     from tianshu.undo import apply_undo
+    from tianshu.worker import Worker
 
     with closing(EventLog(tmp_path / "events.db")) as log:
         stack = stack_for(log, data_root=tmp_path / "data")
         workspace = tmp_path / "workspace"
         workspace.mkdir()
-        task = stack.tasks.create_task("produce", [str(workspace)])
+        task = stack.tasks.create_task(
+            "produce", [str(workspace)], mcp_servers=["fake"] if producer == "control" else (),
+        )
         target_run = None
         if producer == "undo":
             target_run = engine_for(
@@ -687,7 +690,7 @@ def test_real_mcp_producer_preparation_and_low_disk_order(tmp_path, producer, lo
                 if producer == "control":
                     return ControlPlane(stack, model=model).handle(
                         "run.start",
-                        {"task_id": task.task_id},
+                        {"task_id": task.task_id, "tool_ids": ["mcp__fake__echo"]},
                     )
                 if producer == "memory":
                     return remember(
@@ -720,7 +723,20 @@ def test_real_mcp_producer_preparation_and_low_disk_order(tmp_path, producer, lo
                     assert model.calls == 0
                     run_id = produced["run"]["run_id"]
                     assert stack.claims.job_for_run(run_id).state == "pending"
-                    assert not any(e.type == "model.request" for e in log.read_run(run_id))
+                    model_events = {"model.intent", "model.result"}
+                    assert model_events <= EVENT_TYPES
+                    assert model_events.isdisjoint(e.type for e in log.read_run(run_id))
+                    driving_model = ScriptedModel([ModelResponse("end_turn", content="done")])
+                    worker = Worker(stack, model=driving_model, heartbeat_interval_ms=0)
+                    try:
+                        assert worker.run_once()
+                        assert worker.errors == []
+                        assert stack.tasks.get_run(run_id).state == "succeeded"
+                        assert driving_model.calls == 1
+                        assert startup.read_bytes() == b"started"
+                        assert model_events <= {e.type for e in log.read_run(run_id)}
+                    finally:
+                        worker.close()
                 else:
                     assert clients.ready_names() == ("fake",)
                     assert startup.read_bytes() == b"started"

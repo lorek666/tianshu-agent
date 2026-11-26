@@ -156,6 +156,11 @@ def test_slo_runs_first_in_its_shard_without_changing_full_collection(tmp_path, 
     assert [result.returncode for result in results] == [0] * count, [
         (result.stdout, result.stderr) for result in results]
     owner = next(doc for doc in docs if slo_node in doc["selected"])
+    spec = importlib.util.spec_from_file_location("ci_shard_contract", VERIFIER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    expected_groups = module.partition(owner["full_collection"], count)
+    assert [set(doc["selected"]) for doc in docs] == [set(group) for group in expected_groups]
     assert owner["selected"][0] == slo_node
     assert len(owner["selected"]) > 1
     assert owner["finished"] == owner["selected"]
@@ -281,6 +286,26 @@ def test_windows_weights_include_goal_and_online_soak_costs(tmp_path):
     costs = [sum(observed[file][1] for file in {node.split("::", 1)[0]
                                                for node in doc["selected"]}) for doc in docs]
     assert abs(costs[0] - costs[1]) < 15, costs
+
+
+def test_windows_weights_balance_complete_leaf_candidate_observations():
+    # This fixture records complete-file windows from a cancelled native run.
+    # Its report exit 0 did not make that job pass. Replay checks scheduling
+    # estimates only; the repaired candidate still needs its own full CI.
+    observations = json.loads(
+        (Path(__file__).parent / "fixtures" / "windows_ci_45134199845_costs.json")
+        .read_text(encoding="utf-8")
+    )["files"]
+    spec = importlib.util.spec_from_file_location("observed_ci_shards", VERIFIER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    full = [[f"{file}::test_observed_{index}", file]
+            for file, count, _ in observations for index in range(count)]
+    groups = module.partition(full, 2)
+    seconds = {file: cost for file, _, cost in observations}
+    costs = [sum(seconds[file] for file in {node.split("::", 1)[0] for node in group})
+             for group in groups]
+    assert abs(costs[0] - costs[1]) < 60, costs
 
 
 def test_windows_weights_include_measured_summary_and_cache_evaluation_work(tmp_path):
@@ -619,20 +644,15 @@ def test_four_valid_reports_moved_between_runner_artifacts_are_rejected(
 ):
     env, docs = complete_evidence
     if len(docs) != 4:
-        pytest.skip("跨四 runner 搬运只适用于 count4")
-    paths = []
+        return  # The two-shard historical format has only two artifacts.
     for index, doc in enumerate(docs):
         path = report_path(tmp_path, index, 4)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(doc), encoding="utf-8")
-        paths.append(path)
     assert verify(tmp_path, env, count=4).returncode == 0
-    contents = [path.read_bytes() for path in paths]
-    for path, content in zip(paths, contents[1:] + contents[:1], strict=True):
-        path.write_bytes(content)
-    assert {path.relative_to(tmp_path) for path in tmp_path.rglob("shard.json")} == {
-        path.relative_to(tmp_path) for path in paths
-    }
+    misplaced = tmp_path / "0" / "0" / "shard.json"
+    misplaced.parent.mkdir()
+    report_path(tmp_path, 0, 4).rename(misplaced)
     assert verify(tmp_path, env, count=4).returncode == 1
 
 

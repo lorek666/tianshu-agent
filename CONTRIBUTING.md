@@ -90,16 +90,39 @@ uv run --frozen ruff check .
 以上是最终候选项提交前检查。开发迭代先跑能真实区分坏实现与正确实现的定向红/绿测试；
 全量 pytest 只在代码冻结后运行一次。修复失败后代码树发生变化，属于新候选，必须重跑受影响
 范围及最终全量；同一代码树不因无关文档整理重复跑全量。CI 使用同一锁文件和测试套件，并
-附加日志参数：Ubuntu 使用 `uv run --frozen pytest -o addopts="" -q -rs`；macOS 在两个
-独立 `macos-latest` runner 上使用同一分片插件，各执行一个 count2 真实分片；Windows
-在四个独立 `windows-latest` runner 上使用原包装器和分片插件，每台只执行一个真实分片，
-避免同机并行测试 worker 污染冷启动 SLO。每片执行以下命令（`INDEX` 为 0 至 3，`REPORT`
-为 runner 临时目录下的绝对路径）。完整命令以 `.github/workflows/ci.yml` 为准，不声称本地与
-CI 命令逐字相同。
+附加日志参数：Ubuntu 使用 `uv run --frozen pytest -o addopts="" -q -rs`；macOS
+在两个独立原生 runner 上直接运行同样 pytest 日志参数，并加载严格 count2 分片插件：
 
-本机 macOS 跑 SLO 时，`TIANSHU_TEST_TMP_ROOT` 必须使用短绝对路径，确保
-`<root>/data/tsslo-*/warmup_cold/run/daemon.sock` 不超过 103 个 UTF-8 字节；更长会让
-Daemon 在绑定 Unix socket 时失败，这是测试调用环境错误，不是产品回归。
+```bash
+PYTHONPATH=scripts PYTEST_ADDOPTS="" uv run --frozen pytest -o addopts="" -q -rs -p pytest_ci_shards --ci-shard-index=INDEX --ci-shard-count=2 --ci-shard-report=REPORT --basetemp=RUNTIME -o cache_dir=CACHE
+```
+
+`INDEX` 为0或1，其余为各 runner 临时目录内独立的绝对路径；报告上传只包含
+`shard.json`，不包含缓存或测试数据。汇总先按 run ID、平台前缀和精确 shard 索引解析
+每个 artifact 的真实 attempt，再分别下载到汇总目录的 `0/`、`1/`，以严格 verifier
+核对 count2 全集、显式 per-shard attempt map 和上游 job 成功。保留直接 pytest 及原生
+fatal handler，不新增 macOS watchdog 线程。
+
+失败作业重跑（`gh run rerun --failed`）会递增 run attempt，但未重跑的成功 job 仍保留
+旧 attempt 的工件，新启动的汇总 job 则处于新 attempt。汇总不得用当前
+`GITHUB_RUN_ATTEMPT` 拼下载名；`scripts/ci_artifacts.py` 从 GitHub Actions API 读取本 run
+的未过期工件，为每个精确 shard 选择最新 attempt，缺失或同 attempt 重名直接失败。
+下载名与 verifier 的 attempt map 都来自同一解析结果，不放宽 SHA、run、shard、完整覆盖
+或上游成功校验。
+
+macOS 与每个 Windows worker 把 state 背压诊断写入严格报告树之外的
+`TIANSHU_SLO_DIAGNOSTICS_DIR/state-pressure/<shard>.json`。测试在首次断言前原子发布
+完整 D7 脱敏 JSON，并用真实子进程在首个失败谓词后硬退，证明 pytest 日志被截断时文件仍可
+恢复。macOS 与 Windows 均以 `always()` step 上传，工件名绑定 run ID、attempt 和 shard；
+缺件只告警，不改变原 pytest/包装器退出码，也不改变分片、并发、阈值或 required 名称。
+[#229](https://github.com/lorek666/tianshu-agent/pull/229) 早先上传 runner 临时目录下的
+单个 JSON；本批每片沿用上述诊断目录中的文件，同一报告每片只上传一次。
+
+Windows
+在四个独立 `windows-latest` runner 上使用原包装器，每台只执行一个真实 pytest 分片，
+避免同机并行测试 worker 污染冷启动 SLO。执行以下命令（`INDEX` 为 0 至 3，
+`REPORT` 为 runner 临时目录下的新绝对报告路径）。完整命令以
+`.github/workflows/ci.yml` 为准，不声称本地与 CI 命令逐字相同。
 
 ```bash
 uv run --frozen python scripts/pytest_with_stacks.py -p pytest_ci_shards --ci-shard-index=INDEX --ci-shard-count=4 --ci-shard-report=REPORT -o addopts="" -vv -rs --tb=short --durations=20 --stack-timeout=60
@@ -109,7 +132,21 @@ uv run --frozen python scripts/pytest_with_stacks.py -p pytest_ci_shards --ci-sh
 SLO/soak 节点固定在其所属分片首位外，组内保持原收集顺序。`full_collection` 始终保留原始顺序，
 分组权重与完整覆盖不变；SLO 阈值、重复次数和 soak 验收均不放宽。未校准文件的权重采用节点数；已校准文件使用完整 Windows 日志区间的固定估计，允许低于节点数，并覆盖整份已测 collection，避免稀疏修正留下累计偏差（见 `scripts/pytest_ci_shards.py`）。真实任务测试复用每个场景三次实跑的独立证据副本；对应权重按保留的实跑工作量估算。候选 `c6d6475` 的 [44944526018](https://github.com/lorek666/tianshu-agent/actions/runs/44944526018) 两片及 Windows required 汇总已通过，并核验原始报告身份和完整覆盖；该轮整体仍因 macOS Rust 失败而拒绝合并。权重只用于分组，不保证后续 runner 的耗时，结果以各冻结对应的 Windows job 为准。各片独立检查锁文件、同步冻结依赖并运行完整 lint，显式清空 `PYTEST_ADDOPTS`，分片开关仅经 argv 传入。原包装器是 pytest step 唯一直接命令，上传报告另设 `always()` step；超时/取消可能没有产物，缺件必须失败。
 
-Windows required 检查由 Ubuntu 汇总 job 承担：job 级 `always()` 保证上游失败仍进入核验，且汇总硬要求四个 Windows shard job 整体 `success`。汇总从本 run API 为每个精确 shard 解析最新未过期 artifact，分别下载到 `0/`、`1/`、`2/`、`3/`；每个目录须恰含对应的 `shard.json`，每个报告的 attempt 独立绑定其真实 artifact。失败作业重跑混用不同 attempt 时，成功分片仍保留旧 attempt，汇总不得假设所有报告都属于当前 attempt。核对实际/预期 SHA、完整有序 collection、文件分组、互斥全集、setup/call/teardown 与 finish 覆盖；各阶段按 pytest 原语义接受通过或跳过（含 teardown skip/xfail），任一失败、漏报、重复或错归属均拒绝。报告中的 pytest session exit 为 0 不能覆盖包装器迟发诊断失败、上传失败或取消。四个 runner 及汇总均保持25分钟上限，四个 required 名称不变；CI 开发报告不是产品 C1–C5 契约。
+四个 runner 各自从同一 checkout SHA 做完整 collection，并通过真实分片插件执行 count4。
+报告、诊断、缓存和运行数据均留在各自 runner 的隔离 checkout/临时目录；上传树只包含该分片的
+`shard.json` 及严格报告树外的 SLO/背压诊断，不合并其他 runner 的产物。
+
+Windows required 检查由 Ubuntu 汇总 job 承担：job 级 `always()` 保证上游失败仍进入核验，
+且汇总硬要求四个 Windows shard job 整体 `success`。汇总按真实 artifact attempt 下载本 run 的
+四个具名 artifact 到 `0/`、`1/`、`2/`、`3/`，每个目录须恰含对应的 `shard.json`；
+每个报告的 attempt 独立绑定其真实 artifact，不能把不同 runner 的报告合并或移动归属。
+核对实际/预期 SHA、
+完整有序 collection、文件分组、互斥全集、setup/call/teardown 与 finish 覆盖；各阶段按 pytest
+原语义接受通过或跳过（含 teardown skip/xfail），任一失败、漏报、重复或错归属均拒绝。
+报告中的 pytest session exit 为 0 不能覆盖包装器迟发诊断失败、上传失败或取消。四个 runner
+及汇总均保持25分钟上限，四个 required 名称不变；CI 开发报告不是产品 C1–C5 契约。
+核验器仅接受 count2/count4；count2 报告路径及严格核验保留，
+macOS 使用 count2，Windows 使用 count4。
 
 后续完整 run [45058496468](https://github.com/lorek666/tianshu-agent/actions/runs/45058496468)
 因 Windows 分片累计超时失败，旧绿不覆盖该候选。新的权重使用该轮完整文件日志区间，
@@ -117,9 +154,18 @@ Windows required 检查由 Ubuntu 汇总 job 承担：job 级 `always()` 保证�
 缓存只在函数级隔离生效后生成，每片首个消费者仍需实跑，CLI 对比保留一次全新完整执行。
 这种局部复用及固定权重只是成本估计，完整原生 CI 仍须在最终冻结上验证。
 
-macOS 和 Windows 每个 Python 分片在 `always()` step 上传 `slo-state-pressure.json`。
-测试在首次断言前原子写出完整脱敏 JSON，工件名绑定 run ID、attempt 与 shard；
-缺少可选诊断只告警，不能覆盖 pytest 或包装器的退出码。
+受限 macOS 后端候选的 run
+[45134199845](https://github.com/lorek666/tianshu-agent/actions/runs/45134199845)
+中，两片 pytest 报告虽均为 session exit 0，分片 0 仍触及25分钟 job 上限，
+Windows required 汇总正确失败。该候选的后续调度估计对每个完整文件取此前估计与
+新实测向上舍入值的较高者，避免一次较快或已缓存的运行抹掉较慢路径成本。
+完整新观测与历史成本场景均保留回归；回算不替代修复候选自身的完整 CI。
+
+后续完整 run
+[45142192772](https://github.com/lorek666/tianshu-agent/actions/runs/45142192772)
+的两台 Windows job 均在25分钟取消，没有完整报告，Windows required 正确失败。
+因此本批尝试每台两个隔离 worker；新方案的吞吐仍必须由其最终冻结的完整原生 CI 验证，
+不能用本机并发探针、历史权重回算或较早的绿代替。
 
 Windows 包装器用 Python 线程输出超过60秒的用例（含 setup/call/teardown）的线程栈，避免 CPython 3.12 原生定时转储的 frame 遍历竞态；原生 fatal handler 仍启用。栈只含文件/行号/函数，不打印源码或 locals，且有输出上限。诊断线程等待/采样/写出异常或2秒内不能收尾时不得报绿；原 pytest 失败/中断退出码保留。`--stack-timeout=0` 可在本地明确禁用定时诊断；阈值必须有限且介于0和平台`threading.TIMEOUT_MAX`之间，同时设置 `faulthandler_timeout` 或禁用内建 fatal 插件也会报配置错误。**边界**：C 扩展长期独占 GIL 时，Python 线程无法保证在60秒出栈；fatal handler 与仍为25分钟的 job 上限不是这个诊断缺口的等价替代。相关原生风险的 Windows 实验、故障负控和未验证范围见 [DEBUG-IO](docs/DEBUG-IO-2026-11-13.md)。
 
@@ -152,12 +198,14 @@ cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
 ```
 
-macOS 的完整 Python 门禁分到两个 `macos-latest` 原生 runner，各执行一个 count2 真实分片；
-Rust fmt/test/clippy 另占一个原生 job，三者均保持25分钟上限。Ubuntu 汇总保留原 macOS
-required 名，使用 `always()`，按真实 artifact attempt 下载并严格核验两份分片报告的 SHA、
-完整有序 collection、确定性分组与执行覆盖，同时要求 Python 和 Rust 两上游均为 `success`
-（失败、取消、跳过均拒绝）。所有原生 job 绑定同一 `github.sha`，并与其他 runner 使用相同
-draft/ready/main-push 门禁；拆分只隔离累计负载，不减少测试，也不保证 runner 永不在时限内失败。
+macOS 的完整 Python 门禁在两个独立 `macos-latest` 原生 job 分片执行，
+Rust fmt/test/clippy 另占一个原生 job，各保持25分钟上限。
+Ubuntu 汇总保留原 macOS required 名，使用 `always()` 下载原始报告并严格验证
+SHA、run/attempt、完整有序 collection、互斥覆盖、测试阶段及完成节点，
+同时要求 Python 矩阵与 Rust 上游均为 `success`（失败、取消、跳过均拒绝）。
+各原生 job 绑定同一 `github.sha`，与其他 runner 使用相同 draft/ready/main-push 门禁；
+不减少测试，也不保证后续 runner 必在时限内完成。run `45160677871` 的完整单片
+Python 已触及25分钟上限，旧失败保留；本候选的原生吞吐须由新完整 CI 单独证明。
 Windows 原生 Rust 检查仍作为独立 job，由现有 Windows required 汇总 job 绑定其
 `success`。不新增 required check 名称。
 
@@ -176,8 +224,8 @@ Windows 原生 Rust 检查仍作为独立 job，由现有 Windows required 汇�
 | 必过检查（GitHub 名称须逐字匹配） | 覆盖范围 |
 |---|---|
 | `test (ubuntu-latest) · py3.12` | Linux Python 套件、锁文件与 lint |
-| `test (macos-latest) · py3.12` | Ubuntu 严格汇总两个原生 macOS Python 分片（含锁文件/lint/SBOM）与 R1 桌面壳 Rust fmt/test/clippy，均须 success |
-| `test (windows-latest) · py3.12` | 四个独立 Windows runner 的完整 Python 套件分片、各自锁文件与 lint；Ubuntu 汇总按真实 attempt 核对上游成功、报告身份与完整覆盖；另绑定原生 Windows 的 Rust fmt/test/clippy |
+| `test (macos-latest) · py3.12` | Ubuntu 严格汇总原生 macOS 门禁：两个独立 runner 的完整 Python 分片及原始报告、锁文件/lint/SBOM；另绑定 R1 桌面壳 Rust fmt/test/clippy，所有上游必须 success |
+| `test (windows-latest) · py3.12` | 四个独立 Windows runner 的完整 Python 套件分片、各自锁文件与 lint；Ubuntu 汇总核对上游成功及报告身份、完整覆盖；另绑定原生 Windows 的 Rust fmt/test/clippy |
 | `ui · typecheck / test / build` | UI 类型、测试、构建与已提交产物一致性 |
 
 required checks 配置在 GitHub 分支保护中，修改 YAML 不会自动更新该配置。改检查名称或矩阵时必须同步核对远端配置。Windows CI 的通过范围以具体 run 的系统版本和架构为准，不代表已验证 Windows 10/11、ARM64 或桌面安装体验。

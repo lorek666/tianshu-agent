@@ -360,6 +360,7 @@ class PreparedExecution:
         self._profile_rules: dict[str, Any] = {}
         self._preexec: Callable[[], None] | None = None
         self._sandboxed = False
+        self._single_process = False
         self._proc: subprocess.Popen[bytes] | None = None
         self._birth: str | None = None
         self._used = False
@@ -378,6 +379,7 @@ class PreparedExecution:
         from .exec_seatbelt import (
             SANDBOX_EXEC_PATH,
             SeatbeltExecBackend,
+            SeatbeltLeafExecBackend,
             _build_sbpl_profile,
             seatbelt_available,
         )
@@ -387,9 +389,14 @@ class PreparedExecution:
             return self
         self._tmp = Path(tempfile.mkdtemp(prefix="tianshu-subject-")).resolve()
         try:
-            if type(self.backend) is SeatbeltExecBackend and seatbelt_available():
+            if (
+                type(self.backend) in (SeatbeltExecBackend, SeatbeltLeafExecBackend)
+                and seatbelt_available()
+            ):
+                self._single_process = not self.backend._allow_fork
                 profile = _build_sbpl_profile(
                     self.policy, argv0=self.argv[0], extra_rw_roots=(self._tmp,),
+                    allow_fork=self.backend._allow_fork,
                 )
                 self._prefix = (SANDBOX_EXEC_PATH, "-p", profile)
             elif type(self.backend) is LandlockExecBackend and landlock_available():
@@ -459,9 +466,14 @@ class PreparedExecution:
             start_new_session=os.name == "posix", preexec_fn=self._preexec, bufsize=0,
         )
 
-    @staticmethod
-    def _process_tree_state(proc: subprocess.Popen[bytes]) -> str:
+    def _process_tree_state(self, proc: subprocess.Popen[bytes]) -> str:
+        if self._single_process:
+            # The fixed native profile forbids descendants. The managed child
+            # wait is authoritative; a reaped PID/PGID may already be reused.
+            return "exited" if proc.poll() is not None else "unknown"
         if os.name == "posix":
+            if proc.returncode is not None:
+                return "unknown"
             try:
                 os.killpg(proc.pid, 0)
             except ProcessLookupError:
@@ -470,14 +482,22 @@ class PreparedExecution:
                 pass
         return "unknown"
 
-    @classmethod
-    def _stop_process(cls, proc: subprocess.Popen[bytes]) -> str:
-        if os.name == "posix":
-            # Capture group identity at launch: the leader may already have exited.
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except OSError:
-                pass
+    def _stop_process(self, proc: subprocess.Popen[bytes]) -> str:
+        group_identity_safe = False
+        if self._single_process:
+            if proc.poll() is None:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+        elif os.name == "posix":
+            if proc.returncode is None:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except OSError:
+                    pass
+                else:
+                    group_identity_safe = True
         elif proc.poll() is None:
             try:
                 proc.kill()
@@ -487,7 +507,17 @@ class PreparedExecution:
             proc.wait(timeout=2)
         except subprocess.TimeoutExpired:
             pass
-        return cls._process_tree_state(proc)
+        if os.name == "posix" and not self._single_process:
+            if not group_identity_safe:
+                return "unknown"
+            try:
+                os.killpg(proc.pid, 0)
+            except ProcessLookupError:
+                return "exited"
+            except OSError:
+                pass
+            return "unknown"
+        return self._process_tree_state(proc)
 
     def _collect_process(self, proc, *, policy, blob_dir=None) -> tuple[ExecResult, str]:
         started = time.monotonic()
@@ -574,7 +604,7 @@ class PreparedExecution:
         payload = (
             "import errno,json,subprocess,sys\n"
             "try:\n"
-            f" p=subprocess.Popen([sys.executable,'-c',{child!r},{str(pid_file)!r}],"
+            f" p=subprocess.Popen([sys.executable,'-I','-S','-c',{child!r},{str(pid_file)!r}],"
             "stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,"
             "start_new_session=True)\n"
             " p.stdout.readline()\n"
@@ -592,7 +622,7 @@ class PreparedExecution:
                 env_allowlist=("PATH",), timeout_ms=3000, max_output_bytes=4096,
             )
             result = self.spawn(
-                (sys.executable, "-c", payload), cwd=self.workspace,
+                (sys.executable, "-I", "-S", "-c", payload), cwd=self.workspace,
                 env={"PATH": os.defpath}, policy=policy,
             )
             try:

@@ -124,19 +124,13 @@ jobs:
           PYTEST_ADDOPTS: ""
           CI_SHARD_INDEX: ${{ matrix.shard }}
           CI_SHARD_ROOT: ${{ runner.temp }}/macos-ci
+          TIANSHU_SLO_DIAGNOSTICS_DIR: ${{ runner.temp }}/macos-slo-diagnostics
         run: >-
           uv run --frozen pytest -o addopts="" -q -rs -p pytest_ci_shards
           --ci-shard-index="$CI_SHARD_INDEX" --ci-shard-count=2
           --ci-shard-report="$CI_SHARD_ROOT/shard.json"
           --basetemp="$CI_SHARD_ROOT-runtime"
           -o cache_dir="$CI_SHARD_ROOT-cache"
-      - name: 上传 state 背压诊断证据
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: slo-state-pressure-macos-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
-          path: ${{ runner.temp }}/slo-state-pressure.json
-          if-no-files-found: warn
       - name: 上传 macOS 分片原始报告
         if: always()
         uses: actions/upload-artifact@v4
@@ -144,6 +138,13 @@ jobs:
           name: macos-pytest-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
           path: ${{ runner.temp }}/macos-ci/shard.json
           if-no-files-found: error
+      - name: 上传 state 背压诊断证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-slo-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/macos-slo-diagnostics
+          if-no-files-found: warn
 
   desktop_macos:
     name: desktop rust checks · macos
@@ -259,7 +260,9 @@ jobs:
       - name: Pytest Windows 分片
         env:
           PYTEST_ADDOPTS: ""
+          CI_SHARD_INDEX: ${{ matrix.shard }}
           CI_SHARD_REPORT: ${{ runner.temp }}/windows-ci/shard.json
+          TIANSHU_SLO_DIAGNOSTICS_DIR: ${{ runner.temp }}/windows-ci/slo-diagnostics
         # 保留原 wrapper/fatal handler/60秒 Python 线程栈；C 扩展长期持有 GIL
         # 时仍不能保证采样。此 step 唯一直接命令保留 wrapper 最终退出码。
         run: >-
@@ -268,13 +271,6 @@ jobs:
           --ci-shard-report="$CI_SHARD_REPORT"
           -o addopts="" -vv -rs --tb=short
           --durations=20 --stack-timeout=60
-      - name: 上传 state 背压诊断证据
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: slo-state-pressure-windows-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
-          path: ${{ runner.temp }}/slo-state-pressure.json
-          if-no-files-found: warn
       - name: 上传本分片原始报告
         if: always()
         uses: actions/upload-artifact@v4
@@ -282,6 +278,13 @@ jobs:
           name: windows-pytest-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
           path: ${{ runner.temp }}/windows-ci/shard.json
           if-no-files-found: error
+      - name: 上传 Windows SLO 原始样本与失败诊断
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-slo-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/windows-ci/slo-diagnostics
+          if-no-files-found: warn
       - name: 上传恢复 T1 Windows 原生证据
         if: always() && matrix.shard == 0
         uses: actions/upload-artifact@v4

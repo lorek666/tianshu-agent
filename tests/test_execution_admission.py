@@ -8,6 +8,7 @@ import sys
 from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -29,6 +30,64 @@ def _settings(tmp_path):
             env_allowlist=("PATH",), timeout_ms=3000, max_output_bytes=65536,
         ),
     }
+
+
+def test_reaped_posix_leader_is_never_signalled_by_reusable_group_id(tmp_path, monkeypatch):
+    from tianshu import execution_admission
+    from tianshu.execution_admission import PreparedExecution
+
+    settings = _settings(tmp_path)
+    execution = PreparedExecution(
+        LOCAL_EXEC_BACKEND, kind="command", task_id="task", run_id="run", **settings,
+    )
+
+    class ReapedProcess:
+        pid = 123
+        returncode = 0
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    def forbidden_group_signal(*args, **kwargs):
+        pytest.fail("a reaped leader's numeric PGID must never be signalled")
+
+    monkeypatch.setattr(execution_admission, "os", SimpleNamespace(
+        name="posix", killpg=forbidden_group_signal,
+    ))
+    assert execution._stop_process(ReapedProcess()) == "unknown"
+
+
+def test_unsignalled_posix_group_is_unknown_after_process_lookup_error(tmp_path, monkeypatch):
+    from tianshu import execution_admission
+    from tianshu.execution_admission import PreparedExecution
+
+    execution = PreparedExecution(
+        LOCAL_EXEC_BACKEND, kind="command", task_id="task", run_id="run",
+        **_settings(tmp_path),
+    )
+
+    class MissingGroupProcess:
+        pid = 123
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            self.returncode = -9
+            return -9
+
+    def missing_group(*args, **kwargs):
+        raise ProcessLookupError
+
+    monkeypatch.setattr(execution_admission, "os", SimpleNamespace(
+        name="posix", killpg=missing_group,
+    ))
+    monkeypatch.setattr(execution_admission, "signal", SimpleNamespace(SIGKILL=9))
+    assert execution._stop_process(MissingGroupProcess()) == "unknown"
 
 
 def test_subject_changes_when_binary_environment_scope_or_config_changes(tmp_path):
