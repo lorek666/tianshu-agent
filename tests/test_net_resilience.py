@@ -24,6 +24,7 @@ from __future__ import annotations
 import socket
 import threading
 import time
+from types import SimpleNamespace
 
 import pytest
 from httpserver import NetFixture, closed_port
@@ -119,8 +120,8 @@ def test_retry_recovers_on_connect_failure(
         def flaky(target_obj, timeout_s):  # noqa: ANN001 - 与 _connect 同签名
             calls["n"] += 1
             if calls["n"] == 1:
-                # 直接以「连接阶段失败」的稳定分类抛出；OSError→net.connect 的
-                # 映射路径由 test_retry_exhausts_and_reports 的确定性连接夹具覆盖。
+                # 直接以「连接阶段失败」的稳定分类抛出：OSError→net.connect 的
+                # 映射路径由 closed_port 用例覆盖，这里测的是重试循环本身。
                 raise NetError("模拟连接被拒（TCP 未建立）", reason="net.connect")
             return real_connect(target_obj, timeout_s)
 
@@ -133,8 +134,11 @@ def test_retry_recovers_on_connect_failure(
         fixture.stop()
 
 
-def test_retry_exhausts_and_reports(monkeypatch: pytest.MonkeyPatch) -> None:
-    """确定性连接拒绝：OSError 映射为 net.connect，且恰好尝试 2 次。"""
+@pytest.mark.parametrize("deadline_exhausted", [False, True])
+def test_retry_exhausts_and_reports(monkeypatch, deadline_exhausted) -> None:
+    """确定性连接拒绝：剩余期限允许重试，总期限耗尽时保留原分类。"""
+    clock = _FakeClock()
+    monkeypatch.setattr(net_mod, "time", SimpleNamespace(monotonic=clock))
 
     class RefusedConnection:
         def connect(self) -> None:
@@ -147,14 +151,25 @@ def test_retry_exhausts_and_reports(monkeypatch: pytest.MonkeyPatch) -> None:
 
     def refused(target_obj, timeout_s):  # noqa: ANN001 - 与 _connect 同签名
         calls["n"] += 1
-        return RefusedConnection()
+        conn = RefusedConnection()
+        connect = conn.connect
+
+        def connect_and_advance():
+            try:
+                return connect()
+            finally:
+                clock.now += timeout_s if deadline_exhausted else 0.01
+
+        conn.connect = connect_and_advance
+        return conn
 
     monkeypatch.setattr(net_mod, "_connect", refused)
     target = canonical_target("network://http/127.0.0.1:9/a")
     with pytest.raises(NetError) as excinfo:
         fetch(target, limits=NetLimits(min_interval_s=0))
     assert excinfo.value.reason == "net.connect"
-    assert calls["n"] == NET_CONNECT_ATTEMPTS == 2
+    assert NET_CONNECT_ATTEMPTS == 2
+    assert calls["n"] == (1 if deadline_exhausted else NET_CONNECT_ATTEMPTS)
 
 
 def test_connect_attempts_one_means_no_retry(tmp_path) -> None:

@@ -48,9 +48,17 @@
 
 F2 提供可插拔后端、运行现场的实测门和审批前隔离视图。W14 新增 macOS Seatbelt 与适用 Linux 内核上的 Landlock，默认后端为 `local`。`TIANSHU_EXEC_BACKEND=auto` 选择当前平台可用的原生后端。后端不可用时返回 `PolicyUnsupported`。
 
+本地增量新增显式选择的 `TIANSHU_EXEC_BACKEND=seatbelt_leaf`：复用 macOS
+Seatbelt 的文件、网络和凭据策略，固定禁止派生后代。仅适用于不需要 `fork`、
+`posix_spawn` 或 `subprocess` 的命令和 stdio MCP；需要派生的正常程序同样失败，
+不回落到其他后端。四边界准入仍要求实际 subject 探针通过；`process_tree=enforced`
+在此只表示受控集合最多有根进程、根退出已确认，不表示支持任意后代进程树。
+默认 `local`、原有 `seatbelt` 和 `auto` 路由不变；Windows 原生隔离仍未交付。
+候选和验收状态见[受限后端记录](changelog/2026-11-23-seatbelt-leaf.md)。
+
 `isolation_requires` 只接受现场探针确认已实施的边界。报告绑定后端、平台、
 工作区、数据根、探针版本及超时；主循环候选还绑定具体程序、环境、配置和生命周期。
-历史 macOS Seatbelt 探针不覆盖脱离进程组的后代；新的实际 subject 负控已证明
+原 `seatbelt` 探针不覆盖脱离进程组的后代；实际 subject 负控已证明
 `process_tree=not_enforced`。自动命令与本地 MCP 要求完整四边界，因此该组合
 在启动前被拒绝，不能以 killpg/leader 消失声称整树退出。Linux Landlock 的
 TCP 规则需要 ABI 4 或以上；本候选仍须按实际对象取得新证据。

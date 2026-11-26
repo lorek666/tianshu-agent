@@ -33,7 +33,11 @@ from typing import Protocol, runtime_checkable
 from .errors import TianshuError
 from .exec import LOCAL_EXEC_BACKEND, ExecResult
 from .exec_landlock import landlock_available, landlock_exec_backend
-from .exec_seatbelt import SEATBELT_EXEC_BACKEND, seatbelt_available
+from .exec_seatbelt import (
+    SEATBELT_EXEC_BACKEND,
+    SEATBELT_LEAF_EXEC_BACKEND,
+    seatbelt_available,
+)
 from .execpolicy import ExecBackendCapabilities, ExecPolicy, PolicyUnsupported
 
 __all__ = [
@@ -67,6 +71,10 @@ _DEFAULT_UNIMPLEMENTED: dict[str, str] = {
         "macOS Darwin Seatbelt（/usr/bin/sandbox-exec）仅在具备该工具的 Darwin 可用；"
         "当前平台不可用，v1/W14 严禁静默回落到 local"
     ),
+    "seatbelt_leaf": (
+        "禁止派生后代的 macOS 单进程 Seatbelt 仅在具备 sandbox-exec 的 Darwin 可用；"
+        "当前平台不可用，禁止静默回落到 local"
+    ),
     "landlock": (
         "Linux Landlock LSM 仅在 Linux x86_64/aarch64（内核 >= 5.13，ABI >= 1）可用；"
         "当前平台或内核不可用，v1/W14 严禁静默回落到 local"
@@ -81,6 +89,7 @@ _DEFAULT_UNIMPLEMENTED: dict[str, str] = {
 _EXPECTED_ISOLATION = {
     "app_container": {"app_container"},
     "seatbelt": {"app_container"},
+    "seatbelt_leaf": {"app_container"},
     "landlock": {"process_tree", "app_container"},
     "container": {"container"},
 }
@@ -268,6 +277,7 @@ def _populate_builtin_backends() -> None:
     UNIMPLEMENTED_EXEC_BACKENDS.update(_DEFAULT_UNIMPLEMENTED)
     if seatbelt_available():
         register_exec_backend(SEATBELT_EXEC_BACKEND, name="seatbelt", replace=True)
+        register_exec_backend(SEATBELT_LEAF_EXEC_BACKEND, name="seatbelt_leaf", replace=True)
     if landlock_available():
         register_exec_backend(landlock_exec_backend(), name="landlock", replace=True)
 

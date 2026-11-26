@@ -1,4 +1,4 @@
-"""Windows CI shards: preserve file order and verify complete pytest evidence.
+"""CI shards: preserve file order and verify complete pytest evidence.
 
 This is development-only CI evidence, not a product contract.
 The upstream job result also matters: the stack wrapper can fail after pytest exits.
@@ -15,18 +15,23 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
-# Complete-file log windows from Windows runs 44927917869/44939541307,
-# 45050478841 and 45058496468, rounded up in half-second units. Retain the
-# larger measurement for files observed in multiple runs; a truncated window
-# keeps its prior complete measurement. Cover the full measured collection:
-# sparse overrides miss cumulative medium-file errors and fast-node bias.
-# test_eval_real_tasks retains real three-run samples and custom runs, but
-# reuses private copies for evidence-only checks; its estimate excludes the
-# removed duplicate executions and adds five seconds for copying/checks.
-# Cache metrics, summary telemetry and evaluation separation use their completed
-# file intervals from RED run 45050478841. Goal and online-soak observations use
-# run 45058496468; its timeout was cumulative and is not passing acceptance.
-# These are fixed scheduling hints, not acceptance limits or runner guarantees.
+# Unmeasured files use ~0.5s per node as a rough proxy. Complete-file
+# observations come from Windows runs 44927917869/44939541307, 45050478841,
+# 45058496468 and 45134199845. Retain the larger measurement for files observed
+# in multiple runs; a truncated window keeps its prior complete measurement.
+# Cover the full measured collection: sparse overrides miss cumulative
+# medium-file errors and fast-node bias. Cache metrics, summary telemetry and
+# evaluation separation use their completed file intervals from RED run
+# 45050478841. Goal and online-soak observations use run 45058496468; its
+# timeout was cumulative and is not passing acceptance. Run 45134199845 adds
+# complete-leaf observations, but its shard 0 still hit the unchanged 25-minute
+# job limit; report exit 0 did not make that CI pass. The observation fixture
+# retains per-file collection sizes and raw-log hashes. The merged maxima alone
+# left two observed windows just outside their existing balance bounds, so
+# test_isolation carries a seven-second reserve (47 seconds total); no earlier
+# estimate is lowered and no threshold is relaxed. Shared-corpus locality is
+# approximate and may drift when files move runners. These fixed scheduling
+# hints are neither acceptance limits nor future runner guarantees.
 SLO_FIRST_NODE = (
     "tests/test_slo_and_soak.py::test_measure_slo_smoke_and_run_soak_real_subprocesses"
 )
@@ -38,21 +43,21 @@ _FILE_WEIGHTS = {
     'tests/test_approval_reject.py': 15,
     'tests/test_assemble_release.py': 10,
     'tests/test_authority_block.py': 7,
-    'tests/test_backend_contract.py': 62,
+    'tests/test_backend_contract.py': 63,
     'tests/test_backup.py': 27,
     'tests/test_backup_materials.py': 102,
     'tests/test_baseline_evidence.py': 97,
     'tests/test_browser_form_dispatch.py': 36,
-    'tests/test_browser_forms.py': 1,
+    'tests/test_browser_forms.py': 2,
     'tests/test_browser_navigation.py': 3,
     'tests/test_browser_post_transport.py': 10,
-    'tests/test_budget_ledger.py': 28,
+    'tests/test_budget_ledger.py': 31,
     'tests/test_budget_review.py': 59,
     'tests/test_c1_c2_c5_schemas.py': 12,
     'tests/test_cache_metrics.py': 92,
     'tests/test_canonical.py': 1,
     'tests/test_capability.py': 18,
-    'tests/test_ci_workflow.py': 2,
+    'tests/test_ci_workflow.py': 3,
     'tests/test_consent.py': 33,
     'tests/test_content_read.py': 7,
     'tests/test_content_refs.py': 5,
@@ -62,21 +67,21 @@ _FILE_WEIGHTS = {
     'tests/test_conversation.py': 19,
     'tests/test_cost_line.py': 20,
     'tests/test_crash_consistency.py': 25,
-    'tests/test_credentials.py': 2,
+    'tests/test_credentials.py': 3,
     'tests/test_daemon.py': 78,
     'tests/test_data_admission.py': 57,
-    'tests/test_data_binding.py': 137,
+    'tests/test_data_binding.py': 158,
     'tests/test_data_cli.py': 75,
     'tests/test_data_migration_cli.py': 73,
     'tests/test_data_state.py': 1,
     'tests/test_debug_regressions.py': 16,
     'tests/test_diagnostics_and_sbom.py': 2,
     'tests/test_dispatch.py': 33,
-    'tests/test_embedding_provider.py': 19,
+    'tests/test_embedding_provider.py': 20,
     'tests/test_eval_followup.py': 11,
     'tests/test_eval_four_dimensions.py': 153,
     'tests/test_eval_harness.py': 116,
-    'tests/test_eval_negative_controls.py': 7,
+    'tests/test_eval_negative_controls.py': 8,
     'tests/test_eval_real_tasks.py': 409,
     'tests/test_eval_report.py': 1,
     'tests/test_eval_scoped_checks.py': 100,
@@ -92,43 +97,43 @@ _FILE_WEIGHTS = {
     'tests/test_failclosed.py': 6,
     'tests/test_fsutil.py': 1,
     'tests/test_g1_admission.py': 7,
-    'tests/test_g1d_resource_kinds.py': 1,
+    'tests/test_g1d_resource_kinds.py': 2,
     'tests/test_g2_delegation_contract.py': 3,
-    'tests/test_g2_delegation_control.py': 16,
+    'tests/test_g2_delegation_control.py': 19,
     'tests/test_g2_delegation_exec.py': 22,
     'tests/test_g2_delegation_fence.py': 6,
     'tests/test_g2_delegation_recovery.py': 4,
     'tests/test_g2_delegation_replay.py': 14,
     'tests/test_g2_delegation_spawn.py': 20,
     'tests/test_g2_delegation_write.py': 21,
-    'tests/test_goal_v2.py': 163,
-    'tests/test_goals.py': 41,
+    'tests/test_goal_v2.py': 166,
+    'tests/test_goals.py': 45,
     'tests/test_host.py': 42,
-    'tests/test_host_cleanup.py': 76,
+    'tests/test_host_cleanup.py': 94,
     'tests/test_host_memory.py': 46,
     'tests/test_integration_m5.py': 76,
     'tests/test_ipc.py': 11,
-    'tests/test_ipc_send_close.py': 1,
-    'tests/test_isolation.py': 40,
+    'tests/test_ipc_send_close.py': 20,
+    'tests/test_isolation.py': 47,
     'tests/test_isolation_gate.py': 13,
     'tests/test_job_claims.py': 39,
-    'tests/test_leases.py': 11,
+    'tests/test_leases.py': 13,
     'tests/test_low_disk_admission.py': 13,
     'tests/test_low_disk_entrypoints.py': 24,
     'tests/test_low_disk_execution.py': 200,
     'tests/test_low_disk_run_creation.py': 59,
     'tests/test_m2_acceptance.py': 151,
-    'tests/test_macos_outer_seal.py': 2,
+    'tests/test_macos_outer_seal.py': 5,
     'tests/test_maintenance.py': 17,
     'tests/test_mcp_cli.py': 6,
     'tests/test_mcp_client.py': 7,
     'tests/test_mcp_crash.py': 99,
-    'tests/test_mcp_dispatch.py': 35,
-    'tests/test_mcp_http.py': 44,
+    'tests/test_mcp_dispatch.py': 37,
+    'tests/test_mcp_http.py': 46,
     'tests/test_mcp_object_block.py': 46,
     'tests/test_mcp_registry.py': 1,
     'tests/test_mcp_transport_timeout.py': 15,
-    'tests/test_measure_task_delivery.py': 5,
+    'tests/test_measure_task_delivery.py': 6,
     'tests/test_memory_conflict.py': 1,
     'tests/test_memory_dispatch.py': 103,
     'tests/test_memory_distill.py': 12,
@@ -143,9 +148,9 @@ _FILE_WEIGHTS = {
     'tests/test_mission_materials.py': 39,
     'tests/test_mission_mcp.py': 42,
     'tests/test_model_contract.py': 4,
-    'tests/test_model_routing.py': 2,
+    'tests/test_model_routing.py': 3,
     'tests/test_model_usage_v2.py': 16,
-    'tests/test_net_resilience.py': 21,
+    'tests/test_net_resilience.py': 22,
     'tests/test_network_fetch.py': 58,
     'tests/test_network_research_eval.py': 19,
     'tests/test_network_search.py': 5,
@@ -154,7 +159,8 @@ _FILE_WEIGHTS = {
     'tests/test_permissions.py': 12,
     'tests/test_powercut_image.py': 1,
     'tests/test_pricing.py': 12,
-    'tests/test_public_network_boundaries.py': 9,
+    'tests/test_probe_interpreter.py': 20,
+    'tests/test_public_network_boundaries.py': 13,
     'tests/test_pytest_ci_shards.py': 147,
     'tests/test_pytest_with_stacks.py': 35,
     'tests/test_receipts.py': 7,
@@ -168,12 +174,12 @@ _FILE_WEIGHTS = {
     'tests/test_release_verify.py': 45,
     'tests/test_release_version_identity.py': 1,
     'tests/test_release_workflow.py': 16,
-    'tests/test_resources.py': 1,
+    'tests/test_resources.py': 2,
     'tests/test_responses_conformance.py': 2,
-    'tests/test_responses_contract.py': 1,
+    'tests/test_responses_contract.py': 2,
     'tests/test_responses_http.py': 4,
     'tests/test_responses_integration.py': 37,
-    'tests/test_responses_model.py': 2,
+    'tests/test_responses_model.py': 4,
     'tests/test_responses_preflight.py': 10,
     'tests/test_responses_review.py': 10,
     'tests/test_responses_review_followup.py': 39,
@@ -183,7 +189,7 @@ _FILE_WEIGHTS = {
     'tests/test_restore_b_execution.py': 36,
     'tests/test_restore_bc_review_regressions.py': 32,
     'tests/test_restore_c_release.py': 1,
-    'tests/test_restore_contract.py': 5,
+    'tests/test_restore_contract.py': 6,
     'tests/test_restore_durability.py': 21,
     'tests/test_restore_eventlog_access.py': 28,
     'tests/test_restore_platform_access.py': 2,
@@ -196,32 +202,33 @@ _FILE_WEIGHTS = {
     'tests/test_round2_inputs_model_mcp.py': 46,
     'tests/test_round2_inputs_net.py': 11,
     'tests/test_round2_summary_provenance.py': 23,
-    'tests/test_rule_ids.py': 8,
-    'tests/test_run_command.py': 13,
+    'tests/test_rule_ids.py': 10,
+    'tests/test_run_command.py': 18,
     'tests/test_run_control.py': 61,
     'tests/test_sandbox_backend.py': 1,
     'tests/test_schedule_webhook.py': 11,
     'tests/test_scheduler.py': 43,
     'tests/test_schemas.py': 1,
-    'tests/test_skills.py': 5,
+    'tests/test_seatbelt_leaf.py': 1,
+    'tests/test_skills.py': 18,
     'tests/test_slo_and_soak.py': 169,
     'tests/test_slo_state_pressure.py': 33,
     'tests/test_slow_subscriber.py': 58,
     'tests/test_snapshot.py': 11,
-    'tests/test_soak.py': 1,
-    'tests/test_summaries.py': 4,
+    'tests/test_soak.py': 2,
+    'tests/test_summaries.py': 5,
     'tests/test_summary_cache_telemetry.py': 64,
-    'tests/test_summary_context.py': 1,
+    'tests/test_summary_context.py': 3,
     'tests/test_summary_loop.py': 41,
     'tests/test_summary_replay.py': 8,
-    'tests/test_takeover.py': 1,
+    'tests/test_takeover.py': 2,
     'tests/test_task_attachments.py': 1,
     'tests/test_task_files.py': 6,
-    'tests/test_tasks.py': 9,
+    'tests/test_tasks.py': 12,
     'tests/test_transactions.py': 3,
     'tests/test_undo_journal.py': 24,
     'tests/test_undo_recovery.py': 7,
-    'tests/test_usage.py': 4,
+    'tests/test_usage.py': 23,
     'tests/test_verification_driver.py': 58,
     'tests/test_veto_scope.py': 5,
     'tests/test_w14_os_sandboxes.py': 20,
@@ -230,7 +237,7 @@ _FILE_WEIGHTS = {
     'tests/test_w9_network_depth.py': 60,
     'tests/test_windows_145_147_regressions.py': 18,
     'tests/test_windows_compat.py': 15,
-    'tests/test_workflow.py': 43,
+    'tests/test_workflow.py': 56,
     'tests/test_workflow_cli.py': 12,
     'tests/test_workflow_review_regressions.py': 31,
 }
@@ -419,7 +426,7 @@ def verify(args):
             expected_phases = ({"setup", "teardown"} if node_phases.get("setup") == "skipped"
                                else {"setup", "call", "teardown"})
             require(set(node_phases) == expected_phases, "missing or unexpected phase report")
-    print(f"Verified {len(full)} collected nodes across {args.count} Windows shards")
+    print(f"Verified {len(full)} collected nodes across {args.count} CI shards")
 
 
 def main():

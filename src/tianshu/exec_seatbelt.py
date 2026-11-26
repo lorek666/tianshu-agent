@@ -26,8 +26,9 @@ import shutil
 import sys
 import tempfile
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import ClassVar
 
 from .exec import (
     RULE_PTY_NOT_ALLOWED,
@@ -157,6 +158,7 @@ def _build_sbpl_profile(
     argv0: str,
     extra_rw_roots: Sequence[Path] = (),
     pty: bool = False,
+    allow_fork: bool = True,
 ) -> str:
     """为单次受控执行生成动态 Darwin SBPL（version 1）策略文本。"""
     if not isinstance(policy, ExecPolicy):
@@ -215,7 +217,7 @@ def _build_sbpl_profile(
         "(version 1)",
         "(deny default)",
         "(allow process-exec)",
-        "(allow process-fork)",
+        "(allow process-fork)" if allow_fork else "(deny process-fork)",
         "(allow signal (target same-sandbox))",
         "(allow sysctl-read)",
         "(allow process-info-pidinfo (target same-sandbox))",
@@ -283,6 +285,7 @@ class SeatbeltExecBackend:
     capabilities: ExecBackendCapabilities = field(
         default_factory=seatbelt_capabilities
     )
+    _allow_fork: ClassVar[bool] = True
 
     def spawn(
         self,
@@ -329,6 +332,7 @@ class SeatbeltExecBackend:
                     argv0=argv[0],
                     extra_rw_roots=(priv_tmp,),
                     pty=pty,
+                    allow_fork=self._allow_fork,
                 )
             except ValueError as exc:
                 raise PolicyDenied(
@@ -358,12 +362,27 @@ class SeatbeltExecBackend:
 
 SEATBELT_EXEC_BACKEND = SeatbeltExecBackend()
 
+
+@dataclass(frozen=True)
+class SeatbeltLeafExecBackend(SeatbeltExecBackend):
+    """显式选择的单进程沙箱；需要派生后代的正常程序同样会被内核拒绝。"""
+
+    capabilities: ExecBackendCapabilities = field(
+        default_factory=lambda: replace(seatbelt_capabilities(), name="seatbelt_leaf")
+    )
+    _allow_fork: ClassVar[bool] = False
+
+
+SEATBELT_LEAF_EXEC_BACKEND = SeatbeltLeafExecBackend()
+
 __all__ = [
     "RULE_SBPL_INVALID_PATH",
     "SANDBOX_EXEC_PATH",
     "SEATBELT_CAPABILITIES",
     "SEATBELT_EXEC_BACKEND",
+    "SEATBELT_LEAF_EXEC_BACKEND",
     "SeatbeltExecBackend",
+    "SeatbeltLeafExecBackend",
     "_build_sbpl_profile",
     "_escape_sbpl_path",
     "seatbelt_available",

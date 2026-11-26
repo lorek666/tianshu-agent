@@ -376,7 +376,10 @@ def test_ci_selector_requires_all_required_names_and_all_jobs(tmp_path):
         ([], False),
         *(
             ([*complete, {"name": name, "conclusion": conclusion}], False)
-            for name in ("macos python suite · py3.12", "desktop rust checks · macos")
+            for name in (
+                "macos python shard 0 · py3.12", "macos python shard 1 · py3.12",
+                "desktop rust checks · macos",
+            )
             for conclusion in ("failure", "cancelled", "skipped")
         ),
     ]

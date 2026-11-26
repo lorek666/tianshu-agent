@@ -860,11 +860,15 @@ plan/execute/compact 及恢复/replay。
 保护和备份核验。V1 Consent 投影全丢时可恢复余额，但缺少单调期限锚点的
 原授权保守失效，不按墙钟重授 TTL。
 
-P0-E 仍未整体完成：Windows 原生隔离后端未交付；macOS 真正脱离进程组的
-后代可存活，`process_tree` 未满足完整要求。当前自动命令/MCP 要求四边界，
-证据不足会在启动前拒绝，不回落 `local`。受管生命周期和拒绝探针通过，
-不能写成跨平台物理隔离已交付。真实付费模型驱动 UI、真实第三方 MCP、
-用户设备和最终候选的 hosted CI 均须分别验证。
+P0-E 仍未整体完成：Windows 原生隔离后端未交付；macOS `auto` 仍选择 generic
+`seatbelt`，真正脱离进程组的后代可存活，完整 `process_tree` 要求仍未满足。
+显式 `seatbelt_leaf` 另以 `(deny process-fork)` 拒绝 fork/spawn 等后代创建，
+并确认受管根进程退出；它只覆盖这一受管根生命周期，不等于任意后代树隔离。
+当前自动命令须显式选择 `seatbelt_leaf` 且四项边界均为 `enforced`，generic
+Seatbelt/local/Windows 证据不足会在启动前拒绝，不回落 `local`；自动 Goal
+仍拒绝所选 MCP。受管生命周期和拒绝探针通过，不能写成跨平台物理隔离已交付。
+真实付费模型驱动 UI、真实第三方 MCP、用户设备和最终候选的 hosted CI
+均须分别验证。
 
 不在本规格中交付多租户、无界自主循环、完整访问、模型自批、任意 shell 模板、
 自动安装/执行 Skill 资源、通用浏览器自动化或同 uid 恶意用户防篡改。
