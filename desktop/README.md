@@ -1,8 +1,8 @@
 # Tianshu Agent 桌面壳与发行候选
 
-> 状态：R0–R3 四目标构建与安装基线已随 PR #175 / #186 合入；本轮接入单目标预览草稿。
-> 合入后的 release workflow 实跑和最终候选用户设备验收仍待完成。
-> 本文不把源码、局部测试或 CI runner 结果写成用户设备已验证的正式发行版。
+> 状态：R0–R3 四目标构建与安装基线已随 PR #175 / #186 合入；`e87a38c` 已实跑单目标预览并生成未公开的 `v0.1.1` prerelease 草稿。
+> 主干此后已有新提交，该草稿仅对应 `e87a38c`；最终候选用户设备验收仍待完成。
+> 本文不把源码、局部测试、预览 workflow 或 CI runner 结果写成用户设备已验证的正式发行版。
 
 壳负责窗口、托盘、单实例和 Python Host/Daemon 生命周期。任务、审批、事件、工具执行、
 授权和恢复仍由现有 Python Host/Daemon 实现；Rust 没有替换 Host，也没有形成新的授权
@@ -171,8 +171,8 @@ if ($actual -ne $expected) { throw "SHA256 mismatch" }
 Developer ID / Authenticode 证书签名；macOS 免费资源封套不改变这一点。
 Gatekeeper、SmartScreen 和真实设备安装、升级、回退及权限提示仍待验收。
 
-合入后的精确主干 SHA 尚待实际运行预览 workflow。原生 runner 的构建和 smoke 不替代真实
-用户设备实测；物理断电持久性也未验证，不作为限定预览前置。
+`e87a38c` 已实际运行预览 workflow 并生成未公开草稿；原生 runner 的构建和 smoke 不替代真实
+用户设备实测。该草稿不证明后续主干提交已通过发行验收；物理断电持久性也未验证，不作为限定预览前置。
 
 ## 本机检查
 

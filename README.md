@@ -25,12 +25,12 @@
 它把「AI 可能失控」当成一等工程问题来解，而不是靠 prompt 里写几句「请谨慎操作」。
 
 > **当前形态**：M0–M5 内核与三进程桌面闭环已完成；R0–R3 发行链源码已并入 `main`。
-> 首发计划仅提供 **macOS Apple Silicon（arm64）限定预览**。已接入单目标草稿流程，正式工作流实跑和真机验收仍待完成；**尚无可公开安装的发行版**。
-> 首发不支持 Intel Mac、Windows 或 Linux。逐条状态见 [docs/status.md](docs/status.md)。
+> 首发计划仅提供 **macOS Apple Silicon（arm64）限定预览**。`e87a38c` 已完成单目标预览 workflow 实跑并生成未公开的 `v0.1.1` prerelease 草稿；当前主干已前进，该草稿不是当前候选。真机安装/升级/回退、候选 SLO 与真实模型 UI 仍未验收，**尚无可公开安装的发行版**。
+> 四目标正式发行与 Intel Mac、Windows、Linux 用户设备均未验收，不作为首发支持。逐条状态见 [docs/status.md](docs/status.md)。
 
-本地 Agent 主循环候选已接入通用 Mission、结构化计划与独立验收、有限自动 Goal、
+Agent 主循环已随 [#225](https://github.com/lorek666/tianshu-agent/pull/225) 合入 `main`：通用 Mission、结构化计划、独立验收、有限自动 Goal、
 有限授权及命令/MCP 启动准入。桌面 `/goal` 可创建 V2 目标，旧 G1 保持原语义。
-这批功能尚未合入或发布；平台隔离未完成的对象会拒绝自动执行。
+尚无公开发行版；不满足准入条件的自动执行会被拒绝。
 实现、验证和使用入口见[主循环实施记录](docs/changelog/2026-11-23-agent-loop-implementation.md)。
 
 ## 核心承诺
@@ -49,7 +49,7 @@
 ## 它不假装能做到的事
 
 - **命令默认走受信任的本地执行。** `Workspace` 只约束内置文件工具。W14 提供按平台选用的 macOS Seatbelt 与 Linux Landlock 子进程后端，隔离范围以审批前的实测报告为准。Windows 进程级沙箱待交付。参见 [F2 执行策略](docs/limitations.md#2-f2-沙箱与执行策略交付的是什么不是什么)。
-- **桌面发行仍待验收。** 首发仅验证 Apple Silicon Mac 上的安装、升级与回退；跨平台发行另验。认证发布者签名、公证和自动更新不在本次预览范围；macOS 免费 ad-hoc 资源封套只修复结构完整性，不代表发布者信任或系统放行，见[发行说明](desktop/README.md#macos-资源封套与发布者身份不是同一项)。
+- **桌面发行仍待验收。** 首发仅计划在 Apple Silicon Mac 上验收安装、升级与回退；跨平台发行另验。认证发布者签名、公证和自动更新不在本次预览范围；macOS 免费 ad-hoc 资源封套只修复结构完整性，不代表发布者信任或系统放行，见[发行说明](desktop/README.md#macos-资源封套与发布者身份不是同一项)。
 - **Windows 验证来自 CI runner。** 命名管道 ACL、杀软、长路径与用户设备安装体验仍待验收。
 - **MCP 与联网研究使用本机夹具验收。** W9 已补充连接期 DNS 校验和响应分页。真实第三方 MCP、公开站点研究和搜索 API 仍是待办。
 - **真实模型驱动 UI 待验收。** `m4.4` 有两家模型的 CLI 实测。本地候选当前 `m4.7` 判据下的真实模型报告待补，与旧版不可直接比较。见 [评测范围](docs/limitations.md#4-m4-评测的未验证项)。
