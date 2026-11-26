@@ -155,6 +155,11 @@ def test_slo_runs_first_in_its_shard_without_changing_full_collection(tmp_path, 
     assert [result.returncode for result in results] == [0] * count, [
         (result.stdout, result.stderr) for result in results]
     owner = next(doc for doc in docs if slo_node in doc["selected"])
+    spec = importlib.util.spec_from_file_location("ci_shard_contract", VERIFIER)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    expected_groups = module.partition(owner["full_collection"], count)
+    assert [set(doc["selected"]) for doc in docs] == [set(group) for group in expected_groups]
     assert owner["selected"][0] == slo_node
     assert len(owner["selected"]) > 1
     assert owner["finished"] == owner["selected"]
