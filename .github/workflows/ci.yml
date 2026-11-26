@@ -172,6 +172,9 @@ jobs:
     timeout-minutes: 25
     if: always() && (github.event_name == 'push' || github.event.pull_request.draft == false)
     needs: [macos_python, desktop_macos]
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v4
         with:

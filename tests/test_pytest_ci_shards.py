@@ -99,6 +99,15 @@ def verify(evidence, env, *, needs="success", extra=(), count=2, attempts=None):
                evidence.parent, env)
 
 
+def test_verifier_rejects_unsuccessful_upstream_with_platform_neutral_message(tmp_path):
+    env = isolated_env()
+    env.update(GITHUB_SHA="0" * 40, GITHUB_RUN_ID=RUN_ID)
+    result = verify(tmp_path, env, needs="failure")
+    assert result.returncode == 1
+    assert "shard jobs did not all succeed" in result.stderr
+    assert "Windows shard jobs" not in result.stderr
+
+
 def test_independent_runners_cover_every_file_once_in_original_collection_order(tmp_path):
     evidence, env, results, docs = shards(tmp_path)
     assert [r.returncode for r in results] == [0, 0], [(r.stdout, r.stderr) for r in results]

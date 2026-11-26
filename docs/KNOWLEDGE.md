@@ -24,15 +24,18 @@
 
 ## 2. 当前状态速览
 
-- **Agent 主循环本地候选（2026-11-23，尚未合入）**：已集成通用 Mission、
+- **Agent 主循环 stacked 候选（2026-11-26，尚未合入）**：已集成通用 Mission、
   结构化 Plan、独立 Verification、Goal V2 的手动/有限自动推进、累计请求预算、
   无进展与阻断恢复、有限人类授权及命令/MCP 执行准入。桌面可创建 V2 目标、
-  确认图、人工验收、暂停/恢复和撤销有限授权。前轮冻结通过本机全量与独立复审，
-  但前两轮完整原生 CI 真实失败，后一轮 Windows 分片累计触及原有时限。
-  新候选 `ccce3e3` 校准实测分片成本并复用真实评测材料，已通过新的本机全量与独立
-  增量复审；完整 required CI 结果由最终 PR 对象的检查单独证明。不代表主干、发行版或完整
-  跨平台自主执行已交付。
-  精确验证、入口与 P0-E 未决范围见[实施记录](changelog/2026-11-23-agent-loop-implementation.md)。
+  确认图、人工验收、暂停/恢复和撤销有限授权。#225 确定性修复 head `d8b47a7`
+  已由 hosted run `45756307163` 完成 12 个 job 与四项 required checks；#227 已正常
+  双父刷新到该基线并通过本机全量与独立复审；#228 再正常刷新，保留显式 macOS
+  `seatbelt_leaf`、Host/停止身份修复、Windows 四独立 runner、state 背压诊断与
+  SLO-first 调度。#228 新冻结仍须完成本机全量、独立复审与自己的 hosted required CI。
+  不代表主干、发行版或完整跨平台自主执行已交付。精确范围见
+  [实施记录](changelog/2026-11-23-agent-loop-implementation.md)、
+  [#227 刷新记录](changelog/2026-11-26-pr227-stack-refresh.md)与
+  [#228 刷新记录](changelog/2026-11-26-pr228-ci-slo-isolation.md)。
 - **Goal 模式 G1 候选（2026-11-22，本地未合入）**：支持 `/goal`、目标配置、
   每轮手动推进和逐项人工验收；创建只保存配置，不启动模型。状态由事件及 Run
   派生，失败、空正文及 `partial/unknown` 结果均阻断继续与验收。已整合固定主干
@@ -741,6 +744,13 @@
 - 细节见 [CONTRIBUTING.md](../CONTRIBUTING.md) 与 [AGENTS.md](../AGENTS.md)。
 
 ## 7. 已知限制 / 未决问题
+
+- **SLO-first 与 macOS count2 已获 #225 hosted 证明，仍不承诺消除宿主抖动（2026-11-26）**：
+  本地真子进程测试证明 SLO/soak 在所属分片首位执行、完整 collection 与分组权重不变，
+  verifier 也拒绝换回后置顺序的伪造报告；这证明调度契约，不证明 hosted runner 的 SLO
+  必然通过。旧 Windows SLO 红、macOS 99% 超时与 `575ccda` 的 macOS 夹具红均保留。
+  `d8b47a7` 的 run `45756307163` 已让 12 个 job 与四项 required checks 全部 success；
+  #228 刷新后的新 head 仍须重新绑定，OS 或 hosted runner 负载抖动仍可能触发真实超限。
 
 - **Mission / MCP 接缝候选不等于自动隔离交付（2026-11-22）**：
   pending/frozen 输入和稳定语义版本仅修复路由与发现顺序；受管 stdio 正向测试使用
