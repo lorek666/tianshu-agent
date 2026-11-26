@@ -89,7 +89,7 @@ from .tasks import (
     RUN_WAITING_APPROVAL,
     TERMINAL_STATES,
 )
-from .worker import HeartbeatLoop, Worker
+from .worker import HeartbeatLoop, Worker, _cleanup_preserving_primary
 
 #: 单实例锁文件名（与端点同目录）。内容只有三样：谁、什么时候、哪个实例——
 #: 用来回答"这个锁是不是上一次崩溃留下的"，不做身份认证。
@@ -170,6 +170,17 @@ def _log(message: str) -> None:
     新增一个会让 schema 校验和回放同时变红。
     """
     print(f"[tianshu-daemon] {message}", file=sys.stderr, flush=True)
+
+
+def _log_resume_cleanup(message: str, primary: BaseException | None) -> None:
+    try:
+        _log(message)
+    except BaseException as exc:
+        if primary is None:
+            raise
+        BaseException.add_note(
+            primary, f"写入续跑心跳诊断失败：{type(exc).__name__}（{message}）"
+        )
 
 
 def _should_log_accept_failure(count: int) -> bool:
@@ -675,6 +686,7 @@ class _Daemon:
         self.control_stack: Stack | None = None
         self.driver_stack: Stack | None = None
         self.side: _DriverSideChannel | None = None
+        self._resume_heartbeat: HeartbeatLoop | None = None
 
         self.requests: queue.Queue[tuple[_ClientConnection, dict[str, Any]]] = (
             queue.Queue()
@@ -1432,53 +1444,60 @@ class _Daemon:
             on_model_delta=self._broadcast_model_stream,
         )
         consecutive_failures = 0
-        try:
-            while not self.stop.is_set():
-                worked = False
-                # 先消费"审批已落定 / 显式 resume"的请求：它们不走作业轮询，
-                # 因为 waiting 作业按设计不会被 claim_next 认领。
+        with worker:
+            try:
+                if self.stop.is_set():
+                    return
+                # 等待中的作业可被显式续跑，启动恢复必须先于两种认领入口。
+                try:
+                    worker._reconcile_subtask_state()
+                except Exception as exc:  # noqa: BLE001 - 此实例不能从启动首错继续
+                    _log(f"子任务启动恢复失败，停止驱动：{type(exc).__name__}: {exc}")
+                    return
                 while not self.stop.is_set():
-                    try:
-                        run_id = self.resume_requests.get_nowait()
-                    except queue.Empty:
-                        break
-                    self._resume_one(engine, run_id)
-                    worked = True
-                # 到期的定时任务：建任务并入队 Run（与 task.create/run.start
-                # 同路径，事件流只出现既有事件族）。tick 内部按条隔离异常；
-                # 这里再兜一层防 tick 框架本身故障。调度器故障不计入
-                # consecutive_failures——那是驱动循环自身的健康指标，混入
-                # 调度器故障会让一条坏 schedule 停掉整个 daemon。
-                try:
-                    fired = scheduler.tick()
-                    if fired:
+                    # Worker 与显式续跑共用驱动线程；不能绕过上一轮心跳准入门。
+                    worker._require_heartbeat_quiescence()
+                    worked = False
+                    # waiting 作业不会被 claim_next 认领，先处理审批和显式续跑。
+                    while not self.stop.is_set():
+                        try:
+                            run_id = self.resume_requests.get_nowait()
+                        except queue.Empty:
+                            break
+                        self._resume_one(engine, run_id)
                         worked = True
-                except Exception as exc:  # noqa: BLE001 - 调度器故障不带走驱动循环
-                    _log(f"调度器 tick 异常：{type(exc).__name__}: {exc}")
-                try:
-                    worked = worker.run_once() or worked
-                    consecutive_failures = 0
-                except Exception as exc:  # noqa: BLE001 - 循环不能因为单个作业退出
-                    consecutive_failures += 1
-                    _log(f"驱动循环异常：{type(exc).__name__}: {exc}")
-                    # 只打日志的话 UI 只会看到"任务不动"，比崩溃更难查。
-                    # 连续失败且期间没有任何成功驱动，说明循环已经废了：
-                    # 明确停下，让 Host 的监护去重启（§4.3 的指数退避路径）。
-                    if consecutive_failures >= DRIVER_MAX_CONSECUTIVE_FAILURES:
-                        _log(
-                            "驱动线程连续失败"
-                            f" {consecutive_failures} 次且没有成功驱动过任何作业，"
-                            "daemon 停止"
-                        )
-                        self.stop.set()
+                    if self.stop.is_set():
                         break
-                if not worked:
-                    self.stop.wait(self.driver_interval_s)
-        finally:
-            worker.close()
-            if self.side is not None:
-                self.side.close()
-                self.side = None
+                    # 调度器故障单独记日志，避免一条坏 schedule 停掉整个 daemon。
+                    try:
+                        fired = scheduler.tick()
+                        if fired:
+                            worked = True
+                    except Exception as exc:  # noqa: BLE001 - 调度器故障不带走驱动循环
+                        _log(f"调度器 tick 异常：{type(exc).__name__}: {exc}")
+                    try:
+                        worked = worker.run_once() or worked
+                        consecutive_failures = 0
+                    except Exception as exc:  # noqa: BLE001 - 循环不能因为单个作业退出
+                        consecutive_failures += 1
+                        _log(f"驱动循环异常：{type(exc).__name__}: {exc}")
+                        # 只打日志的话 UI 只会看到"任务不动"，比崩溃更难查。
+                        # 连续失败且期间没有任何成功驱动，说明循环已经废了：
+                        # 明确停下，让 Host 的监护去重启（§4.3 的指数退避路径）。
+                        if consecutive_failures >= DRIVER_MAX_CONSECUTIVE_FAILURES:
+                            _log(
+                                "驱动线程连续失败"
+                                f" {consecutive_failures} 次且没有成功驱动过任何作业，"
+                                "daemon 停止"
+                            )
+                            self.stop.set()
+                            break
+                    if not worked:
+                        self.stop.wait(self.driver_interval_s)
+            finally:
+                # 驱动退出（含 BaseException）后主线程必须进入 shutdown。
+                self.stop.set()
+                self._close_resume_channel()
 
     def _resume_one(self, engine: AgentLoop, run_id: str) -> None:
         """续跑一个 Run 的请求。异常记日志后**丢弃**，不做无限重试。
@@ -1489,39 +1508,76 @@ class _Daemon:
         `claimed` 的作业永不再被认领。
         """
         assert self.driver_stack is not None
-        try:
-            tasks = self.driver_stack.tasks
-            claims = self.driver_stack.claims
-            run = tasks.get_run(run_id)
-            if run is None or run.state in TERMINAL_STATES or run.state == RUN_FENCED:
-                return
-            claim = engine.current_claim(run_id)
-            if claim is None:
-                job = claims.job_for_run(run_id) if claims is not None else None
-                if job is not None and job.state not in ("done", "cancelled"):
-                    claim = claims.claim(job.job_id)
-            try:
-                if claim is None:
-                    engine.resume_run(run_id)
-                else:
-                    channel = self._side_channel()
-                    with HeartbeatLoop(
-                        lambda: channel.beat(claim),
-                        interval_ms=HEARTBEAT_MS,
-                    ) as heartbeat:
-                        engine.resume_run(run_id)
-                    if not heartbeat.stopped_promptly:
-                        _log(f"续跑 {run_id} 时心跳线程未如期退出")
-                    if heartbeat.error is not None:
-                        _log(f"续跑 {run_id} 时心跳失效：{heartbeat.error}")
-            finally:
-                if claim is not None:
-                    self._settle_job(claim)
-        except Exception as exc:  # noqa: BLE001 - 一个请求失败不该带走驱动线程
-            _log(f"续跑 {run_id} 失败，丢弃该请求：{type(exc).__name__}: {exc}")
-        finally:
+
+        def drained() -> None:
             assert self.plane is not None
             self.plane.resume_drained(run_id)
+
+        with _cleanup_preserving_primary(drained, "清除续跑请求失败"):
+            try:
+                if self._resume_heartbeat is not None:
+                    self.stop.set()
+                    raise TianshuError("续跑心跳生命周期尚未收拢，拒绝继续认领或驱动")
+                tasks = self.driver_stack.tasks
+                claims = self.driver_stack.claims
+                run = tasks.get_run(run_id)
+                if run is None or run.state in TERMINAL_STATES or run.state == RUN_FENCED:
+                    return
+                claim = engine.current_claim(run_id)
+                if claim is None:
+                    job = claims.job_for_run(run_id) if claims is not None else None
+                    if job is not None and job.state not in ("done", "cancelled"):
+                        claim = claims.claim(job.job_id)
+
+                def settle() -> None:
+                    if claim is not None:
+                        self._settle_job(claim)
+
+                with _cleanup_preserving_primary(settle, "续跑作业结算失败"):
+                    if claim is None:
+                        engine.resume_run(run_id)
+                    else:
+                        channel = self._side_channel()
+                        heartbeat = HeartbeatLoop(
+                            lambda: channel.beat(claim),
+                            interval_ms=HEARTBEAT_MS,
+                        )
+                        self._resume_heartbeat = heartbeat
+                        try:
+                            with heartbeat:
+                                engine.resume_run(run_id)
+                        finally:
+                            if heartbeat.stopped_promptly:
+                                self._resume_heartbeat = None
+                            else:
+                                self.stop.set()
+                                _log_resume_cleanup(
+                                    f"续跑 {run_id} 时心跳未收拢，停止驱动并保留线程与连接",
+                                    sys.exception(),
+                                )
+                        if heartbeat.error is not None:
+                            _log(f"续跑 {run_id} 时心跳失效：{heartbeat.error}")
+            except Exception as exc:  # noqa: BLE001 - 一个请求失败不该带走驱动线程
+                _log(f"续跑 {run_id} 失败，丢弃该请求：{type(exc).__name__}: {exc}")
+
+    def _close_resume_channel(self) -> None:
+        """仅在心跳确认退出后关闭连接，清理失败保留现场与主异常。"""
+        primary = sys.exception()
+        try:
+            if self._resume_heartbeat is not None:
+                self._resume_heartbeat.stop()
+                self._resume_heartbeat = None
+            if self.side is not None:
+                self.side.close()
+                self.side = None
+        except BaseException as cleanup:
+            self.stop.set()
+            message = f"续跑心跳清理失败，保留线程与连接：{type(cleanup).__name__}"
+            if primary is not None:
+                BaseException.add_note(primary, message)
+            elif not isinstance(cleanup, Exception):
+                raise
+            _log_resume_cleanup(message, primary)
 
     def _side_channel(self) -> _DriverSideChannel:
         if self.side is None:
