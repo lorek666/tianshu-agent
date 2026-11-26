@@ -13,7 +13,6 @@ from .conversation import (
     GuidanceHistory,
     checked_conversation,
     clarification_question,
-    seed_messages,
 )
 from .errors import TianshuError
 
@@ -304,6 +303,7 @@ def prior_request(
 
 def _history(log: EventLog, run_id: str) -> tuple[list[dict[str, Any]], list[int]]:
     from .loop import initial_messages
+    from .mission import compile_initial_messages, mission_messages
 
     events = log.read_run(run_id)
     start = events[0]
@@ -317,11 +317,15 @@ def _history(log: EventLog, run_id: str) -> tuple[list[dict[str, Any]], list[int
                 *initial_messages(start.payload.get("task", ""), None),
                 {"role": "assistant", "content": results[-1].payload["content"]},
             ], [0, 0, results[-1].seq]
-    initial = workflow_messages(
-        initial_messages(start.payload.get("task", ""), start.payload.get("out") or None), old,
-    )
     # Copy human-readable chat only. Attachments and provider continuations stay in their Run.
-    messages = seed_messages(initial, checked_conversation(log, events), general=old is None)
+    messages = mission_messages(log, run_id, events=events)
+    if messages is None:
+        messages = compile_initial_messages(
+            start.payload.get("task", ""), start.payload.get("out") or None,
+            conversation=checked_conversation(log, events), workflow=old,
+        )
+    messages = [{key: value for key, value in message.items() if key != "attachments"}
+                for message in messages]
     seqs = [0] * len(messages)
     guidance = GuidanceHistory()
     for event in events:

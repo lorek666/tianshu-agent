@@ -773,6 +773,7 @@ def execution_guard(
     *,
     timeout_ms: int = GUARD_TIMEOUT_MS,
     poll_ms: int = 5,
+    guard_name: str = "execution.guard",
 ):
     """跨进程执行守卫：受控文件操作、undo、epoch 切换的线性化点。
 
@@ -780,12 +781,21 @@ def execution_guard(
     可以接管。只有把"核验 + 开始执行"放进同一把 OS 锁里，接管才不可能
     插进中间。锁是 advisory 的，但本项目的写入方是同一份代码。
 
-    释放由 OS 保证：进程硬退（os._exit）时内核仍会释放文件锁，
-    所以不需要"清理死锁"逻辑（残租约另由 TTL 兜底）。
+    `guard_name` 为同一目录内需要独立生命周期的资源选择锁文件；默认名称
+    保持既有调用方语义。释放由 OS 保证：进程硬退（os._exit）时内核仍会
+    释放文件锁，所以不需要"清理死锁"逻辑（残租约另由 TTL 兜底）。
     """
+    if (
+        not guard_name
+        or Path(guard_name).name != guard_name
+        or "/" in guard_name
+        or "\\" in guard_name
+        or guard_name in {".", ".."}
+    ):
+        raise ValueError("guard_name 必须是单文件名")
     data_root = Path(data_root)
     data_root.mkdir(parents=True, exist_ok=True)
-    lock_path = data_root / "execution.guard"
+    lock_path = data_root / guard_name
     fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
     try:
         if os.fstat(fd).st_size == 0:

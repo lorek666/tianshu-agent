@@ -25,13 +25,15 @@ from support import engine_for, stack_for
 from tianshu.dispatcher import build_request
 from tianshu.events import EventLog
 from tianshu.model import ModelResponse, ScriptedModel, ToolCall
+from tianshu.restore_access import default_material_paths
 from tianshu.tasks import RUN_RUNNING, RunCursor
 
 # ---------------------------------------------------------------- 夹具
 
 
 def _stack(tmp_path: Path):
-    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    db, root = tmp_path / "events.db", tmp_path / "data"
+    log = EventLog(db, blob_dir=default_material_paths(db, root)[1], data_root=root)
     return log, stack_for(log, data_root=tmp_path / "data")
 
 

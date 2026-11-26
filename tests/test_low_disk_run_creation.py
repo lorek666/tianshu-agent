@@ -27,7 +27,7 @@ def test_run_start_v2_only(tmp_path):
         for t in EVENT_TYPES - {"run.start", "run.end", "model.result", "run.model_turn"}
     )
     assert event_schema.known_versions("run.start") == frozenset({0, 1, 2})
-    history = json.loads((Path(__file__).parent / "fixtures/events/minimal_v1.json").read_text())
+    history = json.loads((Path(__file__).parent / "fixtures/events/minimal_v1.json").read_bytes())
     # 历史 schema 仍不认识新增字段；新写不能假装 v1。
     schema = event_schema.schema_for("run.start", 1)
     assert "execution_policy" not in schema["properties"]
@@ -612,7 +612,7 @@ log.close()
             child.wait(timeout=5)
 
 
-@pytest.mark.parametrize("producer", ["loop", "control", "memory", "undo"])
+@pytest.mark.parametrize("producer", ["loop", "control", "control_mcp_free", "memory", "undo"])
 @pytest.mark.parametrize("low", [False, True])
 def test_real_mcp_producer_preparation_and_low_disk_order(tmp_path, producer, low):
     import sys
@@ -627,14 +627,12 @@ def test_real_mcp_producer_preparation_and_low_disk_order(tmp_path, producer, lo
     from tianshu.worker import Worker
 
     with closing(EventLog(tmp_path / "events.db")) as log:
-        # 与 daemon 一致：控制栈不持有 MCP 客户端，驱动栈才准备真实 server。
         control_stack = stack_for(log, data_root=tmp_path / "data")
+        control_producer = producer in ("control", "control_mcp_free")
         workspace = tmp_path / "workspace"
         workspace.mkdir()
         task = control_stack.tasks.create_task(
-            "produce",
-            [str(workspace)],
-            mcp_servers=["fake"] if producer == "control" else (),
+            "produce", [str(workspace)], mcp_servers=["fake"] if control_producer else (),
         )
         target_run = None
         if producer == "undo":
@@ -679,8 +677,7 @@ def test_real_mcp_producer_preparation_and_low_disk_order(tmp_path, producer, lo
             if low:
                 for owner in (control_stack, stack):
                     owner.tasks._disk_admission = DiskAdmission(
-                        owner.tasks.disk_admission.context,
-                        probe=lambda p: 0,
+                        owner.tasks.disk_admission.context, probe=lambda p: 0,
                     )
             before = {
                 table: log.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
@@ -691,13 +688,11 @@ def test_real_mcp_producer_preparation_and_low_disk_order(tmp_path, producer, lo
             def produce():
                 if producer == "loop":
                     return engine_for(stack, model).start(task.task_id)
-                if producer == "control":
-                    return ControlPlane(control_stack, model=model).handle(
+                if control_producer:
+                    plane_stack = control_stack if producer == "control_mcp_free" else stack
+                    return ControlPlane(plane_stack, model=model).handle(
                         "run.start",
-                        {
-                            "task_id": task.task_id,
-                            "tool_ids": ["mcp__fake__echo"],
-                        },
+                        {"task_id": task.task_id, "tool_ids": ["mcp__fake__echo"]},
                     )
                 if producer == "memory":
                     return remember(
@@ -723,8 +718,8 @@ def test_real_mcp_producer_preparation_and_low_disk_order(tmp_path, producer, lo
                 } == before
             else:
                 produced = produce()
-                if producer == "control":
-                    # 入队只登记同一个 Run；Worker 认领后才按 Run scope 准备 MCP。
+                if control_producer:
+                    # 入队事务不启动或发现 MCP；由后续驱动线程按 Run scope 准备。
                     assert clients.ready_names() == ()
                     assert not startup.exists()
                     assert model.calls == 0
@@ -734,9 +729,7 @@ def test_real_mcp_producer_preparation_and_low_disk_order(tmp_path, producer, lo
                     model_events = {"model.intent", "model.result"}
                     assert model_events <= EVENT_TYPES
                     assert model_events.isdisjoint(e.type for e in log.read_run(run_id))
-                    driving_model = ScriptedModel(
-                        [ModelResponse("end_turn", content="done")]
-                    )
+                    driving_model = ScriptedModel([ModelResponse("end_turn", content="done")])
                     worker = Worker(stack, model=driving_model, heartbeat_interval_ms=0)
                     try:
                         assert worker.run_once()

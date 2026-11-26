@@ -62,7 +62,7 @@ from .execpolicy import (
 )
 
 #: 探测逻辑版本。缓存键与报告都带它：探针语义变了，旧证据不能继续给新代码用。
-PROBE_VERSION = "v2"
+PROBE_VERSION = "v3"
 
 #: 非杀树探针的子进程超时上限。真实子进程出问题时宁可 unknown，不挂住调用方。
 PROBE_TIMEOUT_MS = 5_000
@@ -579,7 +579,9 @@ def _run_child(
     （spawn 抛错/超时/非零退出/无可解析输出）——调用方据此判 `unknown`，
     绝不能把"探针坏了"当成"边界被挡住了"。
     """
-    argv = [sys.executable, "-c", script, *[str(arg) for arg in args]]
+    # Probe evidence must not depend on modules or startup hooks in the subject
+    # workspace, PYTHONPATH or site directories. Business argv is unaffected.
+    argv = [sys.executable, "-I", "-S", "-c", script, *[str(arg) for arg in args]]
     policy = _probe_policy(
         workspace, env_allowlist=env_allowlist, timeout_ms=timeout_ms
     )
@@ -778,13 +780,27 @@ def _probe_credentials(
 
 
 _PROBE_PROCESS_TREE = """
-import pathlib, subprocess, sys, time
+import os, pathlib, subprocess, sys, threading
 
-grandchild = subprocess.Popen(
-    [sys.executable, "-c", "import time; time.sleep(120)"]
-)
-pathlib.Path(sys.argv[1]).write_bytes(str(grandchild.pid).encode("utf-8"))
-time.sleep(120)
+if hasattr(os, "fork"):
+    try:
+        pid = os.fork()
+    except OSError as exc:
+        # Only this direct syscall proves denied creation, never a failed exec.
+        print("FORK_DENIED=" + str(exc.errno), flush=True)
+        threading.Event().wait(120)
+    else:
+        if pid == 0:
+            threading.Event().wait(120)
+            os._exit(0)
+        pathlib.Path(sys.argv[1]).write_bytes(str(pid).encode("utf-8"))
+        threading.Event().wait(120)
+else:
+    grandchild = subprocess.Popen(
+        [sys.executable, "-I", "-S", "-c", "import threading; threading.Event().wait(120)"]
+    )
+    pathlib.Path(sys.argv[1]).write_bytes(str(grandchild.pid).encode("utf-8"))
+    threading.Event().wait(120)
 """
 
 
@@ -801,7 +817,7 @@ def _probe_process_tree(
     try:
         pid_file = tree_dir / "grandchild.pid"
         kill_window = min(PROBE_KILL_WINDOW_MS, timeout_ms)
-        result, _parsed, problem = _run_child(
+        result, parsed, problem = _run_child(
             backend,
             _PROBE_PROCESS_TREE,
             [pid_file],
@@ -830,6 +846,18 @@ def _probe_process_tree(
                 "不能据此声明能杀树",
             )
         if pid is None:
+            if (
+                os.name == "posix"
+                and parsed.get("FORK_DENIED") in ("1", "13")
+                and result.signal == signal.SIGKILL
+                and not result.descendants_may_survive
+            ):
+                return IsolationFinding(
+                    ISOLATION_BOUNDARY_PROCESS_TREE,
+                    BOUNDARY_ENFORCED,
+                    "直接 os.fork 被内核拒绝，受控集合仅有根；"
+                    f"根继续阻塞并已在超时后受管等待确认 SIGKILL 退出（{detail}）",
+                )
             return IsolationFinding(
                 ISOLATION_BOUNDARY_PROCESS_TREE,
                 BOUNDARY_UNKNOWN,

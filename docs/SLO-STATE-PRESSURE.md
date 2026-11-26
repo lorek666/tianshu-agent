@@ -10,6 +10,17 @@ uv run --frozen pytest -o addopts='' -q -s tests/test_slo_state_pressure.py
 
 正例在 stdout 打印脱敏 JSON。诊断没有应用 CLI 入口；使用隔离的临时数据根、权威根、测试维护锁根和脚本模型，不接入生产凭据或外部端点。子进程启动前会核对既有的 pytest 测试锁根是否实际生效，失配就不运行诊断。原有 SLO 冒烟及发布模式不启用观测探针。
 
+## 失败证据与 CI 保留
+
+测试在首次断言前把完整 D7 脱敏 JSON 原子发布到临时文件后的固定路径。未设置
+`TIANSHU_SLO_DIAGNOSTICS_DIR` 时只写入当前 pytest 临时目录；CI 设置该变量时写入
+`state-pressure/<shard>.json`，按 worker 索引隔离，避开严格 shard 报告树。真实子进程在
+首个失败谓词后 `os._exit`，证明 pytest 日志被截断后完整 JSON 仍存在。
+
+macOS 与 Windows 的 SLO 诊断上传使用 `always()`，工件名绑定 run ID、attempt 和 shard。
+缺文件只告警，不把可选诊断缺失改成新的测试失败，也不覆盖原 pytest/包装器退出码。
+这条证据链不改变本诊断的非裁决性质、SLO 阈值或 CI 分片拓扑。
+
 ## 计量与取样
 
 - 复用 [Suite 2](../scripts/measure_slo.py) 的真实 Host / Daemon 子进程和原有不读 IPC / SSE 客户端及种子事件。慢模型、慢工具、覆盖审批每试次附加一次普通认证 IPC `state`；在该试次的背压种子写入之后、原场景的工作运行之前发起，不将准备、等背压就绪或等断连计入响应时长。沿用夹具的 350 ms 发送/积压超时、15 ms 驱动间隔；不更改生产值。
