@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from . import event_schema
+from .agent_contracts import AGENT_SCHEMAS
 from .data_admission import check_connection, check_new_file_evidence
 from .errors import EventLogCorrupt, TianshuError
 from .event_schema import PayloadVersionUnavailable
@@ -61,6 +62,11 @@ EVENT_TYPES: frozenset[str] = frozenset(
         "approval.consumed",
         "approval.expired",
         "approval.superseded",
+        # 人类控制面签发的有限规则；每次仍派生一次性 Grant。
+        "consent.issued",
+        "consent.used",
+        "consent.revoked",
+        "consent.expired",
         # 派发（C4）
         "dispatch.requested",
         "dispatch.admitted",
@@ -68,6 +74,8 @@ EVENT_TYPES: frozenset[str] = frozenset(
         "dispatch.revoked",
         # 执行守卫
         "execution.started",
+        "execution.admitted",
+        "execution.ended",
         # 票据
         "grant.issued",
         "grant.consumed",
@@ -97,6 +105,8 @@ EVENT_TYPES: frozenset[str] = frozenset(
         "run.start",
         "run.attachments",
         "run.conversation",
+        "run.mission",
+        "run.mission_pending",
         "run.guidance_applied",
         "run.guidance_requested",
         "run.workflow",
@@ -113,6 +123,18 @@ EVENT_TYPES: frozenset[str] = frozenset(
         # Task
         "task.created",
         "task.revised",
+        # Goal：人触发的目标配置、单轮入队及验收，不是执行授权。
+        "goal.created",
+        "goal.round_started",
+        "goal.closed",
+        "goal.v2_created",
+        "goal.v2_advance_requested",
+        "goal.v2_transitioned",
+        "goal.v2_phase_started",
+        "goal.v2_assessed",
+        "goal.v2_recovered",
+        "goal.v2_closed",
+        "goal.v2_admission_refused",
         # 子任务（G2 委派）：父 Run 侧的委派审计
         "subtask.spawned",
         "subtask.finished",
@@ -128,6 +150,7 @@ EVENT_TYPES: frozenset[str] = frozenset(
 
 #: 注册表与逐类型 payload 契约必须一一对应：少一个类型 = 该类型无法写入
 #: （fail-closed）。这里是导入期校验，测试里还会再绑一次（改一处忘一处会红）。
+EVENT_TYPES = EVENT_TYPES | frozenset(AGENT_SCHEMAS)
 event_schema.ensure_registry(EVENT_TYPES)
 
 #: 已定义、但当前**没有任何发射点**的类型。
@@ -643,14 +666,20 @@ class EventLog:
             for r in rows
         ]
 
-    def read_types(self, types: Iterable[str]) -> list[Event]:
+    def read_types(
+        self, types: Iterable[str], *, task_id: str | None = None,
+    ) -> list[Event]:
         """按类型读事件（跨 run）。投影重建用。"""
         wanted = list(types)
         if not wanted:
             return []
         marks = ",".join("?" * len(wanted))
+        where = f"type IN ({marks})"
+        if task_id is not None:
+            where += " AND task_id=?"
+            wanted.append(task_id)
         rows = self._conn.execute(
-            f"SELECT * FROM events WHERE type IN ({marks}) ORDER BY seq", wanted
+            f"SELECT * FROM events WHERE {where} ORDER BY seq", wanted
         ).fetchall()
         versions = self._versions_for([int(r["seq"]) for r in rows])
         return [

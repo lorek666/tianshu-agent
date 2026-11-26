@@ -202,6 +202,8 @@ class ToolContext:
     data_root: Path | None = None
     #: 截断输出的内容寻址目录（快照 blob 目录）；None 时只报 truncated。
     blob_dir: Path | None = None
+    #: 已确认验收命令的执行前绑定核验；只减少执行资格，不授予权限。
+    execution_check: Callable[[], None] | None = None
 
     @property
     def io(self) -> FileBackend:
@@ -616,14 +618,35 @@ def _run_command(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
             isolation_report = probe_backend_cached(
                 backend, workspace=target, data_root=ctx.data_root
             )
-        result = backend.spawn(
-            argv,
-            cwd=target,
-            env=child_env,
-            policy=policy,
-            blob_dir=ctx.blob_dir,
-            pty=pty,
-        )
+        if policy.isolation_requires:
+            from .execution_admission import PreparedExecution, assert_no_unresolved_executions
+
+            request = None if ctx.admitted is None else ctx.admitted.request
+            task_id = "" if request is None else request.task_id
+            if ctx.log is not None:
+                assert_no_unresolved_executions(ctx.log, workspace=target, run_id=ctx.run_id)
+
+            def record_execution(event_type, payload):
+                if ctx.log is not None:
+                    ctx.log.append(ctx.run_id, event_type, payload, task_id=task_id)
+
+            with PreparedExecution(
+                backend, kind="command", task_id=task_id, run_id=ctx.run_id,
+                argv=argv, cwd=target, env=child_env, policy=policy,
+                workspace=target, data_root=ctx.data_root, on_event=record_execution,
+            ) as execution:
+                execution.admit(policy.isolation_requires)
+                isolation_report = execution.report
+                if ctx.execution_check is not None:
+                    ctx.execution_check()
+                result = execution.run(blob_dir=ctx.blob_dir, pty=pty)
+        else:
+            if ctx.execution_check is not None:
+                ctx.execution_check()
+            result = backend.spawn(
+                argv, cwd=target, env=child_env, policy=policy,
+                blob_dir=ctx.blob_dir, pty=pty,
+            )
     except PolicyDenied as exc:
         return ToolResult(
             "rejected",
@@ -653,7 +676,11 @@ def _run_command(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
             },
         )
 
-    status = "succeeded" if result.exit_code == 0 and not result.timed_out else "failed"
+    unknown_tree = bool(policy.isolation_requires and result.descendants_may_survive)
+    status = (
+        "succeeded" if result.exit_code == 0 and not result.timed_out and not unknown_tree
+        else "failed"
+    )
     digest = _sha(
         "\x00".join(
             [
@@ -668,7 +695,7 @@ def _run_command(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
     )
     return ToolResult(
         status,
-        "applied",
+        "unknown" if unknown_tree else "applied",
         {
             "path": rel,
             "cwd": rel,
@@ -1403,11 +1430,15 @@ class FileExecutor:
         backend: FileBackend | None = None,
         exec_backend: ExecBackend | None = None,
         data_root: Path | None = None,
+        consents: object | None = None,
+        execution_check: Callable[[AdmittedCall], None] | None = None,
     ) -> None:
         self._tasks = tasks
         self._leases = leases
         self._grants = grants
         self._approvals = approvals
+        self._consents = consents
+        self._execution_check = execution_check
         self._claims = claims
         self._lookup = dispatch_lookup
         self._mark = dispatch_mark
@@ -1540,7 +1571,12 @@ class FileExecutor:
             raise ToolNotAllowed("执行许可已过期")
 
         # 6. 审批：覆盖/删除必须有，且必须已"被消费一次"
-        if req.action in APPROVAL_ACTIONS and not admitted.approval_id:
+        consent_grant = grant.issuer.startswith("consent:")
+        if consent_grant:
+            if self._consents is None:
+                raise ToolNotAllowed("执行器没有有限授权核验器")
+            self._consents.verify(req, args=admitted.args, grant=grant)
+        if req.action in APPROVAL_ACTIONS and not admitted.approval_id and not consent_grant:
             raise ToolNotAllowed(f"{req.action} 缺少审批绑定")
         if admitted.approval_id:
             appr = self._approvals.get(admitted.approval_id)
@@ -1633,6 +1669,8 @@ class FileExecutor:
             exec_backend=self._exec_backend,
             data_root=self._data_root,
             blob_dir=self._snapshots.blob_dir if self._snapshots is not None else None,
+            execution_check=(None if self._execution_check is None else
+                             lambda: self._execution_check(admitted)),
         )
 
         # 复审 中-1：贴着落盘的最后一次阻断核验。派发 phase-1 查过一遍，但查完

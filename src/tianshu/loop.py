@@ -83,7 +83,6 @@ from .conversation import (
     GUIDANCE_EVENTS,
     GuidanceHistory,
     checked_conversation,
-    seed_messages,
 )
 from .crashpoint import failpoint
 from .disk_admission import DiskAdmission, DiskAdmissionError, RunStorageContext
@@ -271,13 +270,13 @@ def _fresh_progress(
     task: str, out_name: str | None, conversation: dict[str, Any] | None = None,
     attachments: list[dict[str, Any]] | None = None,
     workflow=None,
+    frozen_messages=None,
 ) -> _Progress:
     """新 Run 的初始进度：首轮提示 + 与它平行的 seq 归因。"""
-    from .workflow import workflow_messages
+    from .mission import compile_initial_messages
 
-    messages = seed_messages(
-        workflow_messages(initial_messages(task, out_name), workflow), conversation, attachments,
-        general=workflow is None or (workflow.mode == "execute" and not workflow.source_text),
+    messages = frozen_messages if frozen_messages is not None else compile_initial_messages(
+        task, out_name, conversation=conversation, attachments=attachments, workflow=workflow,
     )
     return _Progress(
         messages=messages, message_seqs=[RUN_START_SEQ] * len(messages)
@@ -374,6 +373,7 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         self._veto_open = False
 
     def _run_tool_manifest(self, run_id: str) -> list[dict[str, Any]]:
+        from .mission import effective_manifest
         from .workflow import workflow_for
 
         workflow = workflow_for(self._log, run_id)
@@ -394,7 +394,7 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
                     manifest.remove(spec)
         if self._tasks.run_execution_policy(run_id) == PURE_ONLY:
             manifest = [t for t in manifest if registry.spec(t["name"]).side_effect_level == "pure"]
-        return manifest
+        return effective_manifest(self._log, run_id, registry, manifest)
 
     # ---------------------------------------------------------------- 启动
 
@@ -437,10 +437,14 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         out_name: str | None = None,
         run_id: str | None = None,
         execution_policy: RunExecutionPolicyV1 = EFFECTS,
+        task_kind: str = "general",
+        criteria=(),
+        mission=None,
     ) -> RunResult:
         """新建一个 Run 并立刻驱动它。"""
         import uuid
 
+        from .mission import mission_messages, prepare_run_mission
         from .tool_registry import current_registry
         from .workflow import prepare_workflow
 
@@ -450,7 +454,9 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
                 self._log, snapshots=self._snapshots, memory=self._memory,
                 contents=self._contents, data_root=self._tasks.data_root,
             )
-        self._dispatcher.prepare_run(task_id, execution_policy)
+        self._dispatcher.prepare_run(
+            task_id, execution_policy, discover_mcp=not bool(task.mcp_servers),
+        )
         payload = {
             "task": task.goal,
             "out": out_name or "",
@@ -461,6 +467,8 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
             "tools": [t for t in current_registry().ids() if execution_policy != PURE_ONLY
                       or current_registry().spec(t).side_effect_level == "pure"],
         }
+        if task.mcp_servers and execution_policy != PURE_ONLY:
+            payload.pop("tools")
         with self._log.transaction():
             task = self._task(task_id)
             payload["task"] = task.goal
@@ -471,6 +479,11 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
                 task.task_id, run_id=run_id, payload=payload, execution_policy=execution_policy,
                 workflow=workflow if workflow.source_text else None,
             )
+            prepare_run_mission(
+                self._log, run.run_id, mission=mission,
+                registry=self._dispatcher.registry, selected_servers=task.mcp_servers,
+                task_kind=task_kind, criteria=criteria,
+            )
             job = self._claims.enqueue(run.run_id)
         writable = [b.identity() for b in task.workspaces if b.can_write]
         if execution_policy == PURE_ONLY:
@@ -480,11 +493,32 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         self._tasks.transition(run.run_id, RUN_QUEUED, reason="enqueued")
         claim = self._claims.claim(job.job_id)
         self._tasks.transition(run.run_id, RUN_RUNNING, claim=claim, reason="started")
+        self._finalize_run_mission(run.run_id, claim)
         progress = _fresh_progress(
             task.goal, out_name, workflow=workflow if workflow.source_text else None,
+            frozen_messages=mission_messages(self._log, run.run_id),
         )
         self._tasks.save_cursor(run.run_id, progress.to_cursor(), claim)
         return self._drive(run.run_id, claim, progress)
+
+    def _finalize_run_mission(self, run_id: str, claim: JobClaim) -> None:
+        from .mission import finalize_pending_mission, mission_for, pending_mission_for
+
+        events = self._log.read_run(run_id)
+        frozen = mission_for(self._log, run_id, events=events)
+        pending = pending_mission_for(self._log, run_id, events=events)
+        if frozen is None and pending is None:
+            return
+        if frozen is not None and any(e.type == "model.intent" for e in events):
+            return
+        self._claims.assert_claim(claim)
+        try:
+            self._dispatcher.prepare_model_mcp(claim, queued_desktop=True)
+        except DiskAdmissionError:
+            # MCP 被空间门禁阻止时仍固定已保存输入，不将发现变成读取或模型的前提。
+            pass
+        if pending is not None:
+            finalize_pending_mission(self._log, run_id, registry=self._dispatcher.registry)
 
     # ---------------------------------------------------------------- 恢复
 
@@ -515,13 +549,17 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
             raise TianshuError(
                 f"run 已终结（{run.state}），不能 resume；需要重试请 start 新 run"
             )
+        from .mission import mission_messages
         from .workflow import workflow_for
 
         workflow = workflow_for(self._log, run_id)
+        frozen_messages = mission_messages(self._log, run_id)
+        goal_round = any(e.type in ("goal.round_started", "goal.v2_phase_started")
+                         for e in self._log.read_run(run_id))
         stored = self._tasks.load_cursor(run_id)
         if stored is None:
             stored = self._tasks.restore_responses_cursor(run_id)
-        if (workflow is not None and stored is None
+        if ((workflow is not None or goal_round) and stored is None
                 and any(e.type == "model.intent" for e in self._log.read_run(run_id))):
             raise TianshuError("工作流游标缺失，无法安全续跑；请核对原记录后取消并另开 Run")
         task = self._task(run.task_id)
@@ -552,6 +590,8 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         if run.parent_run_id:
             self._tasks.mark_subtask_running(run_id)
 
+        self._finalize_run_mission(run_id, claim)
+        frozen_messages = mission_messages(self._log, run_id)
         if stored is None:
             # 没有游标（例如 Run 是直接由 TaskStore 开的）：按 run.start 里记的
             # 目标与输出文件名重建首轮提示，不能凭记忆补。
@@ -560,20 +600,30 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
             progress = _fresh_progress(
                 payload.get("task", task.goal), payload.get("out") or None,
                 checked_conversation(self._log, events), attachments_fact(events), workflow,
+                frozen_messages=frozen_messages,
             )
         else:
             progress = _Progress.of(stored[0])
+            if (frozen_messages is not None
+                    and progress.messages[:len(frozen_messages)] != frozen_messages):
+                raise TianshuError("Mission 快照与保存游标的首轮消息不一致")
         # intent 可以领先最后一次游标提交；恢复不能把已发送的尝试漏掉。
         events = self._log.read_run(run_id)
         saved_seq = max((e.seq for e in events if e.type == "run.cursor"), default=0)
         progress.model_attempts += sum(
             e.type == "model.intent" and e.seq > saved_seq for e in events
         )
-        if workflow is not None and stored is None:
+        if (workflow is not None or goal_round) and stored is None:
             self._tasks.save_cursor(run_id, progress.to_cursor(), claim)
         # 能走到这里说明 claim 有效：先把心跳续上，再开始新的模型调用
         self.heartbeat_once(claim)
-        return self._drive(run_id, claim, progress)
+        from .goal_v2 import limits_for_phase
+        original_limits = self._limits
+        self._limits = limits_for_phase(self._log, run_id, original_limits)
+        try:
+            return self._drive(run_id, claim, progress)
+        finally:
+            self._limits = original_limits
 
     # ---------------------------------------------------------------- 控制
 
@@ -637,6 +687,11 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         run = self._tasks.get_run(run_id)
         task = self._task(run.task_id)
         payload = self._tasks.run_payload(run_id)
+        from .verification_driver import binding_for
+        from .verification_driver import drive as drive_verification
+
+        if binding_for(self._log, run_id) is not None:
+            return drive_verification(self, run_id, claim, progress, task)
         out_name = payload.get("out") or None
         error: str | None = None
 
@@ -644,6 +699,9 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
             from .workflow import response_error, workflow_for
 
             workflow = workflow_for(self._log, run_id)
+            goal_round = any(e.type in ("goal.round_started", "goal.v2_phase_started")
+                             for e in self._log.read_run(run_id))
+            result_mode = workflow.mode if workflow is not None else "goal" if goal_round else None
             while True:
                 if workflow is not None and workflow.mode == "compact" and progress.pending:
                     return self._finish(
@@ -660,7 +718,7 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
                     )
 
                 # 特殊工作流在 result 提交后崩溃，也必须消费已保存正文，不能重问模型。
-                if workflow is not None and workflow.mode in ("plan", "compact"):
+                if result_mode in ("plan", "compact", "goal"):
                     workflow_events = self._log.read_run(run_id)
                     intents = [e for e in workflow_events if e.type == "model.intent"
                                and not e.payload["request_id"].startswith("summary#")]
@@ -854,6 +912,9 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         提交里完成（见 `TaskStore.confirm_control`），所以恢复之后不会把同一条
         请求再执行一遍。
         """
+        run = self._tasks.get_run(run_id)
+        if run is not None and run.control_requested in (CONTROL_PAUSE, CONTROL_CANCEL):
+            self._dispatcher.close_run_mcp(run_id)
         action = self._tasks.confirm_control(run_id, claim=claim)
         if action is not None:
             if action == CONTROL_PAUSE:
@@ -1037,6 +1098,9 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         from .workflow import workflow_for
 
         special = workflow_for(self._log, run_id)
+        goal_round = any(e.type in ("goal.round_started", "goal.v2_phase_started")
+                         for e in self._log.read_run(run_id))
+        failpoint("goal-after-call", only_if=goal_round)
         failpoint("workflow-after-call", only_if=special is not None
                   and special.mode in ("plan", "compact"))
 
@@ -1078,6 +1142,8 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         undispatched: list[dict[str, Any]] = []
         for call in resp.tool_calls:
             ok, reason = _dispatchable(resp, call)
+            if ok and call.name not in {t["name"] for t in self._run_tool_manifest(run_id)}:
+                ok, reason = False, "工具不在此 Run 的 Mission 固定路由或执行资格交集中"
             if special is not None and special.mode == "compact":
                 ok, reason = False, "压缩响应包含工具调用，未执行"
             if not ok:
@@ -1194,6 +1260,7 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
 
         failpoint("workflow-after-result", only_if=special is not None
                   and special.mode in ("plan", "compact"))
+        failpoint("goal-after-result", only_if=goal_round)
 
         return self._model_turn_outcome(progress, turn)
 
@@ -1244,6 +1311,8 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         # 恢复后补出第二条一模一样的工具消息，replay 立刻对不上。
         recorded = self._results.get(call_id)
         if recorded is None and proposal.get("kind") == "read":
+            if tool_id not in {t["name"] for t in self._run_tool_manifest(run_id)}:
+                raise TianshuError("Mission 固定路由不包含此待执行工具")
             recorded = self._record_read(run_id, task, proposal)
             self._record_result(run_id, proposal, recorded)
             recorded = self._results[call_id]
@@ -1291,6 +1360,8 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
             ))
             self._absorb(progress, call_id, self._results[call_id], run_id=run_id)
             return "done"
+        if tool_id not in {t["name"] for t in self._run_tool_manifest(run_id)}:
+            raise TianshuError("Mission 固定路由不包含此待派发工具")
 
         # 2) 正常路径：目标路径 → 请求 → 判定 → 派发
         try:

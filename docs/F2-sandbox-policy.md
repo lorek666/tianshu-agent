@@ -193,3 +193,26 @@ Windows 实机验收，而不是直接复用本轮代码。
 3. **非 `none` 后端的审批前实测 `ApprovalView.isolation`**：
    - 当 `backend.capabilities.isolation != "none"` 且存在 `data_root` 时，即使 `policy.isolation_requires` 为空，`dispatcher._precheck_exec`（审批创建前）与 `tools._run_command`（实际执行）也必须运行 `probe_backend_cached(backend, workspace=probe_workspace, data_root=data_root)`，将绑定本次现场的实测报告写入 `ApprovalView.isolation`（`unverified=False`，如实呈现 `measured`、`boundaries`、`enforced_boundaries`，并在自述与实测不符时立即标出 `contradicted=True`）。
    - 当 `backend.capabilities.isolation == "none"` 且 `policy.isolation_requires` 为空时（默认 `local` 路径），继续保持零探针子进程开销（`report=None`, `unverified=True`, `level="none"`）。
+
+## 9. 显式单进程增量（2026-11-23，候选）
+
+上节保留 W14 的历史版本。当前探针升级为 `v3`，旧报告和 subject admission 不复用。
+进程边界增加一条受限证明路径：直接 `os.fork()` 被内核以 `EPERM` / `EACCES` 拒绝，
+根继续阻塞，实际超时后经受管等待确认被 `SIGKILL` 终止，且无清理未知标记。
+启动或导入失败、无输出、异常 errno、未超时、根退出证据不足均为 `unknown`。
+`Popen` 的 `EACCES` 本身不能证明禁止派生，因为也可能只是执行目标失败。
+
+所有内部 Python 探针及其探针后代使用 `-I -S`，排除工作区同名模块、
+`PYTHONPATH` 与 site 启动钩子对证据的影响；真实业务命令的解释器参数不改写。
+不把这项完整性措施扩大为防篡改解释器、系统标准库或同 UID 宿主的承诺。
+
+`seatbelt_leaf` 与旧 Seatbelt 共用策略生成器，固定使用 `(deny process-fork)`，
+将实际 profile 绑定进执行 subject，并独立检查 detached 后代。该后端需显式配置
+`TIANSHU_EXEC_BACKEND=seatbelt_leaf`；只在可用的 Darwin 注册，不支持时拒绝。
+默认 `local`、旧 `seatbelt` 和 `auto` 保持原选择；需要派生的正常程序也会失败。
+
+受控集合只有根时，根被 `Popen.wait()` 回收就能确认该集合退出；不再对回收后的
+PID/PGID 发信号，以免误伤复用身份。该结论不推广到允许后代的旧后端。
+根已退出仍不能抹掉 MCP 未完成调用的未知结果；宿主崩溃后缺少身份或仍存活的
+根继续阻断，不自动重放。Windows、通用后代隔离及 #224 整体验收仍未交付。
+本批证据与未决项见[实施记录](changelog/2026-11-23-seatbelt-leaf.md)。

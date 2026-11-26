@@ -34,9 +34,23 @@ def _spawn(stack):
     return result, row
 
 
+def _assert_child_write_route_refused(events, tool_id):
+    frozen, = [e for e in events if e.type == "run.mission"]
+    assert tool_id not in {tool["tool_id"] for tool in frozen.payload["effective_tools"]}
+    proposal = next(e for e in events if e.type == "model.result")
+    assert proposal.payload["tool_calls"][0]["name"] == tool_id
+    refused, = [e for e in events if e.type == "tool.not_dispatched"]
+    assert refused.actor_kind == "core"
+    assert refused.payload["call_id"] == "write"
+    assert refused.payload["tool_id"] == tool_id
+    assert "Mission" in refused.payload["reason"]
+    assert frozen.seq < proposal.seq < refused.seq
+    assert not any(e.type == "tool.result" for e in events)
+
+
 @pytest.mark.parametrize("scope", ["user", "task"])
 def test_child_worker_cannot_persist_memory_candidate(tmp_path, scope):
-    """去掉子任务授权限制会落 candidate/applied；空 memory_scopes 不足以拒绝。"""
+    """子任务真实 Worker 对候选记忆写提案保留路由拒绝，不能落 candidate。"""
     with closing(EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")) as log:
         stack = stack_for(log, data_root=tmp_path / "data")
         stack.memory.ensure_schema()
@@ -55,10 +69,7 @@ def test_child_worker_cannot_persist_memory_candidate(tmp_path, scope):
             worker.close()
         assert worker.errors == []
         events = log.read_run(row.child_run_id)
-        results = [e.payload for e in events if e.type == "tool.result"]
-        assert len(results) == 1
-        assert results[0]["status"] == "rejected"
-        assert results[0]["effect_state"] == "none_applied"
+        _assert_child_write_route_refused(events, "memory.propose")
         assert not any(e.type in ("tool.intent", "approval.requested") for e in events)
         assert stack.approvals.pending(run_id=row.child_run_id) == []
         assert log.conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0] == 0
@@ -112,7 +123,7 @@ def _seed_candidate(stack, *, scope):
 ])
 @pytest.mark.parametrize("scope_name", ["user", "task"])
 def test_child_memory_writes_never_create_nested_approval(tmp_path, tool_id, scope_name):
-    """有效记忆参数走真实 Worker；缺只读门会停在嵌套审批或写合成候选。"""
+    """有效记忆参数走真实 Worker，路由拒绝后不能产生嵌套审批或修改记忆。"""
     with closing(EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")) as log:
         stack = stack_for(log, data_root=tmp_path / "data")
         parent, row = _spawn(stack)
@@ -137,11 +148,7 @@ def test_child_memory_writes_never_create_nested_approval(tmp_path, tool_id, sco
             worker.close()
         assert worker.errors == []
         events = log.read_run(row.child_run_id)
-        results = [e.payload for e in events if e.type == "tool.result"]
-        assert len(results) == 1
-        assert results[0]["status"] == "rejected"
-        assert results[0]["effect_state"] == "none_applied"
-        assert results[0]["output"]["rule_id"] == "c4.memory_scope_denied"
+        _assert_child_write_route_refused(events, tool_id)
         assert not any(e.type in ("tool.intent", "approval.requested") for e in events)
         assert stack.approvals.pending(run_id=row.child_run_id) == []
         assert stack.memory.get(memory_id, allowed=(scope,)) == before
@@ -149,6 +156,49 @@ def test_child_memory_writes_never_create_nested_approval(tmp_path, tool_id, sco
         assert stack.tasks.get_run(row.child_run_id).state != "waiting_approval"
         assert stack.claims.job_for_run(row.child_run_id).state != "waiting"
         assert stack.claims.job_for_run(parent.run_id).state == "pending"
+
+
+@pytest.mark.parametrize("tool_id", [
+    "memory.propose", "memory.confirm", "memory.edit", "memory.forget", "memory.consolidate",
+])
+@pytest.mark.parametrize("scope_name", ["user", "task"])
+def test_child_direct_dispatch_denies_memory_writes_before_approval(tmp_path, tool_id, scope_name):
+    """绕过 Mission 路由仍打到真实执行侧只读门；不能依赖上游路由兜底。"""
+    with closing(EventLog(tmp_path / "events.db")) as log:
+        stack = stack_for(log, data_root=tmp_path / "data")
+        stack.memory.ensure_schema()
+        _, row = _spawn(stack)
+        task = stack.tasks.get_task(row.child_task_id)
+        run = stack.tasks.get_run(row.child_run_id)
+        scope = MemoryScope.user() if scope_name == "user" else MemoryScope.task(task.task_id)
+        if tool_id == "memory.propose":
+            args = {"kind": "fact", "content": "DIRECT_CHILD_MARKER"}
+        else:
+            memory_id = _seed_candidate(stack, scope=scope)
+            before = stack.memory.get(memory_id, allowed=(scope,))
+            args = {"memory_id": memory_id, "revision": before.revision}
+            if tool_id == "memory.edit":
+                args["content"] = "DIRECT_CHILD_CHANGED"
+            elif tool_id == "memory.consolidate":
+                args = {"scope": scope.scope, "scope_id": scope.scope_id}
+        before_rows = list(log.conn.execute("SELECT * FROM memories"))
+        claim = stack.claims.claim(row.job_id)
+        stack.tasks.transition(run.run_id, RUN_RUNNING, claim=claim)
+        request = build_request(
+            task=task, run=run, claim=claim, call_id="direct-write",
+            tool_id=tool_id, target=scope.to_uri(), args=args,
+        )
+        decision = stack.dispatcher.prepare(request, claim, args=args)
+        assert decision.is_rejected
+        assert decision.rule_id == "c4.memory_scope_denied"
+        events = log.read_run(run.run_id)
+        refused, = [e for e in events if e.type == "dispatch.rejected"]
+        assert refused.payload["request_id"] == request.request_id
+        assert refused.payload["rule_id"] == "c4.memory_scope_denied"
+        assert not any(e.type in ("tool.intent", "execution.started", "approval.requested")
+                       for e in events)
+        assert stack.approvals.pending(run_id=run.run_id) == []
+        assert list(log.conn.execute("SELECT * FROM memories")) == before_rows
 
 
 def test_child_read_memory_remains_available(tmp_path):

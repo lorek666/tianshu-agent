@@ -804,6 +804,7 @@ def test_crashed_dispatch_becomes_reconciling_then_resume_after_recover(tmp_path
     from tianshu.events import EventLog
     from tianshu.leases import ProcessIdentity
     from tianshu.recovery import recover_run
+    from tianshu.restore_access import default_material_paths
 
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -826,7 +827,7 @@ sys.exit(main(["run", "--workspace", {str(ws)!r}, "--task", "写报告",
     )
     assert proc.returncode == 77, f"应当在 after_intent 硬退，实际 {proc.returncode}"
 
-    log = EventLog(db, blob_dir=db.parent / "blobs")
+    log = EventLog(db, blob_dir=default_material_paths(db)[1])
     try:
         row = log.conn.execute(
             "SELECT run_id FROM events WHERE type='run.start' ORDER BY seq DESC LIMIT 1"

@@ -30,7 +30,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -224,14 +225,14 @@ class SnapshotStore:
                 call_id, resolved_root, rel, digest, expected_after, str(blob)
             )
 
-        entries = [c for c in self.load(run_id) if c.call_id != call_id]
-        entries.append(change)
-        payload = json.dumps(
-            {"version": MANIFEST_VERSION,
-             "changes": [c.to_dict() for c in entries]},
-            ensure_ascii=False, indent=2,
-        ).encode("utf-8")
         with ensure_material_write_allowed(manifest, owner_log=self._owner_log):
+            entries = [c for c in self.load(run_id) if c.call_id != call_id]
+            entries.append(change)
+            payload = json.dumps(
+                {"version": MANIFEST_VERSION,
+                 "changes": [c.to_dict() for c in entries]},
+                ensure_ascii=False, indent=2,
+            ).encode("utf-8")
             atomic_write_bytes(manifest, payload)
         return change
 
@@ -296,6 +297,17 @@ class SnapshotStore:
 
     # ---- 撤销 ----
 
+    @contextmanager
+    def _undo_material_access(self, run_id: str) -> Iterator[None]:
+        """Pin both targets before execution reads either piece of evidence."""
+        from .restore_access import ensure_material_write_allowed
+
+        with (
+            ensure_material_write_allowed(self.manifest_path(run_id), owner_log=self._owner_log),
+            ensure_material_write_allowed(self.journal.path(run_id), owner_log=self._owner_log),
+        ):
+            yield
+
     def undo(
         self,
         run_id: str,
@@ -332,11 +344,7 @@ class SnapshotStore:
                 "直写需显式 allow_direct_write=True"
             )
         guard()
-        from .restore_access import ensure_material_write_allowed
-
-        with ensure_material_write_allowed(
-            self.manifest_path(run_id), owner_log=self._owner_log
-        ):
+        with self._undo_material_access(run_id):
             return self._undo_locked(
                 run_id,
                 ws,

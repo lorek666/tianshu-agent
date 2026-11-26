@@ -125,7 +125,7 @@ def test_sent_summary_hard_exit_leaves_unknown_record_and_resume_does_not_resend
     (tmp_path / "data").mkdir(exist_ok=True)
     proc = _spawn_crash(tmp_path, ws, ROUNDS)
     assert proc.returncode == 77, proc.stderr
-    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    log = EventLog(tmp_path / "data" / "events.db", blob_dir=tmp_path / "data" / "blobs")
     before = calls(log)
     assert len(before) == 1
     assert before[0]["response"] is None

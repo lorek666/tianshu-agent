@@ -19,10 +19,12 @@ from support import approve_pending, engine_for, stack_for
 
 from tianshu.events import EventLog
 from tianshu.model import ModelResponse, ScriptedModel, ToolCall
+from tianshu.restore_access import default_material_paths
 
 
 def _stack(tmp_path: Path):
-    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    db, root = tmp_path / "events.db", tmp_path / "data"
+    log = EventLog(db, blob_dir=default_material_paths(db, root)[1], data_root=root)
     return log, stack_for(log, data_root=tmp_path / "data")
 
 
@@ -33,7 +35,7 @@ def _workspace(tmp_path: Path) -> Path:
     return ws
 
 
-def _spawn_then_park(stack, task):
+def _spawn_then_park(stack, task, *, write=False):
     model = ScriptedModel(
         [
             ModelResponse(
@@ -42,7 +44,8 @@ def _spawn_then_park(stack, task):
                     ToolCall(
                         "spawn-1",
                         "subtask.spawn",
-                        {"subtask_id": "reader", "goal": "读 doc.md 并总结"},
+                        {"subtask_id": "reader", "goal": "读 doc.md 并总结",
+                         **({"write": True} if write else {})},
                     )
                 ],
             ),
@@ -78,15 +81,15 @@ def test_parent_revision_change_fences_children(tmp_path):
     """父改目标 → 子 Run 派发前被拒 `dispatch.parent_fenced`，结果不回填。
 
     为什么 fence 核验必须排在资源解析前面：父目标已经改了，这次调用无论
-    指向文件、记忆还是网络都不该再被当作旧目标下的一部分执行。测试让子
-    Run 去写文件——如果 fence 检查排得靠后，这里会先撞上 `c4.readonly_binding`
-    （子任务绑定是只读的），断言就抓不到真正的拒绝原因。
+    指向文件、记忆还是网络都不该再被当作旧目标下的一部分执行。测试使用
+    已批准 write=True 的 effects 子任务，写工具确实在 Mission 路由中；
+    若父 fence 失守，就会错误地走到写审批，而不是在当前目标已失效时停止。
     """
     ws = _workspace(tmp_path)
     log, stack = _stack(tmp_path)
     try:
         task = stack.tasks.create_task("父任务", [str(ws)], max_subtasks=2)
-        _, parent_result = _spawn_then_park(stack, task)
+        _, parent_result = _spawn_then_park(stack, task, write=True)
         parent_run_id = parent_result.run_id
         (row,) = stack.tasks.list_subtasks(parent_run_id)
         assert row.parent_goal_revision == 1

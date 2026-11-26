@@ -507,7 +507,7 @@ class _HostCluster:
         data_root: Path,
         ui_dir: Path,
         env: dict[str, str],
-        tracked_pids: set[int],
+        tracked_pids: slo_mod.TrackedPids,
     ) -> None:
         self.data_root = data_root
         self.ui_dir = ui_dir
@@ -515,50 +515,49 @@ class _HostCluster:
         self.tracked_pids = tracked_pids
         self.proc: subprocess.Popen[bytes] | None = None
         self.info: host.HostInfo | None = None
+        self.generation = 0
 
     def start(self) -> host.HostInfo:
+        self.generation += 1
         # The parent cannot leave an unread PIPE attached during a ten-hour run.
         # This private transient log is not one of the D7 export materials.
         stderr_path = self.data_root.parent / "host-stderr.log"
+        command, env = slo_mod._native_python_child(  # noqa: SLF001
+            [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "--_child-role",
+                "soak-host",
+                "--data-root",
+                str(self.data_root),
+                "--_ui-dir",
+                str(self.ui_dir),
+            ],
+            env=self.env,
+        )
         with stderr_path.open("wb") as err_log:
             proc = subprocess.Popen(  # noqa: S603
-                [
-                    sys.executable,
-                    str(Path(__file__).resolve()),
-                    "--_child-role",
-                    "soak-host",
-                    "--data-root",
-                    str(self.data_root),
-                    "--_ui-dir",
-                    str(self.ui_dir),
-                ],
+                command,
                 stdout=subprocess.DEVNULL,
                 stderr=err_log,
-                env=self.env,
+                env=env,
             )
         self.proc = proc
-        self.tracked_pids.add(proc.pid)
+        slo_mod._record_pid(proc.pid, self.tracked_pids)  # noqa: SLF001
 
-        def _ready() -> host.HostInfo | None:
-            if proc.poll() is not None:
-                with stderr_path.open("rb") as log:
-                    log.seek(max(0, stderr_path.stat().st_size - 600))
-                    tail = log.read(600).decode("utf-8", errors="replace")
-                raise RuntimeError(f"soak-host 提前退出 rc={proc.returncode}: {tail}")
-            try:
-                cand = host.read_host_info(self.data_root)
-            except host.HostError:
-                return None
-            if cand is not None and cand.port > 0 and host._http_alive(cand):  # noqa: SLF001
-                return cand
-            return None
-
-        self.info = slo_mod._wait_condition(_ready, timeout=25.0, interval=0.02)  # noqa: SLF001
-        slo_mod._record_lock_pids(self.data_root, self.tracked_pids)  # noqa: SLF001
+        with stderr_path.open("rb") as log:
+            self.info = slo_mod._wait_host_ready(  # noqa: SLF001
+                proc, self.data_root, log, timeout=25.0,
+            )
+        slo_mod._record_lock_pids(  # noqa: SLF001
+            self.data_root, self.tracked_pids, phase=f"soak_ready:{self.generation}",
+        )
         return self.info
 
     def current_pids(self) -> tuple[int | None, int | None]:
-        slo_mod._record_lock_pids(self.data_root, self.tracked_pids)  # noqa: SLF001
+        slo_mod._record_lock_pids(  # noqa: SLF001
+            self.data_root, self.tracked_pids, phase=f"soak_sample:{self.generation}",
+        )
         h_pid: int | None = None
         d_pid: int | None = None
         try:
@@ -578,7 +577,9 @@ class _HostCluster:
 
     def stop(self) -> list[str]:
         failures = []
-        slo_mod._record_lock_pids(self.data_root, self.tracked_pids)  # noqa: SLF001
+        slo_mod._record_lock_pids(  # noqa: SLF001
+            self.data_root, self.tracked_pids, phase=f"soak_before_stop:{self.generation}",
+        )
         with contextlib.redirect_stdout(io.StringIO()):
             rc = host.stop_host(self.data_root, timeout=15.0)
         if rc != 0:
@@ -592,6 +593,11 @@ class _HostCluster:
                 self.proc.wait(timeout=5.0)
             if self.proc.returncode != 0:
                 failures.append(f"host_process_exit:{self.proc.returncode}")
+            with (self.data_root.parent / "host-stderr.log").open("rb") as stderr:
+                slo_mod._capture_host_stop(  # noqa: SLF001
+                    self.proc, self.tracked_pids, stderr,
+                    phase=f"soak_after_wait:{self.generation}",
+                )
             self.proc = None
         self.info = None
         return failures
@@ -805,7 +811,7 @@ def run_soak(
         authority_root=auth_root,
         lock_root=lock_root,
     )
-    tracked_pids: set[int] = set()
+    tracked_pids = slo_mod.TrackedPids()
     tracker = ProcessResourceTracker()
     samples: list[dict[str, Any]] = []
     sample_lock = threading.Lock()
@@ -996,12 +1002,36 @@ def run_soak(
 
             with ipc.Client(data_root, timeout=10.0) as client:
                 # B1: 在线订阅者（接收 W4 流式增量与事件）+ 正常断连
-                sub = ipc.Client(data_root, timeout=5.0)
-                sub.connect()
-                stream_seen = 0
+                head_seq = int(client.call("state", {})["event_seq_head"])
+                online_stop = threading.Event()
+                online_ready = threading.Event()
+                stream_seen = threading.Event()
+                online_errors: list[str] = []
+
+                def consume_online(cursor, ready, stopped, seen, errors) -> None:
+                    # 连接由读线程独占，不能等 effects 完成后才读；Windows
+                    # 有界管道可能早在此之前因发送超期而正常断开慢订阅者。
+                    try:
+                        with ipc.Client(data_root, timeout=5.0) as sub:
+                            sub.subscribe(cursor + 1, include_model_stream=True)
+                            ready.set()
+                            while not stopped.is_set():
+                                message = sub.next_event(timeout=0.05)
+                                if message is not None and message.get("push") == "model_stream":
+                                    seen.set()
+                    except Exception as exc:  # noqa: BLE001 - 必须使诊断失败
+                        errors.append(f"{type(exc).__name__}: {exc}")
+                    finally:
+                        ready.set()
+
+                online_reader = threading.Thread(
+                    target=consume_online, name="soak-online-subscriber", daemon=True,
+                    args=(head_seq, online_ready, online_stop, stream_seen, online_errors),
+                )
+                online_reader.start()
                 try:
-                    head_seq = int(client.call("state", {})["event_seq_head"])
-                    sub.subscribe(head_seq + 1, include_model_stream=True)
+                    if not online_ready.wait(5) or online_errors:
+                        raise RuntimeError(f"online_subscriber_not_ready:{online_errors}")
 
                     # B2: Effects 任务（文件写入 + 记忆提案 + W4 流式）+ F11 Undo
                     eff_task = client.call(
@@ -1038,19 +1068,19 @@ def run_soak(
                     else:
                         workloads["effects_runs"] += 1
 
-                    # 读取流式帧核验 W4，确认收到后立即继续
-                    deadline_s = time.monotonic() + 0.25
-                    while time.monotonic() < deadline_s:
-                        ev_msg = sub.next_event(timeout=0.02)
-                        if ev_msg is None:
-                            break
-                        if ev_msg.get("push") == "model_stream":
-                            stream_seen += 1
-                            break
-                    if stream_seen > 0:
+                    if stream_seen.wait(0.25):
                         workloads["streamed_turns"] += 1
+                    else:
+                        runtime_failures.append(f"cycle_{cycle}_online_subscriber_missing_stream")
                 finally:
-                    sub.close()
+                    online_stop.set()
+                    online_reader.join(5)
+                    if online_reader.is_alive():
+                        raise RuntimeError(f"cycle_{cycle}_online_subscriber_not_stopped")
+                    runtime_failures.extend(
+                        f"cycle_{cycle}_online_subscriber_failed:{error}"
+                        for error in online_errors
+                    )
                     workloads["subscriber_disconnects"] += 1
 
                 # 执行 F11 撤销，保持工作区干净并验证快照链闭环

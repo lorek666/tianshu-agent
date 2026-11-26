@@ -9,6 +9,8 @@ import sqlite3
 import subprocess
 import sys
 import threading
+from argparse import Namespace
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -30,6 +32,7 @@ from tianshu.platform_identity import observe_entity
 from tianshu.restore_access import RestoreAccessError, RestoreScopeBusy
 from tianshu.restore_registry import RestoreRegistry
 from tianshu.snapshot import SnapshotStore
+from tianshu.undo import UndoRefused, apply_undo
 from tianshu.undo_journal import JournalStore
 
 SRC = str(Path(__file__).resolve().parents[1] / "src")
@@ -672,6 +675,35 @@ def test_snapshot_manifest_static_subdirectory_symlink_respects_reserved_root(
         owner.close()
 
 
+def test_preimage_manifest_rejects_reserved_target_before_read(
+    tmp_path, registry, active_reserved_root, monkeypatch
+):
+    with closing(EventLog(tmp_path / "owner" / "events.db")) as owner:
+        store = SnapshotStore(tmp_path / "safe", owner_log=owner)
+        run_id = "reserved-preimage-manifest"
+        target = store.manifest_path(run_id)
+        reserved = active_reserved_root / "restricted.json"
+        reserved_bytes = b"reserved bytes are not a snapshot manifest"
+        reserved.write_bytes(reserved_bytes)
+        _symlink_or_skip(target, reserved)
+        open_material = Path.read_bytes
+        manifest_reads = []
+
+        def audited_read(path):
+            if path == target:
+                manifest_reads.append(path)
+            return open_material(path)
+
+        monkeypatch.setattr(Path, "read_bytes", audited_read)
+        with pytest.raises(RestoreScopeBusy):
+            store.record_preimage(
+                run_id, "call-1", "note.txt", None, "after", root=tmp_path / "workspace"
+            )
+        assert manifest_reads == []
+        assert target.is_symlink()
+        assert reserved.read_bytes() == reserved_bytes
+
+
 def test_journal_static_subdirectory_symlink_respects_reserved_root(
     tmp_path, registry, active_reserved_root
 ):
@@ -686,6 +718,141 @@ def test_journal_static_subdirectory_symlink_respects_reserved_root(
         assert not (active_reserved_root / "static-journal-escape.json").exists()
     finally:
         owner.close()
+
+
+@pytest.mark.parametrize(
+    ("entry", "material"),
+    [
+        ("store", "journal"),
+        ("control", "journal"),
+        ("control", "manifest"),
+        ("cli", "journal"),
+    ],
+)
+def test_undo_rejects_reserved_material_before_read_or_effect(
+    tmp_path, registry, active_reserved_root, monkeypatch, capsys, entry, material
+):
+    from tianshu.loop import build_stack
+
+    db = tmp_path / "owner" / "events.db"
+    with closing(EventLog(db)) as owner:
+        store = SnapshotStore(tmp_path / "safe", owner_log=owner)
+        stack = build_stack(owner, snapshots=store)
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        note = workspace / "note.txt"
+        note.write_bytes(b"agent output")
+        run_id = "blocked-undo"
+        store.record_preimage(
+            run_id, "call-1", "note.txt", None, sha256_hex(note.read_bytes()),
+            root=workspace,
+        )
+        target = (
+            store.journal.path(run_id) if material == "journal" else store.manifest_path(run_id)
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            target.unlink()
+        reserved = active_reserved_root / "restricted.json"
+        reserved_bytes = b"reserved bytes are not undo evidence"
+        reserved.write_bytes(reserved_bytes)
+        _symlink_or_skip(target, reserved)
+        events_before = owner.read_after(0)
+        open_material = Path.read_bytes
+        material_reads = []
+        applied = []
+
+        def audited_read(path):
+            if path == target:
+                material_reads.append(path)
+            return open_material(path)
+
+        monkeypatch.setattr(Path, "read_bytes", audited_read)
+        if entry == "store":
+            with pytest.raises(RestoreScopeBusy):
+                store.undo(
+                    run_id, guard=lambda: None, apply=lambda *args: applied.append(args),
+                )
+        elif entry == "control":
+            with pytest.raises(UndoRefused) as refusal:
+                apply_undo(stack, run_id)
+            assert isinstance(refusal.value.__cause__, RestoreScopeBusy)
+        else:
+            from tianshu import _cli_ops
+
+            monkeypatch.setattr(_cli_ops, "_authority_stack", lambda *_: stack)
+            assert _cli_ops._cmd_undo(Namespace(
+                db=db, data_root=None, run_id=run_id, workspace=None, approve=True, json=False,
+            )) == 2
+            assert "恢复范围" in capsys.readouterr().err
+        assert material_reads == []
+        assert applied == []
+        if entry != "cli":
+            assert owner.read_after(0) == events_before
+        else:
+            with closing(EventLog(db)) as reopened:
+                assert reopened.read_after(0) == events_before
+        assert note.read_bytes() == b"agent output"
+        assert target.is_symlink()
+        assert reserved.read_bytes() == reserved_bytes
+
+
+def test_ownerless_undo_uses_initialized_main_without_open_eventlog(tmp_path, registry):
+    root = tmp_path / "data"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    note = workspace / "note.txt"
+    content = b"agent output"
+    note.write_bytes(content)
+    run_id = "ownerless-undo"
+    with closing(EventLog(root / "events.db")) as owner:
+        store = SnapshotStore(root / "artifacts", owner_log=owner)
+        store.record_preimage(
+            run_id, "call-1", "note.txt", None, sha256_hex(content), root=workspace,
+        )
+    store = SnapshotStore(root / "artifacts")
+    result = store.undo(run_id, guard=lambda: None, allow_direct_write=True)
+    assert result.ok
+    assert not note.exists()
+    assert store.journal.load(run_id).completed
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="需要 POSIX fork")
+def test_verified_ownerless_scope_is_not_borrowable_after_fork(tmp_path, registry):
+    test_root = tmp_path / "data"
+    with closing(EventLog(test_root / "events.db")):
+        pass
+    script = r"""
+import os
+import sys
+from pathlib import Path
+from tianshu import maintenance, restore_access
+from tianshu.maintenance import MaintenanceBusy
+from tianshu.restore_registry import RestoreRegistry
+
+test_root, home, lock_root = map(Path, sys.argv[1:])
+restore_access._registry_factory = lambda: RestoreRegistry._for_home(home)
+maintenance._lock_root = lambda: lock_root
+with restore_access.ensure_material_write_allowed(test_root / 'artifacts/a') as main:
+    assert main.active
+    pid = os.fork()
+    if pid == 0:
+        try:
+            restore_access.ensure_material_write_allowed(test_root / 'artifacts/b')
+        except MaintenanceBusy:
+            os._exit(0)
+        except BaseException:
+            os._exit(2)
+        else:
+            os._exit(1)
+    _, status = os.waitpid(pid, 0)
+    assert os.waitstatus_to_exitcode(status) == 0, f'forked child result: {status}'
+    assert main.active
+"""
+    cmd = [sys.executable, "-c", script, str(test_root), str(tmp_path / "home"),
+           str(tmp_path / "system-lock-root")]
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=15)
+    assert result.returncode == 0, result.stderr
 
 
 def test_event_spill_static_leaf_symlink_respects_reserved_root(

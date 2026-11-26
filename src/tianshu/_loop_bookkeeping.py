@@ -681,6 +681,7 @@ class _LoopBookkeepingMixin:
         顺序不能反：先写 Run 成功、再发现 claim 已被接管，就会留下一条
         "旧 owner 宣告成功"的记录，而这正是 fencing 要禁止的事。
         """
+        self._dispatcher.close_run_mcp(run_id)
         events = self._log.read_run(run_id, verify=False)
         effect = self._sync_persisted_effects(events, progress)
         if self._has_unsettled_dispatch(

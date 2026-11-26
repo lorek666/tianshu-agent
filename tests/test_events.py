@@ -32,11 +32,14 @@ SCHEMA = Path(__file__).resolve().parents[1] / "schemas" / "c3" / "event.json"
 FAMILIES = frozenset(
     {
         "approval",
+        "consent",
         "dispatch",
         "execution",
         "grant",
+        "goal",
         "job",
         "model",
+        "plan",
         "policy",
         "receipt",
         "recovery",
@@ -45,6 +48,7 @@ FAMILIES = frozenset(
         "task",
         "tool",
         "undo",
+        "verification",
     }
 )
 REQUIRED_ENVELOPE = {"seq", "run_id", "type", "ts", "actor", "payload", "payload_hash"}

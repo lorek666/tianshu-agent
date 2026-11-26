@@ -29,6 +29,8 @@ import copy
 import re
 from typing import Any
 
+from .agent_contracts import AGENT_SCHEMAS
+from .consent_contract import CONSENT_EVENT_SCHEMAS
 from .continuation import (
     COMPACTION_REF_VERSION,
     COMPACTION_SCHEMA,
@@ -38,6 +40,8 @@ from .continuation import (
 from .conversation import validate_guidance, validate_turns
 from .errors import TianshuError
 from .execpolicy import ISOLATION_BOUNDARIES, ISOLATION_LEVELS
+from .goal_contracts import GOAL_V2_SCHEMAS
+from .mission import MISSION_EVENT_SCHEMA, PENDING_MISSION_EVENT_SCHEMA
 from .model_route import ModelRouteV1
 from .run_policy import RunExecutionPolicyV1
 from .task_attachments import (
@@ -493,7 +497,91 @@ _SUBTASK_USAGE = _obj(
 
 #: 当前版本（1）的逐类型契约。键必须与 `events.EVENT_TYPES` 完全一致
 #: （`ensure_registry()` 在导入时校验，测试再次绑定）。
+_EXECUTION_SUBJECT = _obj({
+    "format_version": {"type": "integer", "const": 1},
+    "subject_id": _SHA256,
+    "kind": _enum("command", "local_mcp", "remote_mcp"),
+    "task_id": _s(), "run_id": _s(),
+    **{name: _SHA256 for name in (
+        "config_digest", "executable_digest", "environment_digest",
+        "workspace_binding_digest", "data_root_digest", "isolation_profile_digest",
+    )},
+})
+_EXECUTION_ADMISSION = _obj({
+    "format_version": {"type": "integer", "const": 1}, "subject_digest": _SHA256,
+    "backend": _s(), "backend_identity": _s(), "platform": _s(), "architecture": _s(),
+    "probe_version": _s(), "workspace": _s(), "data_root": _s(),
+    "required_boundaries": _arr(_enum(*ISOLATION_BOUNDARIES)),
+    "boundaries": _obj({
+        name: _enum("enforced", "not_enforced", "unknown") for name in ISOLATION_BOUNDARIES
+    }),
+    "evidence_refs": _arr(_s()), "lifecycle_id": _s(),
+})
+_EXECUTION_LIFECYCLE = _obj({
+    "lifecycle_id": _s(), "pid": _opt(_i(minimum=1)), "birth_identity": _opt(_s()),
+})
+for _execution_schema in (
+    _EXECUTION_SUBJECT, _EXECUTION_ADMISSION, _EXECUTION_LIFECYCLE,
+    _EXECUTION_ADMISSION["properties"]["boundaries"],
+):
+    _execution_schema["required"] = list(_execution_schema["properties"])
+
 CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
+    "execution.admitted": _obj({
+        "subject": _EXECUTION_SUBJECT, "admission": _EXECUTION_ADMISSION,
+        "lifecycle": _EXECUTION_LIFECYCLE,
+        "stage": _enum("prepared", "started", "call_pending", "call_completed"),
+        "call_id": _s(), "request_id": _i(minimum=0),
+        "probe_findings": _arr(_obj({
+            "boundary": _enum(*ISOLATION_BOUNDARIES),
+            "status": _enum("enforced", "not_enforced", "unknown"),
+            "evidence": _s(),
+        }, required=("boundary", "status", "evidence"))),
+    }, required=("subject", "admission", "lifecycle", "stage", "probe_findings")),
+    "execution.ended": _obj({
+        "subject_digest": _SHA256, "lifecycle_id": _s(),
+        "process_tree": _enum("exited", "unknown"),
+        "pid": _opt(_i(minimum=1)), "birth_identity": _opt(_s()),
+    }, required=("subject_digest", "lifecycle_id", "process_tree", "pid", "birth_identity")),
+
+    **CONSENT_EVENT_SCHEMAS,
+    "run.mission": copy.deepcopy(MISSION_EVENT_SCHEMA),
+    "run.mission_pending": copy.deepcopy(PENDING_MISSION_EVENT_SCHEMA),
+    "goal.created": _obj(
+        {
+            "format_version": {"type": "integer", "const": 1},
+            "goal_id": _s(), "goal_revision": _i(minimum=1),
+            "request_id": _s(pattern=r"^[A-Za-z0-9_-]{1,128}$"),
+            "criteria": _arr(_s()), "max_rounds": _enum(*range(1, 11)),
+            "execution_policy": _obj(
+                {"format_version": {"type": "integer", "const": 1},
+                 "mode": _enum("effects", "pure_only")},
+                required=("format_version", "mode"),
+            ),
+        },
+        required=("format_version", "goal_id", "goal_revision", "request_id",
+                  "criteria", "max_rounds", "execution_policy"),
+    ),
+    "goal.round_started": _obj(
+        {
+            "format_version": {"type": "integer", "const": 1},
+            "goal_id": _s(), "round": _enum(*range(1, 11)),
+            "request_id": _s(pattern=r"^[A-Za-z0-9_-]{1,128}$"),
+            "source_run_id": _opt(_s()),
+        },
+        required=("format_version", "goal_id", "round", "request_id", "source_run_id"),
+    ),
+    "goal.closed": _obj(
+        {
+            "format_version": {"type": "integer", "const": 1},
+            "goal_id": _s(),
+            "request_id": _s(pattern=r"^[A-Za-z0-9_-]{1,128}$"),
+            "outcome": _enum("completed", "cancelled"),
+            "confirmed_criteria": _arr(_i(minimum=0)),
+        },
+        required=("format_version", "goal_id", "request_id", "outcome",
+                  "confirmed_criteria"),
+    ),
     "run.workflow": _obj(
         {
             "format_version": {"type": "integer", "const": 1},
@@ -1193,10 +1281,18 @@ def _relax(schema: dict[str, Any], relaxations: dict[str, dict[str, Any]]) -> di
     return schema
 
 
+CURRENT_SCHEMAS.update(AGENT_SCHEMAS)
+CURRENT_SCHEMAS.update(GOAL_V2_SCHEMAS)
+
 V1_ONLY_EVENTS = frozenset({
+    "execution.admitted", "execution.ended",
+    *CONSENT_EVENT_SCHEMAS,
+    *GOAL_V2_SCHEMAS,
+    "run.mission", "run.mission_pending",
+    "goal.created", "goal.round_started", "goal.closed",
     "run.attachments", "run.conversation", "run.guidance_applied", "run.guidance_requested",
     "run.model_route", "run.workflow", "run.workflow_request",
-})
+}) | frozenset(AGENT_SCHEMAS)
 
 
 LEGACY_SCHEMAS: dict[str, dict[str, Any]] = {
@@ -1561,6 +1657,20 @@ def payload_errors(
             validate_turns(payload["turns"])
         except ValueError as exc:
             errors.append(f"$.turns：{exc}")
+    if not errors and event_type == "run.mission":
+        from .mission import validate_snapshot
+
+        try:
+            validate_snapshot(payload)
+        except TianshuError as exc:
+            errors.append(f"$：{exc}")
+    if not errors and event_type == "run.mission_pending":
+        from .mission import validate_pending_snapshot
+
+        try:
+            validate_pending_snapshot(payload)
+        except TianshuError as exc:
+            errors.append(f"$：{exc}")
     if not errors and event_type == "run.start" and version == 2:
         try:
             RunExecutionPolicyV1.of(payload["execution_policy"])
@@ -1642,10 +1752,13 @@ _SAMPLE_STRINGS = (
     "c4.auto",
     "end_turn",
     "applied",
+    "content://sha256:" + "0" * 64,
 )
 
 
 def _sample_for(schema: dict[str, Any]) -> Any:
+    if "oneOf" in schema:
+        return _sample_for(schema["oneOf"][0])
     if "const" in schema:
         return schema["const"]
     if "enum" in schema:
@@ -1671,7 +1784,7 @@ def _sample_for(schema: dict[str, Any]) -> Any:
         if candidate == "boolean":
             return False
         if candidate == "array":
-            return []
+            return [_sample_for(schema["items"]) for _ in range(schema.get("minItems", 0))]
         if candidate == "object":
             props = schema.get("properties", {})
             required = schema.get("required", list(props))
@@ -1689,5 +1802,29 @@ def minimal_payload(event_type: str) -> dict[str, Any]:
         payload["attachments"] = normalize_attachments([
             {"name": "x", "media_type": "text/plain", "data_base64": ""},
         ])
+    if event_type in ("run.mission", "run.mission_pending"):
+        from .mission import (
+            SYSTEM_PROMPT,
+            MissionSpecV1,
+            _bytes,
+            _content_ref,
+            _digest,
+            _make_mission,
+        )
+
+        spec = _make_mission(
+            "task_x", 1, "x", registry=None, task_kind="general", criteria=(), tool_ids=[],
+        ).to_dict()
+        mission = MissionSpecV1.of({**spec, "mission_id": "mission_x"})
+        messages = [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": "x"}]
+        payload = {
+            "format_version": 1, "mission": mission.to_dict(), "mission_digest": mission.digest,
+            "renderer_version": "mission-input-v1", "template_content": SYSTEM_PROMPT,
+            "messages": messages, "messages_digest": _digest(_bytes(messages)),
+            "messages_ref": _content_ref(_bytes(messages)), "material_storage": "inline",
+            "effective_tools": [],
+        }
+        if event_type == "run.mission_pending":
+            payload.update(selected_servers=["x"], requested_tools=None)
     validate_payload(event_type, payload)
     return payload

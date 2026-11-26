@@ -703,13 +703,17 @@ class RestoreDatabaseAccess:
             handle.verify_path()
 
     def borrow_initialized(self) -> _MaterialWriteLease:
+        return self._borrow_for_material(require_registered=True)
+
+    def _borrow_for_material(self, *, require_registered: bool) -> _MaterialWriteLease:
         with self._lifetime:
             if self._closing:
                 raise RestoreAccessError(f"所属 EventLog 未持有活跃连续准入锁：{self.path}")
-            with _ACTIVE_EVENTLOG_LOCK:
-                registered = _ACTIVE_EVENTLOG_ACCESSES.get(id(self)) is self
-            if not registered:
-                raise RestoreAccessError(f"所属 EventLog 尚未完成初始化与准入：{self.path}")
+            if require_registered:
+                with _ACTIVE_EVENTLOG_LOCK:
+                    registered = _ACTIVE_EVENTLOG_ACCESSES.get(id(self)) is self
+                if not registered:
+                    raise RestoreAccessError(f"所属 EventLog 尚未完成初始化与准入：{self.path}")
             try:
                 if self.path.stat().st_size <= 0:
                     raise RestoreAccessError(f"所属 EventLog 主库为空/未初始化：{self.path}")
@@ -1324,28 +1328,47 @@ def ensure_log_write_allowed(owner_log: Any) -> None:
         pass
 
 
+_VERIFIED_MAIN_MATERIAL_SCOPES = threading.local()
+
+
 class _MaterialWriteLease:
     """Pin an admitted owner or hold independently verified main access."""
 
-    __slots__ = ("_access", "_borrowed")
+    __slots__ = ("_access", "_borrowed", "_verified_main_key", "_scope")
 
     def __init__(
-        self, access: RestoreDatabaseAccess | None = None, *, borrowed: bool = False
+        self, access: RestoreDatabaseAccess | None = None, *, borrowed: bool = False,
+        verified_main_key: str | None = None,
     ) -> None:
         self._access = access
         self._borrowed = borrowed
+        self._verified_main_key = (
+            (os.getpid(), verified_main_key) if verified_main_key is not None else None
+        )
+        self._scope: dict[tuple[int, str], RestoreDatabaseAccess] | None = None
 
     @property
     def active(self) -> bool:
         return self._access is not None and self._access.active
 
     def __enter__(self) -> _MaterialWriteLease:
+        if self._verified_main_key is not None and self._access is not None:
+            # Only this process and thread may reuse the verified exclusive main.
+            # A forked child inherits the thread-local values but not this PID key.
+            scope = getattr(_VERIFIED_MAIN_MATERIAL_SCOPES, "mains", None)
+            if scope is None:
+                scope = _VERIFIED_MAIN_MATERIAL_SCOPES.mains = {}
+            scope[self._verified_main_key] = self._access
+            self._scope = scope
         return self
 
     def __exit__(self, *_exc: object) -> None:
         self.close()
 
     def close(self) -> None:
+        if self._scope is not None and self._verified_main_key is not None:
+            self._scope.pop(self._verified_main_key, None)
+            self._scope = None
         acc, self._access = self._access, None
         if acc is not None:
             if self._borrowed:
@@ -1477,7 +1500,14 @@ def ensure_material_write_allowed(
     if borrowed is not None:
         return borrowed
     if domain in ("artifacts", "blobs"):
-        return _MaterialWriteLease(_acquire_verified_existing_main_access(std_events_db))
+        scope = getattr(_VERIFIED_MAIN_MATERIAL_SCOPES, "mains", None)
+        contained = None if scope is None else scope.get((os.getpid(), std_events_key))
+        if contained is not None:
+            return contained._borrow_for_material(require_registered=False)
+        return _MaterialWriteLease(
+            _acquire_verified_existing_main_access(std_events_db),
+            verified_main_key=std_events_key,
+        )
     raise RestoreAccessError(
         f"标准数据根材料写入必须绑定已初始化、已准入的 events.db 连续 access：{target}"
     )

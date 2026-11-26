@@ -14,9 +14,13 @@ import type {
 import type { StreamStatus } from "../api/stream";
 import type { ModelConfigView, ModelProfileInput, SettingsApi, SettingsView } from "../api/settings";
 import { encodeAttachments } from "../lib/attachments";
+import { prepareComposerText } from "../api/skills";
+import type { SkillsApi } from "../api/skills";
+import { criteriaFromText } from "../api/goals";
 import { workspaceModeLabel } from "../lib/humanize";
 import { streamStatusText } from "./AppHeader";
 import { AttachmentPicker } from "./AttachmentPicker";
+import { GoalFields } from "./GoalFields";
 import {
   IconCheck,
   IconChevronDown,
@@ -30,6 +34,7 @@ import {
 import { ModelRoutePicker } from "./ModelRoutePicker";
 import { ModelStatusControl } from "./ModelStatusControl";
 import { parseComposerCommand } from "../lib/commands";
+import { SkillCommandMenu } from "./SkillCommandMenu";
 import type { ProjectWorkspace } from "./Sidebar";
 import { basenameOfPath } from "./Sidebar";
 import { WelcomePet } from "./WelcomePet";
@@ -51,6 +56,7 @@ export interface WelcomeComposerProps {
   profiles?: Record<string, ModelProfileInput>;
   modelConfig?: ModelConfigView | null;
   settingsApi?: SettingsApi | null;
+  skillsApi?: SkillsApi | null;
   onModelUpdated?: (settings: SettingsView) => void;
   onJumpToPendingApproval: () => void;
   onRefresh: () => void;
@@ -81,6 +87,7 @@ export function WelcomeComposer({
   profiles = {},
   modelConfig = null,
   settingsApi = null,
+  skillsApi = null,
   onModelUpdated,
   onJumpToPendingApproval,
   onRefresh,
@@ -108,7 +115,9 @@ export function WelcomeComposer({
   const [openMenu, setOpenMenu] = useState<OpenMenu>(null);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [interactionMode, setInteractionMode] = useState<"execute" | "plan">("execute");
+  const [interactionMode, setInteractionMode] = useState<"execute" | "plan" | "goal">("execute");
+  const [goalCriteria, setGoalCriteria] = useState("");
+  const [goalMaxRounds, setGoalMaxRounds] = useState(3);
 
   const toolbarRef = useRef<HTMLDivElement | null>(null);
 
@@ -174,6 +183,17 @@ export function WelcomeComposer({
     .map((row) => ({ root_path: row.root_path.trim(), mode: row.mode }))
     .filter((row) => row.root_path !== "");
 
+  const submissionGeneration = useRef(0);
+  const submissionContext = JSON.stringify([
+    activeProject, goal, committedWorkspaces, executionPolicy, interactionMode,
+    goalCriteria, goalMaxRounds,
+  ]);
+  useEffect(() => {
+    submissionGeneration.current += 1;
+    setSubmitting(false);
+    return () => { submissionGeneration.current += 1; };
+  }, [submissionContext, skillsApi]);
+
   const updateRow = (index: number, patch: Partial<WorkspaceDraftRow>) => {
     setRows((previous) =>
       previous.map((item, idx) => (idx === index ? { ...item, ...patch } : item)),
@@ -209,6 +229,11 @@ export function WelcomeComposer({
       setError(command.text);
       return;
     }
+    if (command.kind === "skills") {
+      setGoal("/");
+      setError(null);
+      return;
+    }
     if (command.kind === "compact" || command.kind === "execute") {
       setError("请先打开已有任务，再使用压缩或确认执行命令。");
       return;
@@ -217,6 +242,18 @@ export function WelcomeComposer({
       setInteractionMode("plan");
       setGoal("");
       setError(null);
+      return;
+    }
+    if (command.kind === "goal") {
+      setInteractionMode("goal");
+      setGoal(command.text);
+      setError(null);
+      // 切换模式只打开配置，由用户填好条件后再发送。
+      return;
+    }
+    if (interactionMode === "goal" && command.kind !== "plan"
+        && (files.length > 0 || modelSelection.model_profile !== undefined)) {
+      setError("目标模式首版暂不支持附件和单次模型档案，请移除附件并选择当前默认模型。");
       return;
     }
     const sources = outboundSources.trim().split(/\s+/).filter(Boolean);
@@ -229,10 +266,17 @@ export function WelcomeComposer({
     setError(null);
     setOpenMenu(null);
     setSubmitting(true);
+    const generation = submissionGeneration.current;
     try {
       const attachments = await encodeAttachments(files, canAttachImages);
+      const text = await prepareComposerText(
+        command, skillsApi, committedWorkspaces.map((workspace) => workspace.root_path),
+      );
+      if (generation !== submissionGeneration.current) return;
+      const goalConfig = interactionMode === "goal" && command.kind !== "plan"
+        ? { criteria: criteriaFromText(goalCriteria), max_rounds: goalMaxRounds } : undefined;
       await onSubmit({
-        goal: command.text,
+        goal: text,
         workspaces: committedWorkspaces,
         execution_policy: executionPolicy,
         ...modelSelection,
@@ -240,22 +284,28 @@ export function WelcomeComposer({
         ...(servers.length ? { mcp_servers: servers } : {}),
         ...(limit ? { max_subtasks: limit } : {}),
         ...(attachments.length ? { attachments } : {}),
-        mode: command.kind === "plan" ? "plan" : interactionMode,
+        mode: command.kind === "plan" ? "plan" : interactionMode === "goal" ? "execute" : interactionMode,
+        ...(goalConfig === undefined ? {} : { goal_config: goalConfig }),
       });
-      setGoal("");
-      setFiles([]);
-      setOutboundSources("");
-      setMcpServers("");
-      setSubtaskLimit("0");
+      if (generation === submissionGeneration.current) {
+        setGoal("");
+        setFiles([]);
+        setOutboundSources("");
+        setMcpServers("");
+        setSubtaskLimit("0");
+      }
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "创建任务失败，请重试。");
+      if (generation === submissionGeneration.current) {
+        setError(caught instanceof Error ? caught.message : "创建任务失败，请重试。");
+      }
     } finally {
-      setSubmitting(false);
+      if (generation === submissionGeneration.current) setSubmitting(false);
     }
   };
 
   const handleTextareaKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing
+        && event.nativeEvent.keyCode !== 229) {
       event.preventDefault();
       void handleSubmit();
     }
@@ -345,6 +395,9 @@ export function WelcomeComposer({
             void handleSubmit();
           }}
         >
+          <SkillCommandMenu value={goal} onChange={setGoal}
+            workspaceRoots={committedWorkspaces.map((workspace) => workspace.root_path)}
+            api={skillsApi}>
           <textarea
             className="composer-textarea"
             data-testid="composer-textarea"
@@ -356,6 +409,10 @@ export function WelcomeComposer({
             onKeyDown={handleTextareaKeyDown}
             disabled={pending}
           />
+          </SkillCommandMenu>
+          {interactionMode === "goal" ? <GoalFields criteria={goalCriteria}
+            maxRounds={goalMaxRounds} disabled={pending} onCriteriaChange={setGoalCriteria}
+            onMaxRoundsChange={setGoalMaxRounds} /> : null}
 
           <AttachmentPicker files={files} onChange={setFiles} disabled={pending}
             allowImages={canAttachImages} />
@@ -616,11 +673,11 @@ export function WelcomeComposer({
                     >
                       <div className="popover-item-main">
                         <div className="popover-item-title">
-                          <span>自动审批</span>
-                          <span className="popover-tag">待后端授权契约接入</span>
+                          <span>自动审批（有限范围授权）</span>
+                          <span className="popover-tag">创建运行后设置</span>
                         </div>
                         <div className="popover-item-desc">
-                          自动放行已绑定工作区内的常规修改（当前保持执行侧逐次确认）
+                          在运行的「有限范围授权」面板预览并签发精确范围、次数和期限
                         </div>
                       </div>
                     </button>
@@ -682,10 +739,13 @@ export function WelcomeComposer({
                 data-testid="composer-mode-select"
                 value={interactionMode}
                 disabled={pending}
-                onChange={(event) => setInteractionMode(event.target.value === "plan" ? "plan" : "execute")}
+                onChange={(event) => setInteractionMode(
+                  event.target.value as "execute" | "plan" | "goal",
+                )}
               >
                 <option value="execute">执行任务</option>
                 <option value="plan">计划模式</option>
+                <option value="goal">目标模式</option>
               </select>
               <ModelStatusControl
                 testId="composer-model-btn"

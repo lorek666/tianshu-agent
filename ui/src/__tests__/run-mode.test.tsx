@@ -20,6 +20,7 @@ import { DemoHostClient } from "../demo/host";
 import { DemoWorld } from "../demo/world";
 import { buildBudgetView } from "../lib/budgetView";
 import { buildSubtaskViews } from "../lib/subtasks";
+import type { GoalView } from "../api/goals";
 
 const mocked = vi.hoisted(() => ({
   host: null as unknown,
@@ -35,6 +36,7 @@ vi.mock("../api/token", () => ({
 }));
 
 import { App } from "../App";
+import { loopGoal } from "./agent-loop-fixtures";
 
 const EFFECTS = { format_version: 1, mode: "effects" } as const;
 const PURE_ONLY = { format_version: 1, mode: "pure_only" } as const;
@@ -90,6 +92,39 @@ class FakeHost implements HostClient {
   readonly mode = "host" as const;
   readonly state: StateView;
   readonly rpc = vi.fn(async (method: string, params: RpcParams = {}) => {
+    if (method === "goal.get") return { goal: structuredClone(this.goal) };
+    if (method === "goal.v2.get") return { goal: structuredClone(this.agentGoal) };
+    if (method === "goal.v2.create") {
+      if (this.goalFailuresRemaining > 0) {
+        this.goalFailuresRemaining -= 1;
+        throw new HostRpcError("internal", "目标保存暂时失败");
+      }
+      this.agentGoal = {
+        ...structuredClone(loopGoal), task_id: String(params.task_id),
+        config: {
+          ...structuredClone(loopGoal.config), task_id: String(params.task_id),
+          goal_revision: Number(params.goal_revision), max_rounds: Number(params.max_rounds),
+          execution_policy: params.execution_policy as typeof loopGoal.config.execution_policy,
+        },
+      };
+      this.state.event_seq_head += 1;
+      return { goal: structuredClone(this.agentGoal) };
+    }
+    if (method === "goal.create") {
+      if (this.goalFailuresRemaining > 0) {
+        this.goalFailuresRemaining -= 1;
+        throw new HostRpcError("internal", "目标保存暂时失败");
+      }
+      this.goal = {
+        format_version: 1, goal_id: "goal_1", task_id: String(params.task_id),
+        goal_revision: Number(params.goal_revision), criteria: params.criteria as string[],
+        max_rounds: Number(params.max_rounds),
+        execution_policy: params.execution_policy as GoalView["execution_policy"],
+        rounds_started: 0, latest_run_id: null, status: "ready", confirmed_criteria: [],
+      };
+      this.state.event_seq_head += 1;
+      return { goal: structuredClone(this.goal) };
+    }
     if (method === "task.create") {
       const created = task({
         task_id: "task_created",
@@ -143,6 +178,9 @@ class FakeHost implements HostClient {
   }) as unknown as HostClient["rpc"];
 
   failuresRemaining = 0;
+  goalFailuresRemaining = 0;
+  goal: GoalView | null = null;
+  agentGoal: typeof loopGoal | null = null;
 
   constructor(initial: StateView) {
     this.state = structuredClone(initial);
@@ -252,6 +290,49 @@ async function mount(initial: StateView, failuresRemaining = 0): Promise<FakeHos
 }
 
 describe("Run 执行模式的真实 UI 入口", () => {
+  it.each([false, true])("Goal 创建不会启动普通 Run，保存失败保留条件（失败：%s）", async (failure) => {
+    const host = await mount(state());
+    host.goalFailuresRemaining = failure ? 1 : 0;
+    await waitFor(() => container?.querySelector("[data-testid='composer-textarea']") !== null);
+    await inputValue(container!.querySelector<HTMLTextAreaElement>(
+      "[data-testid='composer-textarea']",
+    )!, "/goal 整理报告");
+    await click(container!.querySelector<HTMLButtonElement>("[data-testid='composer-send-btn']")!);
+    await inputValue(container!.querySelector<HTMLTextAreaElement>(
+      "[data-testid='goal-criteria']",
+    )!, "包含中文摘要\n包含来源");
+    await click(container!.querySelector<HTMLButtonElement>("[data-testid='composer-send-btn']")!);
+    await waitFor(() => rpcCalls(host, "goal.v2.create").length === 1);
+    await settle();
+    expect(rpcCalls(host, "run.start")).toHaveLength(0);
+    expect(rpcCalls(host, "task.create")).toHaveLength(1);
+    expect(rpcCalls(host, "task.create")[0]).not.toHaveProperty("goal_config");
+    expect(rpcCalls(host, "goal.v2.create")[0]?.criteria).toEqual(["包含中文摘要", "包含来源"]);
+    expect(rpcCalls(host, "goal.create")).toHaveLength(0);
+    if (failure) {
+      await waitFor(() => container!.querySelector("[data-testid='agent-criteria']") !== null);
+      expect(container!.querySelector<HTMLTextAreaElement>("[data-testid='agent-criteria']")!.value)
+        .toBe("包含中文摘要\n包含来源");
+      await click(container!.querySelector<HTMLButtonElement>("[data-testid='agent-create']")!);
+      await waitFor(() => rpcCalls(host, "goal.v2.create").length === 2);
+      expect(rpcCalls(host, "task.create")).toHaveLength(1);
+    }
+    expect(host.agentGoal?.status).toBe("ready");
+  });
+
+  it("已有任务 /goal 打开配置，不修订目标也不启动运行", async () => {
+    const host = await mount(state([task()]));
+    await waitFor(() => container!.querySelector("[data-testid='followup-input']") !== null);
+    await inputValue(container!.querySelector<HTMLInputElement>(
+      "[data-testid='followup-input']",
+    )!, "/goal 包含来源");
+    await click(container!.querySelector<HTMLButtonElement>("[data-testid='followup-send-btn']")!);
+    expect(container!.querySelector<HTMLTextAreaElement>("[data-testid='agent-criteria']")!.value)
+      .toBe("包含来源");
+    expect(rpcCalls(host, "task.revise")).toHaveLength(0);
+    expect(rpcCalls(host, "run.start")).toHaveLength(0);
+  });
+
   it.each([false, true])(
     "计划模式经过压缩仍继续规划（重新打开页面：%s）",
     async (reopened) => {
