@@ -1790,7 +1790,9 @@ root = Path(payload["data_root"])
 connect = ipc.Client.connect
 def paused(self, **kwargs):
     welcome = connect(self, **kwargs)
-    (root / "handshake").write_text(welcome["instance_id"])
+    pending = root / "handshake.pending"
+    pending.write_text(welcome["instance_id"], encoding="utf-8")
+    pending.replace(root / "handshake")
     deadline = time.monotonic() + 20
     while not (root / "release").exists():
         if time.monotonic() >= deadline:
@@ -1837,7 +1839,7 @@ raise SystemExit(host.run_host(
                 )
             wait_until(lambda: (root / "handshake").exists() or proc.poll() is not None)
             assert (root / "handshake").exists(), "Host did not bind a real handshake"
-            assert (root / "handshake").read_text() == owner["instance_id"]
+            assert (root / "handshake").read_text(encoding="utf-8") == owner["instance_id"]
             assert daemon.request_shutdown(root, expected_instance_id=owner["instance_id"])
             assert original.wait(timeout=10) == 0
             replacement, new_owner = start_daemon()
