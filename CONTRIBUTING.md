@@ -126,7 +126,9 @@ Windows
 uv run --frozen python scripts/pytest_with_stacks.py -p pytest_ci_shards --ci-shard-index=INDEX --ci-shard-count=4 --ci-shard-report=REPORT -o addopts="" -vv -rs --tb=short --durations=20 --stack-timeout=60
 ```
 
-每片从同一 checkout SHA 做真实完整 collection，按文件权重确定性分组，同文件不拆、组内保持原收集顺序。未校准文件的权重采用节点数；已校准文件使用完整 Windows 日志区间的固定估计，允许低于节点数，并覆盖整份已测 collection，避免稀疏修正留下累计偏差（见 `scripts/pytest_ci_shards.py`）。真实任务测试复用每个场景三次实跑的独立证据副本；对应权重按保留的实跑工作量估算。候选 `c6d6475` 的 [44944526018](https://github.com/lorek666/tianshu-agent/actions/runs/44944526018) 两片及 Windows required 汇总已通过，并核验原始报告身份和完整覆盖；该轮整体仍因 macOS Rust 失败而拒绝合并。权重只用于分组，不保证后续 runner 的耗时，结果以各冻结对应的 Windows job 为准。各片独立检查锁文件、同步冻结依赖并运行完整 lint，显式清空 `PYTEST_ADDOPTS`，分片开关仅经 argv 传入。原包装器是 pytest step 唯一直接命令，上传报告另设 `always()` step；超时/取消可能没有产物，缺件必须失败。
+每片从同一 checkout SHA 做真实完整 collection，按文件权重确定性分组，同文件不拆；除时序敏感的
+SLO/soak 节点固定在其所属分片首位外，组内保持原收集顺序。`full_collection` 始终保留原始顺序，
+分组权重与完整覆盖不变；SLO 阈值、重复次数和 soak 验收均不放宽。未校准文件的权重采用节点数；已校准文件使用完整 Windows 日志区间的固定估计，允许低于节点数，并覆盖整份已测 collection，避免稀疏修正留下累计偏差（见 `scripts/pytest_ci_shards.py`）。真实任务测试复用每个场景三次实跑的独立证据副本；对应权重按保留的实跑工作量估算。候选 `c6d6475` 的 [44944526018](https://github.com/lorek666/tianshu-agent/actions/runs/44944526018) 两片及 Windows required 汇总已通过，并核验原始报告身份和完整覆盖；该轮整体仍因 macOS Rust 失败而拒绝合并。权重只用于分组，不保证后续 runner 的耗时，结果以各冻结对应的 Windows job 为准。各片独立检查锁文件、同步冻结依赖并运行完整 lint，显式清空 `PYTEST_ADDOPTS`，分片开关仅经 argv 传入。原包装器是 pytest step 唯一直接命令，上传报告另设 `always()` step；超时/取消可能没有产物，缺件必须失败。
 
 四个 runner 各自从同一 checkout SHA 做完整 collection，并通过真实分片插件执行 count4。
 报告、诊断、缓存和运行数据均留在各自 runner 的隔离 checkout/临时目录；上传树只包含该分片的
