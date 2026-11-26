@@ -254,6 +254,33 @@ def test_macos_required_summary_shell_rejects_any_unsuccessful_upstream(
     assert (result.returncode == 0) is (python_result == desktop_result == "success")
 
 
+def test_state_pressure_evidence_is_uploaded_even_when_pytest_fails():
+    workflow = _workflow()
+    for job, artifact in (
+        (
+            "macos_python",
+            "slo-state-pressure-macos-${{ github.run_id }}-"
+            "${{ github.run_attempt }}-${{ matrix.shard }}",
+        ),
+        (
+            "windows_shards",
+            "slo-state-pressure-windows-${{ github.run_id }}-"
+            "${{ github.run_attempt }}-${{ matrix.shard }}",
+        ),
+    ):
+        block = _job_block(workflow, job)
+        upload = re.search(
+            r"(?ms)^      - name: 上传 state 背压诊断证据\n(?P<body>.*?)(?=^      - |\Z)",
+            block,
+        )
+        assert upload, f"{job} must upload state-pressure evidence"
+        body = upload["body"]
+        assert "if: always()" in body
+        assert f"name: {artifact}" in body
+        assert "path: ${{ runner.temp }}/slo-state-pressure.json" in body
+        assert "if-no-files-found: warn" in body
+
+
 def test_main_push_ci_is_not_made_cancellable_or_draft_gated():
     workflow = _workflow()
     assert re.search(r"(?m)^  push:\n    branches: \[main\]$", workflow)
@@ -304,10 +331,26 @@ def _assert_windows_independent_shards(workflow):
         "          --ci-shard-index=${{ matrix.shard }} --ci-shard-count=4\n"
         "          --ci-shard-report=\"$CI_SHARD_REPORT\""
     ) in workers
-    assert '--stack-timeout=60' in workers
+    for command in (
+        "uv python install 3.12", "uv lock --check", "uv sync --frozen",
+        "uv run --frozen ruff check .", 'PYTEST_ADDOPTS: ""',
+        '-o addopts="" -vv -rs --tb=short', "--durations=20 --stack-timeout=60",
+    ):
+        assert command in workers
+    assert (
+        "name: windows-pytest-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}"
+        in workers
+    )
     assert "path: ${{ runner.temp }}/windows-ci/shard.json\n" in workers
     assert "if-no-files-found: error" in workers
+    assert "name: test (windows-latest) · py3.12" in summary
     assert "needs: [windows_shards, desktop_windows]" in summary
+    assert "timeout-minutes: 25" in summary
+    assert "if: always() && (" in summary
+    assert '--needs-result "$UPSTREAM_RESULT"' in summary
+    assert 'test "$UPSTREAM_DESKTOP_RESULT" = success' in summary
+    assert "${{ needs.windows_shards.result }}" in summary
+    assert "${{ needs.desktop_windows.result }}" in summary
     assert "permissions:\n      contents: read\n      actions: read" in summary
     assert "id: shard_artifacts" in summary
     assert "GITHUB_TOKEN: ${{ github.token }}" in summary
@@ -350,6 +393,7 @@ def test_windows_independent_runners_isolate_slo_and_keep_required_gates():
     ),
     ("timeout-minutes: 25", "timeout-minutes: 30"),
     ("--stack-timeout=60", "--stack-timeout=0"),
+    ("-vv -rs --tb=short", "-vv --tb=short"),
     ("      actions: read\n", ""),
 ])
 def test_windows_independent_runner_guard_rejects_weakened_workflow(old, new):

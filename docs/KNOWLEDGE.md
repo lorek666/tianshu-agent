@@ -178,7 +178,7 @@
 
 **派生硬约束**：安全不能靠用户配置（默认值必须正确）；默认可写就必须默认可撤销；单用户假设必须显式声明。
 
-- **Windows CI 分片决定（2026-11-14；2026-11-26 拓扑同步）**：保留四 required 名称与25分钟上限，以四个独立 runner 各执行一个 count4 整文件分片。历史两 runner 单 worker 会累计超时；两 runner 各并行两个 worker 又在 #228 的 hosted run `45705494683` 两个 attempt 污染冷启动 SLO，因此不串行退回半套测试，也不同机并行 worker。汇总 job 在 Ubuntu 按每个 shard 的真实 artifact attempt 分别下载并核验四个报告；完整收集快照先于其它筛选，最终列表再核，不用选后列表倒推全集。报告不是独立执行证明，必须与上游 job success 一起使用；不降低权重或 SLO 阈值，不新增产品契约、依赖或 skip。下游 #225 只同步拓扑与证据归属，不覆盖本分支权重表。
+- **Windows CI 分片决定（2026-11-14；2026-11-26 拓扑同步）**：保留四 required 名称与25分钟上限，以四个独立 runner 各执行一个 count4 整文件分片。历史两 runner 单 worker 会累计超时；两 runner 各并行两个 worker 又在 #228 的 hosted run `45705494683` 两个 attempt 污染冷启动 SLO，因此不串行退回半套测试，也不同机并行 worker。汇总 job 在 Ubuntu 按每个 shard 的真实 artifact attempt 分别下载并核验四个报告；完整收集快照先于其它筛选，最终列表再核，不用选后列表倒推全集。报告不是独立执行证明，必须与上游 job success 一起使用；不降低权重或 SLO 阈值，不新增产品契约、依赖或 skip。主干先由 [#229](https://github.com/lorek666/tianshu-agent/pull/229) 引入三个独立 runner 与 state 背压工件；#225 刷新后保留工件，并将 macOS、Windows 的可选诊断都绑定各自分片。
 
 ### 收尾轮实现决策（2026-11-11，PR #66–#72）
 
@@ -415,8 +415,10 @@
 
 - **接管夹具须匹配产品的原子发布（2026-11-22）**：[#213 候选](https://github.com/lorek666/tianshu-agent/actions/runs/44944526018) 的 macOS Rust 用例在接管写入期间读到非法 Host 元数据。产品 Python Host 已经通过同目录临时文件原子替换发布，测试却直接截断写目标文件。仅将 Rust `cfg(test)` 内的接管夹具改为原子发布，并用真实子进程在半写屏障处调用真实读取器：旧发布方式确定性失败，原子发布保留完整旧记录，放行后读取完整新记录。原接管拒绝、Daemon 锁字节保留与未停机断言不变；不得为夹具竞态吞掉损坏元数据错误。产品 Rust 前缀及 Python 发布实现未改。
 
-- **Windows 分片须核对完整耗时分布（2026-11-22）**：[#213 候选 CI](https://github.com/lorek666/tianshu-agent/actions/runs/44927917869) 的分片 0 触及 25 分钟上限；双向修正少量文件后，[后续候选](https://github.com/lorek666/tianshu-agent/actions/runs/44939541307) 仍在约 91% 被取消。两轮缺件都使 required 汇总正确失败。日志对账显示中等文件误差会累积，runner 速度也有明显波动；后续覆盖完整已测 collection，并让真实任务的证据检查复用各场景三次实跑的深拷贝。每项断言保留，负控不能污染共享样本；变输入、失败与忘记路径仍独立实跑。对应权重含保留工作量的推算，不冒充新 Windows 实测。两个隔离 pytest 进程的回归和历史回算用于核对分配，两个独立 runner、完整覆盖汇总、诊断与时间上限不变。
+- **Windows 分片须核对完整耗时分布（2026-11-22）**：[#213 候选 CI](https://github.com/lorek666/tianshu-agent/actions/runs/44927917869) 的分片 0 触及 25 分钟上限；双向修正少量文件后，[后续候选](https://github.com/lorek666/tianshu-agent/actions/runs/44939541307) 仍在约 91% 被取消。两轮缺件都使 required 汇总正确失败。日志对账显示中等文件误差会累积，runner 速度也有明显波动；后续覆盖完整已测 collection，并让真实任务的证据检查复用各场景三次实跑的深拷贝。每项断言保留，负控不能污染共享样本；变输入、失败与忘记路径仍独立实跑。对应权重含保留工作量的推算，不冒充新 Windows 实测。两个隔离 pytest 进程的回归和历史回算用于核对分配；该轮采用两个独立 runner，后续累计超时后按 §4 改为三个独立 runner，完整覆盖汇总、诊断与时间上限不变。
   候选 `c6d6475` 的 [44944526018](https://github.com/lorek666/tianshu-agent/actions/runs/44944526018) 两片作业分别在 20 分 04 秒、20 分 08 秒完成，Windows required 汇总通过；下载的两份原始报告已再次核验实际 checkout、完整有序 collection、互斥全集及各阶段覆盖。该轮整体仍因上述 macOS Rust 夹具失败而为红，不用 Windows 通过替代新冻结的完整门禁。
+
+- **取消后的诊断证据必须独立于 pytest 日志（2026-11-24）**：#219 的 JSON 断言消息在 runner 取消或日志截断时可能一并丢失。state 背压测试现于首次断言前将完整脱敏报告原子写入 `RUNNER_TEMP`，真实子进程在首个失败谓词后硬退，验证日志不完整时 JSON 仍可读取。[#229](https://github.com/lorek666/tianshu-agent/pull/229) 在当时的单 macOS job 和三片 Windows 上传；本候选的 macOS 和 Windows 各分片均以 `always()` 上传，工件名绑定 run/attempt/shard；缺件只告警，不覆盖原退出码。与三片调整同见[本轮 CI 记录](changelog/2026-11-24-ci-windows-three-shards-and-state-evidence.md)。
 
 - **源码收据不扩张系统隔离结论（2026-11-21）**：source-only 私有根、空模型 key 与 env 凭据后端，不证明默认 urllib 代理/重定向路径零外发，也不消除默认 ControlPlane 构造时的 Keychain/ctypes 模块导入；构造或导入同样不等于实际取密钥。collector 正向归档/启动收据不能替代 full 原始退出码、辅助矩阵核验或当前 PID 活性证明，更不是产品 App 验收。旧独立 DB 守卫阻断与 FFI 拒绝边界保持，见[组合修复记录](changelog/2026-11-21-preview-release-repair.md)。
 

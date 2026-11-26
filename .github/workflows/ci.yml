@@ -130,6 +130,13 @@ jobs:
           --ci-shard-report="$CI_SHARD_ROOT/shard.json"
           --basetemp="$CI_SHARD_ROOT-runtime"
           -o cache_dir="$CI_SHARD_ROOT-cache"
+      - name: 上传 state 背压诊断证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: slo-state-pressure-macos-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/slo-state-pressure.json
+          if-no-files-found: warn
       - name: 上传 macOS 分片原始报告
         if: always()
         uses: actions/upload-artifact@v4
@@ -261,6 +268,13 @@ jobs:
           --ci-shard-report="$CI_SHARD_REPORT"
           -o addopts="" -vv -rs --tb=short
           --durations=20 --stack-timeout=60
+      - name: 上传 state 背压诊断证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: slo-state-pressure-windows-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/slo-state-pressure.json
+          if-no-files-found: warn
       - name: 上传本分片原始报告
         if: always()
         uses: actions/upload-artifact@v4
