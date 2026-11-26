@@ -44,7 +44,7 @@ sock.settimeout(15)
 stream = sock.makefile('rwb', buffering=0)
 
 def send(value):
-    stream.write(json.dumps(value).encode() + b'\n')
+    sock.sendall(json.dumps(value).encode() + b'\n')
 
 def receive():
     return json.loads(stream.readline())
@@ -133,6 +133,10 @@ if mode.startswith('host:'):
         'monitor_alive': any(x._thread is not None and x._thread.is_alive() for x in supervisors),
         'log_open': any(x._log_file is not None and not x._log_file.closed for x in supervisors),
     })
+    # Keep the socket alive until the parent has read the final evidence.
+    assert receive() == 'exit-received'
+    stream.close()
+    sock.close()
     sys.exit(code)
 elif mode == 'replace':
     assert receive() == 'go'
@@ -231,7 +235,13 @@ class _Peer:
         return json.loads(raw)
 
     def send(self, value: str) -> None:
-        self.stream.write(json.dumps(value).encode() + b"\n")
+        self.conn.sendall(json.dumps(value).encode() + b"\n")
+
+    def receive_host_exit(self) -> dict:
+        result = self.receive()
+        assert type(result.get("exit")) is int, result
+        self.send("exit-received")
+        return result
 
 
 @contextlib.contextmanager
@@ -448,7 +458,7 @@ def test_late_real_host_cannot_replace_the_running_owner_or_stop_its_daemon() ->
                     winner = _wait_published(root, second.pid)
                     first.send("publish")
                     assert first.receive() == {"ready": True}
-                    assert first.receive() == {
+                    assert first.receive_host_exit() == {
                         "exit": 1, "bridge_closed": True, "monitor_alive": False, "log_open": False
                     }
                     assert first.proc.wait(timeout=10) == 1
@@ -459,6 +469,11 @@ def test_late_real_host_cannot_replace_the_running_owner_or_stop_its_daemon() ->
                     assert second.receive() == {
                         "exit": 0, "bridge_closed": True, "monitor_alive": False, "log_open": False
                     }
+                    # The child must retain the evidence channel until the parent
+                    # acknowledges the full terminal report.
+                    with pytest.raises(subprocess.TimeoutExpired):
+                        second.proc.wait(timeout=0.5)
+                    second.send("exit-received")
                     assert second.proc.wait(timeout=10) == 0
                     assert not ipc.probe(root, timeout=0.5)
                     assert host.read_host_info(root) is None
@@ -630,7 +645,7 @@ def test_running_host_exits_without_stopping_daemon_when_identity_is_replaced() 
                     current.pid + 1, 0, "replacement", current.started_at + 1
                 )
                 host.write_host_info(root, replacement, expected=current)
-                assert running.receive() == {
+                assert running.receive_host_exit() == {
                     "exit": 1, "bridge_closed": True, "monitor_alive": False, "log_open": False
                 }
                 assert running.proc.wait(timeout=10) == 1
@@ -662,7 +677,7 @@ def test_starting_host_cannot_leave_two_published_bridges() -> None:
                         assert first.proc.poll() is None and time.monotonic() < deadline
                         threading.Event().wait(0.01)
                     (root / "allow-health").touch()
-                    assert first.receive() == {
+                    assert first.receive_host_exit() == {
                         "exit": 1, "bridge_closed": True, "monitor_alive": False, "log_open": False
                     }
                     assert first.proc.wait(timeout=10) == 1
@@ -670,7 +685,7 @@ def test_starting_host_cannot_leave_two_published_bridges() -> None:
                     assert host._http_alive(winner)
                     assert ipc.probe(root, timeout=1)
                     assert host.stop_host(root, timeout=20) == 0
-                    assert second.receive() == {
+                    assert second.receive_host_exit() == {
                         "exit": 0, "bridge_closed": True, "monitor_alive": False, "log_open": False
                     }
                     assert second.proc.wait(timeout=10) == 0
@@ -825,7 +840,7 @@ def test_real_stop_cannot_join_monitor_before_its_thread_has_started() -> None:
                 finally:
                     if not released and running.proc.poll() is None:
                         running.send("start")
-                outcome = running.receive()
+                outcome = running.receive_host_exit()
                 _, stderr = running.proc.communicate(timeout=10)
                 assert stopper.returncode == 0, stopper.stderr.decode()
                 assert running.proc.returncode == 0, stderr.decode()
