@@ -112,8 +112,8 @@ if mode.startswith('host:'):
             try:
                 original_lock(fd)
             except OSError:
-                if not lock_notified:
-                    send({'blocked': True})
+                if not lock_notified and (root / 'check-owner-contention').exists():
+                    (root / 'owner-lock-contended').touch()
                     lock_notified = True
                 raise
         leases._try_lock = observe_lock
@@ -644,7 +644,16 @@ def test_running_host_exits_without_stopping_daemon_when_identity_is_replaced() 
                 replacement = host.HostInfo(
                     current.pid + 1, 0, "replacement", current.started_at + 1
                 )
-                host.write_host_info(root, replacement, expected=current)
+                # Make the running child contend for the real metadata lock after
+                # replacement. Its lock observation uses a separate marker; the socket
+                # carries the terminal report without another message interposed.
+                with host._host_info_guard(root):
+                    host._write_host_info(root, replacement, expected=current)
+                    (root / "check-owner-contention").touch()
+                    deadline = time.monotonic() + 4
+                    while not (root / "owner-lock-contended").exists():
+                        assert running.proc.poll() is None and time.monotonic() < deadline
+                        threading.Event().wait(0.01)
                 assert running.receive_host_exit() == {
                     "exit": 1, "bridge_closed": True, "monitor_alive": False, "log_open": False
                 }
