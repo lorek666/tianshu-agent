@@ -6,6 +6,12 @@
 > 状态只有六档：`未开始 / SPEC / 实现 / 门禁绿 / CI绿 / 已合`——不许把未合写成已合。
 > 占用面每日重核；被其他会话占着的领域不并行开工。
 
+2026-11-23 补充：新一批 [Agent 主循环](SPEC-AGENT-LOOP-2026-11-22.md)
+已随 [#225](https://github.com/lorek666/tianshu-agent/pull/225) 合入 Mission、任务图、独立验证、Goal V2、有限授权和执行准入，尚未公开发行。P0-E 的 Windows 原生隔离和完整平台对象
+验收仍未交付；脱组后代负控下自动四边界准入继续拒绝。
+逐项证据见[实施记录](changelog/2026-11-23-agent-loop-implementation.md)，
+不把旧 W14 CI 或文档状态当作本候选的平台支持证明。
+
 ## 工作流账本
 
 | # | 工作流 | 缺口出处 | 契约影响 | 冲突面 | 外部阻塞 | 状态 |
@@ -22,7 +28,7 @@
 | W10 | 子代理深度：写权限 / 深度>1 / fork 式 | §7 G2 D 系 | C2/C4 评估 | loop.py / worker.py（热） | 无 | **已并入 main**（#156，`134e9f0`，run43679118848） |
 | W11 | 巨石模块拆分（dispatcher/loop/tasks/memory/cli） | 工程债 | 无（纯重构，契约不动） | **热文件，按依赖分层推进** | 无 | **已并入 main**（CLI/记忆 [#193](https://github.com/lorek666/tianshu-agent/pull/193) `8667203`，任务/循环/派发 [#197](https://github.com/lorek666/tianshu-agent/pull/197) `bc02b37`） |
 | W12 | C1/C2/C5 字段级 schema 冻结 | §7 疤 | **docs(contract) 独立 PR** | schemas/ + PRD | 无 | **已并入 main**（契约 #190 `beedf51` / 绑定与 `run.end` v2 #191 `e18624c`，run 44173429146） |
-| W13 | 桌面外壳：Tauri + 托盘 + 安装包（R0–R3） | M5-D1/D2/D5、[PRD §11.1](PRD-v1.md) | IPC/UI 契约不动 | `desktop/` + `scripts/*release*` + `release.yml` | 签名/公证按 T1 不做；首发只验 Apple Silicon 实机 | **四目标基线已并入 main**（#170 / #174 / #175 / #186）；`e87a38c` 已实跑并生成未公开的 `v0.1.1` 单目标预览草稿，因当前 `origin/main=c5fcff0` 的最新 push CI 取消而不是当前主干候选。真机安装/升级/回退、SLO、真实模型 UI 与四目标正式发行仍待验收 |
+| W13 | 桌面外壳：Tauri + 托盘 + 安装包（R0–R3） | M5-D1/D2/D5、[PRD §11.1](PRD-v1.md) | IPC/UI 契约不动 | `desktop/` + `scripts/*release*` + `release.yml` | 签名/公证按 T1 不做；首发只验 Apple Silicon 实机 | **四目标基线已并入 main**（#170 / #174 / #175 / #186）；`e87a38c` 已实跑并生成未公开的 `v0.1.1` 单目标预览草稿，该草稿只绑定 `e87a38c`。真机安装/升级/回退、SLO、真实模型 UI 与四目标正式发行仍待验收 |
 | W14 | 进程级沙箱（第二 ExecBackend + 接产品路径） | §7 隔离条 | F2 门语义（#194 已冻结） | exec*/isolation | Windows 原生容器不在 v1 范围（诚实标 unsupported） | **已并入 main**（[#196](https://github.com/lorek666/tianshu-agent/pull/196)，`3ff553f`，macOS Seatbelt 和 Linux Landlock 自动化见[原生 CI](https://github.com/lorek666/tianshu-agent/actions/runs/44243061414)） |
 | W15 | 保留期/GC（summaries、dispatch_requests、审计表） | §7 多处挂账 | 事件面评估（#194 已冻结） | 与 G3 后续重叠 | 契约 §6 已由 [#194](https://github.com/lorek666/tianshu-agent/pull/194) 冻结 | **v1 只读审计已并入 main**（#169，`7f88994`）。**v2 保守离线 GC** 与恢复 B/C 同批集成，验收见 [#198](https://github.com/lorek666/tianshu-agent/pull/198)。只读预检遇 SQLite 旁文件即拒绝。Windows 拒绝含文件候选的整批执行，静态库的纯表行清理可按余量执行或延期。受管恢复写入需要 POSIX 目录屏障，Windows 保留只读计划及符合绑定的复核。目录持久化缺口见 [#200](https://github.com/lorek666/tianshu-agent/issues/200)。 |
 

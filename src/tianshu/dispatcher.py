@@ -93,6 +93,7 @@ from ._dispatcher_types import (
     resolve_scheme_resource,
 )
 from .browser_forms import SUBMIT_TOOL
+from .consent import ConsentError, ConsentStore
 from .crashpoint import failpoint
 from .disk_admission import DiskAdmissionError
 from .errors import (
@@ -185,6 +186,7 @@ class Dispatcher(
         exec_backend: ExecBackend | None = None,
         mcp_clients: McpClients | None = None,
         registry: ToolRegistry | None = None,
+        consents: ConsentStore | None = None,
         clock=_now,
         guard_timeout_ms: int = GUARD_TIMEOUT_MS,
     ) -> None:
@@ -235,6 +237,9 @@ class Dispatcher(
         self._leases = leases
         self._policy = policy
         self._approvals = approvals
+        if consents is not None and consents._conn is not self._conn:
+            raise TianshuError("Dispatcher 和有限授权必须共用同一事件连接")
+        self._consents = consents
         self._grants = grants or GrantStore(log, clock=clock)
         self._claims = claims or tasks.claims
         if self._claims is None:
@@ -330,7 +335,12 @@ class Dispatcher(
             snapshots=snapshots,
             exec_backend=self._exec_backend,
             data_root=self._data_root,
+            consents=consents,
+            execution_check=lambda admitted: self._verify_verification_command(
+                admitted.request, admitted.args),
         )
+        if consents is not None:
+            self.bind_consents(consents)
         if snapshots is not None and hasattr(snapshots, "_bind_owner_log"):
             snapshots._bind_owner_log(log)
 
@@ -343,6 +353,18 @@ class Dispatcher(
     @property
     def claims(self) -> JobStore:
         return self._claims
+
+    def bind_consents(self, consents: ConsentStore) -> None:
+        """Stack 装配时绑定同连接规则库及执行器；缺失时保留默认逐项审批。"""
+        if (consents._conn is not self._conn or consents._tasks is not self._tasks
+                or consents._data_root != Path(self._data_root).resolve()):
+            raise TianshuError("有限授权与 Dispatcher 的任务/连接/数据根不一致")
+        if self._consents is not None and self._consents is not consents:
+            raise TianshuError("当前 Dispatcher 已绑定另一有限授权 runtime")
+        if not isinstance(self._executor, FileExecutor):
+            raise TianshuError("有限授权要求能够独立核票的 FileExecutor")
+        self._consents = consents
+        self._executor._consents = consents
 
     def _memory_projection(self) -> object:
         """拿到与事件日志同库的记忆投影。
@@ -568,6 +590,28 @@ class Dispatcher(
                 event=DISPATCH_REJECTED,
             )
 
+        if self._consents is not None and isinstance(target, _FileTarget):
+            try:
+                consent_id = self._consents.select(request, args=args)
+            except ConsentError as exc:
+                return self._reject(
+                    request, args, str(exc), "dispatch.consent_unusable",
+                    event=DISPATCH_REJECTED,
+                )
+            if consent_id is not None:
+                self._store_request(
+                    request, args, STATE_ADMITTED, "人类有限授权", "c4.scoped_consent",
+                )
+                self._append(request, DISPATCH_REQUESTED, {
+                    "request_id": request.request_id, "request_digest": request.digest(),
+                    "action": request.action, "resources": list(request.resources),
+                    "decision": "approve", "rule_id": "c4.scoped_consent",
+                })
+                return DispatchDecision(
+                    KIND_ADMITTED, request.request_id, request.digest(),
+                    reason="人类有限授权", rule_id="c4.scoped_consent",
+                )
+
         approval = self._approvals.find_for(request)
         if (
             approval is not None
@@ -766,6 +810,8 @@ class Dispatcher(
             return self._reject_runtime(request, exc, "dispatch.claim_lost")
         except LeaseLost as exc:
             return self._reject_runtime(request, exc, "dispatch.lease_lost")
+        except ConsentError as exc:
+            return self._reject_runtime(request, exc, "dispatch.consent_unusable")
         except ApprovalError as exc:
             return self._reject_runtime(request, exc, "dispatch.approval_unusable")
         except WorkspaceBlocked as exc:
@@ -822,9 +868,18 @@ class Dispatcher(
                         self._commit_result(request, dispatch_id, result, target, seq)
                         memory_committed = True
             else:
-                with self._tasks.begin_execution(
-                    self._data_root, request.run_id, auth.lease_paths
-                ) as permit:
+                if self._consents is not None and self._consents.selected(request):
+                    beginning = self._tasks.begin_execution(
+                        self._data_root, request.run_id, auth.lease_paths,
+                        before_start=lambda: self._verify_consent_start(
+                            request, claim, args, grant_id,
+                        ),
+                    )
+                else:
+                    beginning = self._tasks.begin_execution(
+                        self._data_root, request.run_id, auth.lease_paths,
+                    )
+                with beginning as permit:
                     result = self._executor.execute(admitted, permit)
         except (
             DispatchDenied,
@@ -871,6 +926,30 @@ class Dispatcher(
         failpoint("after_result")
         failpoint("after_receipt")
         return result
+
+    def _verify_consent_start(self, request, claim, args, grant_id) -> None:
+        """同一守卫/事务内核票，再由 TaskStore 提交逻辑开始点。"""
+        auth = self._authority(request, claim, args=args)
+        target = self._resolve_target(request, auth)
+        self._check_run_execution(request, target)
+        if self._approvals.rejected_for(request) is not None:
+            raise ConsentError("具体动作已被人否决")
+        decision = self._policy.classify(
+            request.action, list(request.resources), auth.bindings,
+            self._policy_preconditions(request, target, args),
+            task_id=request.task_id, tool_id=request.tool_id,
+        )
+        if decision.is_denied:
+            raise DispatchDenied(decision.reason, decision.rule_id)
+        grant = self._grants.get(grant_id)
+        if (grant is None or grant.expires_at <= self._clock()
+                or grant.run_id != request.run_id or grant.task_id != request.task_id):
+            raise ConsentError("具体执行 Grant 缺失、过期或作用域不符")
+        record = self.dispatch_record(request.run_id, request.call_id)
+        if (record is None or record.state != DISPATCH_INTENT
+                or record.request_digest != request.digest() or record.grant_id != grant_id):
+            raise ConsentError("有限授权缺少有效派发 intent")
+        self._consents.verify(request, args=args, grant=grant)
 
 
     # ---- 撤销 ----

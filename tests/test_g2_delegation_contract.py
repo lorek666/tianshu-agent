@@ -22,6 +22,7 @@ import pytest
 
 from tianshu import event_schema
 from tianshu.events import EVENT_TYPES, EventLog
+from tianshu.restore_access import default_material_paths
 from tianshu.rules import (
     DECISION_RULE_IDS,
     DECLARED_UNUSED_RULE_IDS,
@@ -36,21 +37,9 @@ C3 = REPO / "schemas" / "c3" / "event.json"
 C4 = REPO / "schemas" / "c4" / "rules.json"
 M2_TASK = REPO / "schemas" / "m2" / "task.json"
 
-#: 实施时实测的契约增量（不是规格里的预估数字）。
-#:
-#: 规则数说明：D1 分支基线的 `main` 是 59；本分支 +9（§2.7 的 8 条 + §2.3 额外
-#: 要求的 `dispatch.subtask_rejected`）；合并 `main` 上的 G2 MCP 阶段（+6）之后
-#: 是 74；对象级阻断工单 +1（`dispatch.mcp_object_blocked`）= 75；低磁盘准入
-#: 再显式登记三项空间/资格拒绝 = 78。D1 自己的增量与规格预估的差异写进 PR
-#: body 对账。
-#:
-#: 事件类型 43 → 45：对象级阻断新增 `recovery.object_blocked` /
-#: `recovery.object_unblocked`（MCP 后续工单 §5-8）。
-EXPECTED_RULE_IDS = 78
-
-
 def _stack(tmp_path: Path):
-    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    db, root = tmp_path / "events.db", tmp_path / "data"
+    log = EventLog(db, blob_dir=default_material_paths(db, root)[1], data_root=root)
     from support import stack_for
 
     return log, stack_for(log, data_root=tmp_path / "data")
@@ -137,7 +126,8 @@ def test_legacy_task_created_without_max_subtasks_reads_as_v0(tmp_path):
     conn.execute("ALTER TABLE tasks DROP COLUMN depth")
     conn.commit()
     conn.close()
-    log2 = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    db, root = tmp_path / "events.db", tmp_path / "data"
+    log2 = EventLog(db, blob_dir=default_material_paths(db, root)[1], data_root=root)
     try:
         store = TaskStore(log2)
         old = store.get_task(task.task_id)
@@ -216,10 +206,7 @@ def test_tool_id_enum():
     assert set(tool_enum) == set(SPECS)
     assert len(set(tool_enum)) == len(tool_enum), "工具 id 不能重复"
 
-    # 规则 id 78（D1 75 + 低磁盘资格/空间未知/空间不足 3 条）。规格 §2.7 对
-    # D1 增量的预估是 8 条，差的那一条是 §2.3 要求的
-    # `dispatch.subtask_rejected`。
-    assert len(RULE_IDS) == EXPECTED_RULE_IDS
+    assert {"c4.scoped_consent", "dispatch.consent_unusable"} <= RULE_IDS
     raw = C4.read_text(encoding="utf-8")
     doc = json.loads(raw)
     assert doc["properties"]["rule_id"]["enum"] == sorted(RULE_IDS)

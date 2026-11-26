@@ -204,6 +204,8 @@ export interface CreateTaskInput extends RunModelSelection {
   /** 只随创建后的首次 run.start 发送；不写进 Task 或 workspace 能力。 */
   execution_policy: RunExecutionPolicyV1;
   mode?: "execute" | "plan";
+  /** Goal 首版只保存配置，不自动启动普通 Run。 */
+  goal_config?: { criteria: string[]; max_rounds: number };
 }
 
 /** 界面会调用的方法名。字符串常量集中在这里，避免各处手写拼错。 */
@@ -212,6 +214,8 @@ export const RPC = {
   taskList: "task.list",
   taskCreate: "task.create",
   taskRevise: "task.revise",
+  skillList: "skill.list",
+  skillPrepare: "skill.prepare",
   runStart: "run.start",
   runFollowUp: "run.follow_up",
   runAnswerClarification: "run.answer_clarification",

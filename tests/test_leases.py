@@ -565,6 +565,28 @@ def test_guard_timeout_is_typed(tmp_path):
                 pass
 
 
+def test_named_execution_guards_have_independent_lifetimes(tmp_path):
+    root = tmp_path / "data"
+    with execution_guard(root, guard_name="daemon.lock.guard"):
+        # Daemon lock cleanup must not wait on the Host metadata mutex.
+        with execution_guard(root, timeout_ms=50):
+            pass
+        with pytest.raises(GuardTimeout):
+            with execution_guard(root, guard_name="daemon.lock.guard", timeout_ms=50):
+                pass
+    assert (root / "execution.guard").exists()
+    assert (root / "daemon.lock.guard").exists()
+
+
+@pytest.mark.parametrize(
+    "guard_name", ["", ".", "..", "nested/guard", "../guard", "nested\\guard"],
+)
+def test_execution_guard_rejects_non_file_names(tmp_path, guard_name):
+    with pytest.raises(ValueError, match="单文件名"):
+        with execution_guard(tmp_path, guard_name=guard_name):
+            pass
+
+
 def test_dead_workspace_path_still_yields_identity(tmp_path):
     """目录还不存在时也不能崩：身份退化为规范路径键。"""
     missing = tmp_path / "not-yet"

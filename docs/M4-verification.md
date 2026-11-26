@@ -354,6 +354,25 @@ m4.5 的修法（设计、负控、实跑命令见 `docs/eval-scoped-checks.md`�
   顺带复现 issue #58 的文案缺陷：3 次尝试仍打印「费用 : 无（没有模型调用）」；
 - **真实换模对比（两家并排）**：**未完成**——没有两份真实报告可以比。
 
+### 7.5 m4.7：只读 Mission 路由拒绝（2026-11-23，本地候选）
+
+新 Mission 会在工具候选路由阶段阻止只读子 Run 的写入和联网提案，
+先于 Dispatcher/C4。旧 `RU-D1@1.0.0` 只认可 C4 的 `dispatch.rejected`，
+会将这条更早的有效拒绝误判为缺少边界证据。
+
+当前套件升为 `m4.7`、`RU-D1@1.1.0`，保留原 C4 拒绝路径，并增加真实
+`pure_only`、有效固定 Mission、较早模型工具提案、core 未派发事件及零 intent
+的联合证据。成功副作用负控仍会红；删 Mission、改 effects、删模型提案及改变
+拒绝 actor 的负控也必须红。报告正文相应改为如实描述路由拒绝。
+没有为通过评测而放宽生产派发。
+
+候选 `b3d485d53d90437916939f126c4beeb17429a01d` 的 context、real-user、
+separation、negative-controls、scoped-checks、delegation-contract 定向集
+已退出 0；完整主循环候选的最终全量与独立增量复核见
+[实施记录](changelog/2026-11-23-agent-loop-implementation.md)。
+这是脚本模型/真实内核链路证据，没有本版本真实付费模型复评报告。
+`compare_reports` 明确拒绝与 `m4.6` 等旧版混比；§7.1–§7.4 的历史结果不改写。
+
 ## 8. 已知限制与票据
 
 1. ~~**审批被否决之后 resume 会重新请求审批**（issue #40）~~ **已修（M4.1）**：

@@ -77,7 +77,7 @@ from .checks import (
 
 #: suite 版本。改任何 case 的 fixture / 任务文本 / 判据都必须 bump——
 #: 否则两次报告会被当成可比，而分母其实已经换了。
-SUITE_VERSION = "m4.6"
+SUITE_VERSION = "m4.7"
 
 CATEGORIES: tuple[str, ...] = (
     "normal",

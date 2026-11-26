@@ -10,12 +10,12 @@
 | `e87a38c` 预览发行 | [release run 44892061206](https://github.com/lorek666/tianshu-agent/actions/runs/44892061206) | `workflow_dispatch` 成功；`version=0.1.1`、`macos_arm64_preview=true` |
 | `v0.1.1` 草稿 | [GitHub prerelease draft](https://github.com/lorek666/tianshu-agent/releases/tag/v0.1.1) | 未公开；六项资产；`runtime_smoke=pass`、`device_verification=unknown`、`signed=false` |
 | `e87a38c` 主干 CI | [main push CI 44890059535](https://github.com/lorek666/tianshu-agent/actions/runs/44890059535) | 九项 job 全部 success |
-| 当前 `origin/main=c5fcff0` | [main push CI 45078725688](https://github.com/lorek666/tianshu-agent/actions/runs/45078725688) | Windows shard0 达到 25 分钟上限，run 整体 cancelled |
+| 对账时的主干 `c5fcff0` | [main push CI 45078725688](https://github.com/lorek666/tianshu-agent/actions/runs/45078725688) | Windows shard0 达到 25 分钟上限，run 整体 cancelled |
 
 ## 对账结论
 
 - **预览草稿已实跑，但未公开。** `e87a38c` 的发行 run 成功只证明该提交的单目标预览构建、资产汇总和 runner runtime smoke 已完成，不等于正式发布或用户设备验收。
-- **该草稿不是当前主干候选。** `e87a38c` 的同 SHA CI 全绿不能覆盖当前 `c5fcff0` 主干的取消结果；当前主干在 Windows shard0 超时问题解决并取得新的全绿证据前，不能作为发行候选。
+- **该草稿不是当前主干候选。** `e87a38c` 的同 SHA CI 全绿不能覆盖当时 `c5fcff0` 的取消结果。此后 [#229](https://github.com/lorek666/tianshu-agent/pull/229) 与 [#225](https://github.com/lorek666/tianshu-agent/pull/225) 均已合入，`3017f09` 的 [main CI 45854841880](https://github.com/lorek666/tianshu-agent/actions/runs/45854841880) 成功；[#228](https://github.com/lorek666/tianshu-agent/pull/228) 合入后的 `34a6844` 也通过了 [main CI 45862348807](https://github.com/lorek666/tianshu-agent/actions/runs/45862348807)。主干 CI 通过不等于完成发行验收。
 - **ad-hoc 资源封套不等于发布者信任。** macOS 免费 no-force ad-hoc 外层封装只修复结构完整性；`signed=false` 表示没有认证发布者证书签名，不表示 Mach-O 中绝无 linker/ad-hoc 签名位。它不是 Developer ID 签名、公证或 Gatekeeper 放行证明。
 - **四目标与真机仍未验收。** 本次单目标预览不证明 Intel Mac、Windows x64/ARM64、Linux 或四目标正式发行可用；CI runner 也不替代用户设备。
 

@@ -144,6 +144,25 @@ def config():
     )
 
 
+def test_mission_remote_schema_identity_survives_new_session(connector):
+    from tianshu.mission import tool_identity
+    from tianshu.tool_registry import build_registry
+
+    clients = [McpClients({"web": config()}), McpClients({"web": config()})]
+    try:
+        registries = []
+        for client in clients:
+            client.start_remotes(("web",))
+            registries.append(build_registry(client))
+        first, second = registries
+        one, two = first.spec("mcp__web__echo"), second.spec("mcp__web__echo")
+        assert one.version != two.version, "审批仍须绑定具体传输 Session"
+        assert tool_identity(one, first) == tool_identity(two, second)
+    finally:
+        for client in clients:
+            client.close_all()
+
+
 @pytest.mark.parametrize(
     "url",
     [
@@ -182,9 +201,9 @@ def test_remote_tool_requires_approval_and_complete_result(
     behavior["status"] = status
     behavior["framing"] = framing
     close_stream = behavior["close_stream"] = threading.Event()
-    log = EventLog(tmp_path / "main.db", blob_dir=tmp_path / "blobs")
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
     clients = McpClients({"web": config()})
-    stack = build_stack(log, data_root=tmp_path / "data", mcp_clients=clients)
+    stack = build_stack(log, data_root=tmp_path, mcp_clients=clients)
     script = ScriptedModel(
         [
             ModelResponse(
@@ -254,11 +273,11 @@ def test_remote_tool_requires_approval_and_complete_result(
 
 def test_remote_session_generation_cannot_reuse_approval(tmp_path, connector, monkeypatch):
     requests, _, _ = connector
-    log = EventLog(tmp_path / "main.db", blob_dir=tmp_path / "blobs")
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
     first = McpClients({"web": config()})
     second = McpClients({"web": config()})
     try:
-        stack = build_stack(log, data_root=tmp_path / "data", mcp_clients=first)
+        stack = build_stack(log, data_root=tmp_path, mcp_clients=first)
         task = stack.tasks.create_task("工具会话", [], mcp_servers=["web"])
         original = engine_for(stack, ScriptedModel([
             ModelResponse("tool_use", tool_calls=[
@@ -269,7 +288,7 @@ def test_remote_session_generation_cannot_reuse_approval(tmp_path, connector, mo
         original_version = stack.dispatcher.registry.spec("mcp__web__echo").version
         first.close_all()
         monkeypatch.setenv("TEST_REMOTE_MCP_TOKEN", "second-credential")
-        resumed = build_stack(log, data_root=tmp_path / "data", mcp_clients=second)
+        resumed = build_stack(log, data_root=tmp_path, mcp_clients=second)
         resumed.dispatcher.prepare_run(task.task_id, EFFECTS)
         assert resumed.dispatcher.registry.spec("mcp__web__echo").version != original_version
         result = engine_for(resumed, ScriptedModel([
@@ -285,17 +304,21 @@ def test_remote_session_generation_cannot_reuse_approval(tmp_path, connector, mo
         log.close()
 
 
-def test_queued_desktop_run_discovers_connector_in_driver_only(tmp_path, connector):
+@pytest.mark.parametrize("mode", ["run", "goal"])
+def test_queued_desktop_run_discovers_connector_in_driver_only(tmp_path, connector, mode):
     from tianshu.control import ControlPlane
 
     requests, _, _ = connector
-    db = tmp_path / "main.db"
+    db = tmp_path / "events.db"
     control_log = EventLog(db, blob_dir=tmp_path / "blobs")
     driver_log = EventLog(db, blob_dir=tmp_path / "blobs")
     clients = McpClients({"web": config()})
+    control_clients = McpClients({"web": config()})
     try:
-        control_stack = build_stack(control_log, data_root=tmp_path / "data")
-        driver_stack = build_stack(driver_log, data_root=tmp_path / "data", mcp_clients=clients)
+        control_stack = build_stack(
+            control_log, data_root=tmp_path, mcp_clients=control_clients,
+        )
+        driver_stack = build_stack(driver_log, data_root=tmp_path, mcp_clients=clients)
 
         class ChoosingModel(ScriptedModel):
             def complete(self, messages, tools):
@@ -309,7 +332,17 @@ def test_queued_desktop_run_discovers_connector_in_driver_only(tmp_path, connect
         ])
         plane = ControlPlane(control_stack, model=model, mcp_configs={"web": config()})
         task = plane.handle("task.create", {"goal": "使用工具", "mcp_servers": ["web"]})["task"]
-        rid = plane.handle("run.start", {"task_id": task["task_id"]})["run"]["run_id"]
+        if mode == "goal":
+            goal = plane.handle("goal.create", {
+                "task_id": task["task_id"], "goal_revision": task["goal_revision"],
+                "criteria": ["工具结果可核对"], "request_id": "create",
+                "execution_policy": EFFECTS.to_dict(),
+            })["goal"]
+            rid = plane.handle("goal.advance", {
+                "goal_id": goal["goal_id"], "request_id": "advance",
+            })["run"]["run_id"]
+        else:
+            rid = plane.handle("run.start", {"task_id": task["task_id"]})["run"]["run_id"]
         assert requests == []
         engine = engine_for(driver_stack, model)
         assert engine.resume_run(rid).state == "waiting_approval"
@@ -318,6 +351,7 @@ def test_queued_desktop_run_discovers_connector_in_driver_only(tmp_path, connect
         assert engine.resume_run(rid).terminal
         assert len(requests) == 4
     finally:
+        control_clients.close_all()
         clients.close_all()
         driver_log.close()
         control_log.close()

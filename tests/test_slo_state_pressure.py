@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import sys
 from pathlib import Path
+from textwrap import dedent
 from threading import Lock
 from types import SimpleNamespace
 from typing import Any
@@ -17,36 +20,65 @@ if str(SCRIPTS_DIR) not in sys.path:
 
 import measure_slo as slo  # noqa: E402
 
+STATE_PRESSURE_REPORT = "slo-state-pressure.json"
 
-def test_state_diagnostic_uses_live_pressure_in_real_children() -> None:
+
+def _state_pressure_output(tmp_path: Path) -> Path:
+    root = os.environ.get("TIANSHU_SLO_DIAGNOSTICS_DIR")
+    if root is None:
+        return tmp_path / STATE_PRESSURE_REPORT
+    shard = os.environ.get("TIANSHU_CI_SHARD_INDEX") or os.environ.get("CI_SHARD_INDEX")
+    if shard not in {"0", "1", "2", "3"}:
+        raise ValueError("state-pressure diagnostics require an explicit CI shard index")
+    return Path(root) / "state-pressure" / f"{shard}.json"
+
+
+def _write_state_pressure_report(report: dict[str, Any], tmp_path: Path) -> str:
+    rendered = json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True)
+    output = _state_pressure_output(tmp_path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output.with_name(f".{output.name}.tmp")
+    temporary.write_text(rendered + "\n", encoding="utf-8")
+    temporary.replace(output)
+    return rendered
+
+
+def test_state_pressure_output_uses_native_macos_shard_index(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("TIANSHU_SLO_DIAGNOSTICS_DIR", str(tmp_path / "diagnostics"))
+    monkeypatch.setenv("CI_SHARD_INDEX", "1")
+    monkeypatch.delenv("TIANSHU_CI_SHARD_INDEX", raising=False)
+    assert _state_pressure_output(tmp_path) == tmp_path / "diagnostics/state-pressure/1.json"
+
+
+def test_state_diagnostic_uses_live_pressure_in_real_children(tmp_path: Path) -> None:
     report, exit_code = slo.run_state_pressure_diagnostic(repeats=2)
-    assert exit_code == 0, report
-    assert report["schema_version"] == "slo-state-pressure-dev-v1"
-    assert report["scope"] == "diagnostic_pre_threshold"
-    assert "verdict" not in report
-    assert "state_rpc_ms" not in slo.REQUIRED_SLO_METRICS
-    assert report["orphan_process_count"] == 0
-    assert report["slow_subscriber"]["cursor_reconnect_verified"]
+    rendered = _write_state_pressure_report(report, tmp_path)
+    assert str(Path.home()) not in rendered, rendered
+    assert exit_code == 0, rendered
+    assert report["schema_version"] == "slo-state-pressure-dev-v1", rendered
+    assert report["scope"] == "diagnostic_pre_threshold", rendered
+    assert "verdict" not in report, rendered
+    assert "state_rpc_ms" not in slo.REQUIRED_SLO_METRICS, rendered
+    assert report["orphan_process_count"] == 0, rendered
+    assert report["slow_subscriber"]["cursor_reconnect_verified"], rendered
     trials = report["trials"]
-    assert {trial["trial"] for trial in trials} == {"sm0", "st0", "ov0"}
+    assert {trial["trial"] for trial in trials} == {"sm0", "st0", "ov0"}, rendered
     summary = report["state_rpc_ms"]
-    assert summary["attempted_count"] == summary["qualified_count"] == len(trials)
-    assert summary["invalid_count"] == 0
-    assert 0 < summary["p50_ms"] <= summary["p95_ms"] <= summary["max_ms"]
+    assert summary["attempted_count"] == summary["qualified_count"] == len(trials), rendered
+    assert summary["invalid_count"] == 0, rendered
+    assert 0 < summary["p50_ms"] <= summary["p95_ms"] <= summary["max_ms"], rendered
     for trial in trials:
-        assert trial["invalid_reason"] is None, trial
-        assert trial["latency_ms"] > 0
-        assert 0 <= trial["dispatch_offset_ms"] <= trial["latency_ms"]
+        assert trial["invalid_reason"] is None, rendered
+        assert trial["latency_ms"] > 0, rendered
+        assert 0 <= trial["dispatch_offset_ms"] <= trial["latency_ms"], rendered
         pressure = trial["pressure"]
-        assert pressure["drop_reason"] == "send_stall"
-        assert pressure["same_live_send_at_dispatch"] is True
-        assert pressure["sent_frames_at_drop"] == pressure["sent_frames_at_dispatch"] >= 2
-        assert pressure["ready_offset_ms"] <= 0
-        assert pressure["drop_offset_ms"] > trial["dispatch_offset_ms"]
-        assert pressure["send_age_at_ready_ms"] >= 10
-        assert pressure["send_age_at_drop_ms"] > slo.SUITE2_SEND_STALL_S * 1000
-    rendered = json.dumps(report, sort_keys=True, ensure_ascii=False)
-    assert str(Path.home()) not in rendered
+        assert pressure["drop_reason"] == "send_stall", rendered
+        assert pressure["same_live_send_at_dispatch"] is True, rendered
+        assert pressure["sent_frames_at_drop"] == pressure["sent_frames_at_dispatch"] >= 2, rendered
+        assert pressure["ready_offset_ms"] <= 0, rendered
+        assert pressure["drop_offset_ms"] > trial["dispatch_offset_ms"], rendered
+        assert pressure["send_age_at_ready_ms"] >= 10, rendered
+        assert pressure["send_age_at_drop_ms"] > slo.SUITE2_SEND_STALL_S * 1000, rendered
     print(rendered)  # `pytest -s` 可直接留存脱敏的开发证据。
 
 
@@ -75,6 +107,109 @@ def test_state_after_same_sender_watchdog_drop_is_not_a_sample(monkeypatch) -> N
     assert summary["qualified_count"] == len(qualified)
     assert summary["p50_ms"] == min(qualified)
     assert summary["p95_ms"] == summary["max_ms"] == max(qualified)
+
+
+@pytest.mark.parametrize(("diagnostics_set", "shard"), [(False, "0"), (True, "0"), (True, "3")])
+def test_synthetic_failure_survives_hard_exit_with_complete_json(
+    diagnostics_set: bool, shard: str, tmp_path: Path,
+) -> None:
+    child_env = dict(os.environ)
+    child_env["TIANSHU_CI_SHARD_INDEX"] = shard
+    child_env.pop("CI_SHARD_INDEX", None)
+    diagnostics = tmp_path / "diagnostics"
+    if diagnostics_set:
+        child_env["TIANSHU_SLO_DIAGNOSTICS_DIR"] = str(diagnostics)
+    else:
+        child_env.pop("TIANSHU_SLO_DIAGNOSTICS_DIR", None)
+    child = dedent(
+        """
+        import importlib.util
+        import json
+        import os
+        import sys
+        from pathlib import Path
+
+        spec = importlib.util.spec_from_file_location("state_pressure_test", sys.argv[1])
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        report = {
+            "schema_version": "slo-state-pressure-dev-v1",
+            "scope": "diagnostic_pre_threshold",
+            "environment": {"redaction": "d7_local_redacted"},
+            "slow_subscriber": {"cursor_reconnect_verified": False},
+            "state_rpc_ms": {"qualified_count": 0, "invalid_count": 1},
+            "trials": [{"trial": "sm0", "invalid_reason": "synthetic_failure"}],
+            "orphan_process_count": 0,
+        }
+        module.slo.run_state_pressure_diagnostic = lambda **kwargs: (report, 1)
+        try:
+            module.test_state_diagnostic_uses_live_pressure_in_real_children(Path(sys.argv[2]))
+        except AssertionError as error:
+            assert json.loads(str(error)) == report
+            sys.stdout.write("truncated before pytest can render the assertion")
+            sys.stdout.flush()
+            os._exit(73)
+        os._exit(74)
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", child, str(Path(__file__).resolve()), str(tmp_path)],
+        env=child_env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 73, result.stderr
+    assert result.stdout == "truncated before pytest can render the assertion"
+    output = (
+        diagnostics / "state-pressure" / f"{shard}.json"
+        if diagnostics_set else tmp_path / STATE_PRESSURE_REPORT
+    )
+    persisted = json.loads(output.read_text(encoding="utf-8"))
+    assert persisted["schema_version"] == "slo-state-pressure-dev-v1"
+    assert persisted["state_rpc_ms"] == {"qualified_count": 0, "invalid_count": 1}
+    assert persisted["trials"] == [{"trial": "sm0", "invalid_reason": "synthetic_failure"}]
+    assert persisted["slow_subscriber"]["cursor_reconnect_verified"] is False
+    assert persisted["orphan_process_count"] == 0
+    assert not list(output.parent.glob(".*.tmp"))
+    if diagnostics_set:
+        assert not (tmp_path / STATE_PRESSURE_REPORT).exists()
+
+
+def test_state_measurement_uses_existing_backlog_before_another_large_write(monkeypatch) -> None:
+    call = slo._LabelledSuite2Client.call
+
+    def delayed_write(client, method, params=None, **kwargs):
+        goal = (params or {}).get("goal", "")
+        if method == "task.create" and goal.startswith("P" * slo.BIG_EVENT_CHARS):
+            # The subscription already replays large history. A separately
+            # delayed write must not sit between that pressure and its state RPC.
+            tag = goal.rsplit(":", 1)[-1]
+            pressure_dir = client.data_root / slo._STATE_PRESSURE_DIR
+            slo._wait_condition((pressure_dir / f"{tag}.json").is_file, timeout=5.0)
+        return call(client, method, params, **kwargs)
+
+    monkeypatch.setattr(slo._LabelledSuite2Client, "call", delayed_write)
+    report, code = slo.run_state_pressure_diagnostic(repeats=2)
+    assert code == 0, report
+    assert {trial["trial"] for trial in report["trials"]} == {"sm0", "st0", "ov0"}
+    assert all(trial["invalid_reason"] is None for trial in report["trials"])
+
+
+def test_state_guard_accepts_filesystem_aliases_of_the_effective_lock_root(
+    monkeypatch, tmp_path,
+):
+    lock_root = tmp_path / "locks"
+    alias = tmp_path / "windows-path-alias"
+    lock_root.mkdir()
+    alias.mkdir()
+    monkeypatch.setenv("PYTEST_CURRENT_TEST", "test_state_guard_alias")
+    monkeypatch.setenv("TIANSHU_TEST_LOCK_ROOT", str(alias))
+    monkeypatch.setattr(slo.maintenance, "_lock_root", lambda: lock_root)
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "samefile", lambda self, other: True)
+        slo._require_state_pressure_test_isolation(lock_root)
 
 
 @pytest.mark.parametrize("lock_root_set", [False, True])
