@@ -32,9 +32,11 @@
   `restart_recovery_ms p95=2259.816ms > 2000.0ms` 真实拒绝；同轮单 macOS Python
   runner 在99%触及25分钟上限。当前本地修复保持阈值、repeats、权重、完整覆盖与
   required 名称不变，将 SLO/soak 固定到所属分片首位，并把 macOS Python 拆为 count2
-  独立 runner；最新冻结的本机全量、静态门禁与独立复审 addendum 已通过，P0/P1/P2
-  均无，新 head 的 hosted required CI 仍须完成。这不代表主干、发行版或完整跨平台
-  自主执行已交付。精确验证与未决范围见
+  独立 runner。`575ccda` 已通过本机全量、静态门禁与独立复审，且 hosted run
+  `45751111103` 的 Windows 四片、Ubuntu、UI 和 Rust 均成功；但 macOS shard1 暴露
+  `test_retry_exhausts_and_reports` 的平台相关夹具缺陷。确定性修复的新代码树已重新通过
+  本机全量、最终静态、有效变异与独立复审，P0/P1/P2 均无；新 head 的 hosted required CI
+  仍须完成。这不代表主干、发行版或完整跨平台自主执行已交付。精确验证与未决范围见
   [本轮 CI 修复记录](changelog/2026-11-26-pr225-ci-slo-isolation.md)。
 - **Goal 模式 G1 候选（2026-11-22，本地未合入）**：支持 `/goal`、目标配置、
   每轮手动推进和逐项人工验收；创建只保存配置，不启动模型。状态由事件及 Run
@@ -590,6 +592,7 @@
 - **第二读者要换的是上下文，不是措辞（2026-11-13）**：本轮复审在新会话 + detached 工作树执行，作者不为自己批准，只按已冻结的验收项逐条对照，记录完整 SHA、范围、命令、输出与未决项。教训：同一上下文里「再检查一遍」用的还是同一套错误假设；复审的成本主要在**重建独立观察环境**，省掉这一步就等于自审。
 - **分片隔离 worker，不等于隔离长进程内的累计负载（2026-11-26）**：四个独立 Windows runner 消除了同机 paired-worker 的 SLO 污染，但 hosted run `45720477289` 仍在长 pytest 进程后段出现 `restart_recovery` 超限，`45722985924` 又出现 `startup_cold` 超限。修复不是提高阈值、减少 repeats 或重跑洗白，而是保持文件权重和 `full_collection` 不变，只把时序敏感的 SLO/soak 节点移到所属分片首位，并让 pytest items 与 verifier 使用同一确定性顺序。该顺序只隔离同分片前序测试的累积压力，不保证消除 OS/宿主 runner 抖动；macOS 单 runner 的99%超时另用 count2 独立 runner 解决。
 - **测试临时根也要给原生端点留长度（2026-11-26）**：本机全量两次在 SLO warmup 报 Daemon `exit=2`，单节点却通过；真实根因是 `TIANSHU_TEST_TMP_ROOT` 命名过长，使 `warmup_cold/run/daemon.sock` 达到 104/105 字节，超过 macOS `sockaddr_un` 的 103 字节可绑定上限，而非前序测试污染。排查时必须同时检查路径长度与平台原生限制，不能把环境调用错误误记成产品回归，也不能靠重跑洗白。
+- **连接拒绝测试不能依赖宿主 TCP 时序（2026-11-26）**：bound-but-not-listening 端口在 macOS 可能等待到连接超时；总 deadline 烧尽后按契约不再尝试，旧测试却要求两次。把 `conn.connect()` 的 `ConnectionRefusedError` 做成确定性夹具，既保留 OSError 分类证据，也避免 Linux/macOS 的拒绝与超时差异随机翻红。
 
 ## 6. 流程规则（风险分级门禁 + 隔离纪律）
 
@@ -606,9 +609,11 @@
 - **SLO-first 与 macOS count2 仍待新冻结的 hosted 证明（2026-11-26）**：
   本地真子进程测试证明 SLO/soak 在所属分片首位执行、完整 collection 与分组权重不变，
   verifier 也拒绝换回后置顺序的伪造报告；这证明调度契约，不证明 hosted runner 的 SLO
-  必然通过。旧 Windows SLO 红与 macOS 99% 超时保留；最新冻结的本机全量与静态门禁
-  已完成，独立复审 addendum 判定已修（PASS，P0/P1/P2 均无），新 head 的真实 required CI
-  仍须完成，不能用旧绿或重跑后的绿覆盖旧失败。
+  必然通过。旧 Windows SLO 红与 macOS 99% 超时保留；`575ccda` 的本机全量、静态与
+  独立复审通过，hosted run `45751111103` 的 Windows 四片也全部成功，但 macOS shard1
+  因网络重试测试把平台相关连接超时误当成立即拒绝而失败。确定性测试修复的新代码树已重新
+  完成本机全量、静态、两项有效变异与独立复审，下一步必须用新 head 的 hosted required CI
+  收口，不能用旧绿或重跑后的绿覆盖旧失败。
 
 - **Mission / MCP 接缝候选不等于自动隔离交付（2026-11-22）**：
   pending/frozen 输入和稳定语义版本仅修复路由与发现顺序；受管 stdio 正向测试使用

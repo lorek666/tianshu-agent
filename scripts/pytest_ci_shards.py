@@ -382,7 +382,7 @@ def shard_attempts(args):
 
 
 def verify(args):
-    require(args.needs_result == "success", "Windows shard jobs did not all succeed")
+    require(args.needs_result == "success", "shard jobs did not all succeed")
     require(args.count in (2, 4) and args.indices == list(range(args.count)),
             "expected every index of count 2 or 4")
     attempts = shard_attempts(args)
