@@ -12,9 +12,12 @@ M2 之后覆盖/删除类写入必须有批准才能执行（PRD §2.3）。测�
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 from tianshu import ipc
@@ -48,6 +51,84 @@ def write_exact(path: Path, text: str) -> None:
     夹具在骗自己，不是产品坏了。所有参与哈希的夹具一律走这里。
     """
     path.write_bytes(text.encode("utf-8"))
+
+
+def shutdown_daemon_and_wait(
+    data_root: Path,
+    *,
+    reason: str = "test_cleanup",
+    timeout: float = 5.0,
+    terminate: Callable[..., object] | None = None,
+    snapshot: bytes | None = None,
+    process_identity: tuple[int, str | None] | None = None,
+) -> None:
+    """等待原 Daemon OS 进程退出，避免 Windows 日志句柄阻止临时目录清理。"""
+    from tianshu import daemon
+    from tianshu.execution_admission import process_birth_identity
+    from tianshu.leases import pid_alive
+
+    lock_path = daemon.lock_path(data_root)
+    if snapshot is None:
+        try:
+            snapshot = lock_path.read_bytes()
+        except FileNotFoundError:
+            return
+    identity = json.loads(snapshot)
+    pid = int(identity["pid"])
+    if process_identity is None:
+        birth = process_birth_identity(pid)
+    else:
+        if process_identity[0] != pid:
+            raise ValueError("冻结进程身份与 Daemon 锁快照的 PID 不一致")
+        birth = process_identity[1]
+
+    def same_process() -> bool:
+        if birth is None:
+            return False
+        current = process_birth_identity(pid)
+        return current is not None and current == birth
+
+    def exited() -> bool:
+        current = process_birth_identity(pid) if birth is not None else None
+        if birth is not None and current is not None and current != birth:
+            return True
+        if not pid_alive(pid):
+            return True
+        if os.name == "posix":
+            from tianshu.host import _pid_is_zombie, _unreaped_child_state
+
+            return (
+                _unreaped_child_state(pid) == "exited"
+                or _pid_is_zombie(pid)
+            )
+        return False
+
+    def wait_until_exited() -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if exited():
+                return True
+            threading.Event().wait(0.02)
+        return exited()
+
+    daemon.request_shutdown(
+        data_root,
+        reason=reason,
+        expected_instance_id=identity["instance_id"],
+        timeout=min(3.0, timeout),
+    )
+    if wait_until_exited():
+        return
+    if terminate is not None:
+        try:
+            unchanged = lock_path.read_bytes()
+        except FileNotFoundError:
+            unchanged = None
+        if unchanged == snapshot and same_process():
+            terminate(pid, timeout=3)
+            if wait_until_exited():
+                return
+    raise AssertionError("原 Daemon OS 进程未退出，测试数据根仍可能被占用")
 
 
 def stack_for(
@@ -199,6 +280,7 @@ __all__ = [
     "approve_pending",
     "engine_for",
     "pending_approvals",
+    "shutdown_daemon_and_wait",
     "stack_for",
     "tool_capable_profile",
     "write_exact",

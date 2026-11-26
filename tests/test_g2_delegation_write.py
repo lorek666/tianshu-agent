@@ -24,6 +24,7 @@ from tianshu.loop import build_stack
 from tianshu.model import ModelResponse, ScriptedModel, ToolCall
 from tianshu.permissions import ApprovalError, HumanIdentity
 from tianshu.replay import replay
+from tianshu.restore_access import default_material_paths
 from tianshu.tasks import RUN_RUNNING
 from tianshu.worker import Worker
 
@@ -34,7 +35,8 @@ BASE_MS = 1_700_000_000_000
 
 def _stack(tmp_path: Path, clock: list[int] | None = None):
     """装配真实栈；clock 传可变列表即注入逻辑时钟（租约/审批 TTL 用它推进）。"""
-    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    db, root = tmp_path / "events.db", tmp_path / "data"
+    log = EventLog(db, blob_dir=default_material_paths(db, root)[1], data_root=root)
     if clock is None:
         from support import stack_for
 

@@ -847,23 +847,26 @@ def test_events_stream_requires_token(root: Path, fake_daemon) -> None:
 
 
 def test_supervisor_reuses_already_running_daemon(root: Path, fake_daemon) -> None:
+    lock = ipc.run_dir(root) / "daemon.lock"
+    lock.write_bytes(b'{"pid":999999,"started_at":1,"instance_id":"fake-instance"}')
     supervisor = host.DaemonSupervisor(root, [sys.executable, "-c", "raise SystemExit(9)"])
-    try:
-        supervisor.ensure()  # 探活成功就不该 spawn
-        assert supervisor._process is None
-    finally:
-        supervisor.stop()
-        assert fake_daemon.shutdown_reason in ("", "user")
+    supervisor.ensure()
+    assert supervisor._process is None
+    assert fake_daemon.shutdown_reason == ""
 
 
-def test_supervisor_shutdown_asks_daemon_to_exit(root: Path, fake_daemon) -> None:
+def test_supervisor_shutdown_rejects_an_endpoint_that_ignores_the_request(
+    root: Path, fake_daemon, monkeypatch,
+) -> None:
     lock = ipc.run_dir(root) / "daemon.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)
     lock.write_bytes(
         b'{"pid":999999,"started_at":1,"instance_id":"fake-instance"}'
     )
     supervisor = host.DaemonSupervisor(root, [sys.executable, "-c", "pass"])
-    supervisor.stop(reason="user", timeout=0.2)
+    monkeypatch.setattr(host, "STOP_CLEANUP_TIMEOUT_S", 0.05)
+    with pytest.raises(host.HostError, match="退出"):
+        supervisor.stop(reason="user", timeout=2.0)
     assert fake_daemon.shutdown_reason == "user"
 
 
@@ -883,22 +886,29 @@ def test_supervisor_does_not_stop_a_replacement_daemon(root: Path, fake_daemon) 
 def test_supervisor_timeout_does_not_kill_a_daemon_that_replaced_the_lock(
     root: Path, fake_daemon, monkeypatch
 ) -> None:
+    from types import SimpleNamespace
+
     old = b'{"pid":4242,"started_at":1,"instance_id":"fake-instance"}'
     new = b'{"pid":4343,"started_at":2,"instance_id":"daemon_new"}'
     lock = ipc.run_dir(root) / "daemon.lock"
     lock.parent.mkdir(parents=True, exist_ok=True)
     lock.write_bytes(old)
     replaced = False
+    clock = [0.0]
 
     def probe_after_replacement(*_args, **_kwargs):
         nonlocal replaced
         if not replaced:
             lock.write_bytes(new)
             replaced = True
-        return True
+            clock[0] = 10.0
+        return ipc.ProbeResult(True, "controlled-endpoint", "still serving", None, True)
 
     terminated: list[int] = []
-    monkeypatch.setattr(ipc, "probe", probe_after_replacement)
+    monkeypatch.setattr(ipc, "probe_result", probe_after_replacement)
+    monkeypatch.setattr(host, "time", SimpleNamespace(
+        monotonic=lambda: clock[0], sleep=lambda _seconds: None,
+    ))
     monkeypatch.setattr(
         host.DaemonSupervisor,
         "_terminate",
@@ -906,7 +916,7 @@ def test_supervisor_timeout_does_not_kill_a_daemon_that_replaced_the_lock(
     )
     supervisor = host.DaemonSupervisor(root, [sys.executable, "-c", "pass"])
 
-    supervisor._shutdown_daemon(reason="user", timeout=0.05)
+    supervisor._shutdown_daemon(reason="user", timeout=5)
 
     assert fake_daemon.shutdown_reason == "user"
     assert replaced

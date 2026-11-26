@@ -70,6 +70,7 @@ import sys
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from multiprocessing.connection import AuthenticationError, Connection, Listener
 from multiprocessing.connection import Client as _Socket
@@ -712,10 +713,39 @@ class _MessageReader:
         self._state_lock = threading.Lock()
         self._closed = False
 
-    def close(self) -> None:
+    @contextmanager
+    def pin(self, conn: Any):
+        """在生命周期锁内借用 POSIX 描述符，阻塞 I/O 期间只持有私有副本。"""
+        private = None
         with self._state_lock:
+            if self._closed:
+                raise OSError("IPC 连接已关闭")
+            if os.name != "nt" and isinstance(conn, Connection):
+                private = Connection(os.dup(conn.fileno()))
+        try:
+            yield private if private is not None else conn
+        finally:
+            if private is not None:
+                private.close()
+
+    def close(self, conn: Any = None) -> None:
+        with self._state_lock:
+            if self._closed:
+                return
             self._closed = True
             pending, self._pending = self._pending, None
+            if os.name != "nt" and isinstance(conn, Connection):
+                # 普通 close 也须唤醒持有私有副本的 poll/read/send；在原描述符
+                # 仍被生命周期锁保护时借用；关闭不能依赖还能分配新描述符。
+                sock = None
+                try:
+                    sock = socket.socket(fileno=conn.fileno())
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                finally:
+                    if sock is not None:
+                        sock.detach()
         if pending is not None:
             overlapped, _ = pending
             try:
@@ -723,10 +753,16 @@ class _MessageReader:
                 overlapped.GetOverlappedResult(True)
             except OSError:
                 pass
+        if conn is not None:
+            try:
+                conn.close()
+            except OSError:
+                pass
 
     def read(self, conn: Any, deadline: float | None) -> bytes | None:
         if isinstance(conn, Connection):
-            return self._read_socket(conn, deadline)
+            with self.pin(conn) as private:
+                return self._read_socket(private, deadline)
         if os.name == "nt":
             return self._read_pipe(conn, deadline)
         raise ProtocolError("不支持的 IPC 连接类型")
@@ -821,7 +857,8 @@ class ServerConnection:
     def send(self, message: dict[str, Any]) -> None:
         data = encode(message)
         try:
-            self._conn.send_bytes(data)
+            with self._reader.pin(self._conn) as conn:
+                conn.send_bytes(data)
         except TypeError as exc:
             # POSIX 的半帧短写遇到并发 abort 时，下一次 write 可能读取到
             # close() 已清空的句柄。仅将已确认关闭的传输映射为断线；编码
@@ -874,11 +911,7 @@ class ServerConnection:
         return bool(self._conn.closed)
 
     def close(self) -> None:
-        self._reader.close()
-        try:
-            self._conn.close()
-        except OSError:
-            pass
+        self._reader.close(self._conn)
 
     def abort(self) -> None:
         """**中断**这条连接，然后关闭：用于叫醒阻塞在 send/recv 上的线程。
@@ -888,26 +921,11 @@ class ServerConnection:
         `EPIPE/EBADF` 而不是继续挂在一次写不出去的发送上——慢订阅者被判定放弃时
         需要这个语义，否则发送线程会一直占着一个线程不放。
 
-        POSIX：`shutdown(SHUT_RDWR)` 作用在 `dup()` 出来的同一套接字上（socket
-        选项/状态按底层 socket 共享），`dup` 的 fd 单独关闭，不影响原连接对象。
+        POSIX：生命周期锁保护下 `shutdown(SHUT_RDWR)`，唤醒私有 I/O 副本，
+        原描述符不会在旧读取/发送仍使用它时被复用。
         Windows：命名管道没有 shutdown 语义，只能直接 `close()`；阻塞中的
         `WriteFile` 是否被唤醒由系统决定，调用方不应依赖线程立刻退出。
         """
-        if os.name != "nt":
-            fd: int | None = None
-            try:
-                fd = os.dup(self._conn.fileno())
-            except (AttributeError, OSError, ValueError):
-                fd = None
-            if fd is not None:
-                try:
-                    sock = socket.socket(fileno=fd)
-                    try:
-                        sock.shutdown(socket.SHUT_RDWR)
-                    except OSError:
-                        pass
-                finally:
-                    sock.close()  # 只关 dup 出来的 fd；原连接仍由 self._conn 持有
         self.close()
 
 
@@ -986,12 +1004,8 @@ class Client:
         return self.welcome
 
     def close(self) -> None:
-        self._reader.close()
+        self._reader.close(self._conn)
         if self._conn is not None:
-            try:
-                self._conn.close()
-            except OSError:
-                pass
             self._conn = None
         self._reader = _MessageReader()
 
@@ -1015,7 +1029,9 @@ class Client:
             raise ConnectionClosed("Client 未连接")
         self._next_id += 1
         request_id = f"c{self._next_id}"
-        self._conn.send_bytes(encode(request(method, params, request_id=request_id)))
+        data = encode(request(method, params, request_id=request_id))
+        with self._reader.pin(self._conn) as conn:
+            conn.send_bytes(data)
         budget = self.timeout if timeout is None else timeout
         deadline = time.monotonic() + budget
         while True:

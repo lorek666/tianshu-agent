@@ -181,6 +181,11 @@ payload = JSON（v1）/ msgpack（后续，需版本协商）
 
 `exec_backends.py` 的默认后端是 `local`。显式选择 `seatbelt`、`landlock` 或 `auto` 时，平台与原语不可用会返回 `PolicyUnsupported`。`auto` 按当前平台选择可用的原生后端。审批卡片与结果记录使用实际隔离视图，`local` 标为「受信任执行」。
 
+受限候选另提供显式 `seatbelt_leaf`：在现有 Seatbelt profile 中固定禁止派生进程，
+只允许不需要子进程的命令和 stdio MCP 逐 subject 准入。它不改变默认或 `auto`，
+也不代表交付通用进程树监管或 Windows 原生隔离；证据及边界见
+[F2 §9](F2-sandbox-policy.md#9-显式单进程增量2026-11-23候选)。
+
 由此推出 PRD §8.1 的 UI 声明：未使用有效隔离的任意代码执行必须标为
 **「受信任执行」**，不得宣称仍受目录 capability 限制。
 

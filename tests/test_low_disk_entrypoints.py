@@ -19,6 +19,7 @@ from tianshu.disk_admission import DiskAdmission
 from tianshu.events import EventLog
 from tianshu.loop import build_stack
 from tianshu.model import ScriptedModel
+from tianshu.restore_access import default_material_paths
 from tianshu.run_policy import PURE_ONLY
 from tianshu.tool_registry import current_registry
 
@@ -134,7 +135,10 @@ class _ControlRpc:
     def _run(self) -> None:
         connection: ipc.ServerConnection | None = None
         try:
-            self.log = EventLog(self.db, blob_dir=self.db.parent / "blobs")
+            self.log = EventLog(
+                self.db, blob_dir=default_material_paths(self.db, self.data_root)[1],
+                data_root=self.data_root,
+            )
             stack = build_stack(self.log, data_root=self.data_root)
             stack.tasks._disk_admission = DiskAdmission(
                 stack.tasks.disk_admission.context, probe=lambda _path: 0
@@ -217,7 +221,9 @@ def _short_root() -> Path:
 
 
 def _create_task(db: Path, data_root: Path, workspace: Path) -> str:
-    with closing(EventLog(db, blob_dir=db.parent / "blobs")) as log:
+    with closing(EventLog(
+        db, blob_dir=default_material_paths(db, data_root)[1], data_root=data_root,
+    )) as log:
         stack = build_stack(log, data_root=data_root)
         return stack.tasks.create_task("只读检查", [str(workspace)]).task_id
 
@@ -228,7 +234,9 @@ def test_cli_run_start_explicit_pure_only_bypasses_low_probe(tmp_path: Path) -> 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
 
-    with closing(EventLog(db, blob_dir=tmp_path / "blobs")) as log:
+    with closing(EventLog(
+        db, blob_dir=default_material_paths(db, data_root)[1], data_root=data_root,
+    )) as log:
         stack = build_stack(log, data_root=data_root)
         task = stack.tasks.create_task("只读检查", [str(workspace)])
 
@@ -251,7 +259,9 @@ def test_cli_run_start_explicit_pure_only_bypasses_low_probe(tmp_path: Path) -> 
     )
     assert proc.returncode == 0, proc.stderr
 
-    with closing(EventLog(db, blob_dir=tmp_path / "blobs")) as log:
+    with closing(EventLog(
+        db, blob_dir=default_material_paths(db, data_root)[1], data_root=data_root,
+    )) as log:
         stack = build_stack(log, data_root=data_root)
         runs = stack.tasks.list_runs(task.task_id)
         assert len(runs) == 1
@@ -286,7 +296,9 @@ def test_cli_run_start_default_effects_is_rejected_before_run(tmp_path: Path) ->
 
     assert proc.returncode == 2
     assert "dispatch.disk_space_low" in proc.stderr
-    with closing(EventLog(db, blob_dir=tmp_path / "blobs")) as log:
+    with closing(EventLog(
+        db, blob_dir=default_material_paths(db, data_root)[1], data_root=data_root,
+    )) as log:
         stack = build_stack(log, data_root=data_root)
         assert stack.tasks.list_runs(task_id) == []
         assert stack.tasks.get_task(task_id).active_run_id is None
@@ -324,7 +336,9 @@ def test_cli_compat_entrypoint_forwards_execution_mode(
     )
 
     assert proc.returncode == expected_code, proc.stderr
-    with closing(EventLog(db, blob_dir=tmp_path / "blobs")) as log:
+    with closing(EventLog(
+        db, blob_dir=default_material_paths(db, data_root)[1], data_root=data_root,
+    )) as log:
         stack = build_stack(log, data_root=data_root)
         tasks = stack.tasks.conn.execute(
             "SELECT task_id FROM tasks ORDER BY created_at DESC LIMIT 1"
@@ -368,7 +382,9 @@ def test_cli_unknown_execution_mode_is_bad_arguments_without_run(
 
     assert proc.returncode == 2
     assert "invalid choice" in proc.stderr
-    with closing(EventLog(db, blob_dir=tmp_path / "blobs")) as log:
+    with closing(EventLog(
+        db, blob_dir=default_material_paths(db, data_root)[1], data_root=data_root,
+    )) as log:
         stack = build_stack(log, data_root=data_root)
         assert stack.tasks.list_runs(task_id) == []
 
@@ -440,7 +456,9 @@ def test_rpc_execution_policy_is_strict_and_controls_low_disk_admission(
                 },
             )["run"]
 
-        with closing(EventLog(db, blob_dir=tmp_path / "blobs")) as log:
+        with closing(EventLog(
+            db, blob_dir=default_material_paths(db, data_root)[1], data_root=data_root,
+        )) as log:
             stack = build_stack(log, data_root=data_root)
             runs = stack.tasks.list_runs(task_id)
             assert [run.run_id for run in runs] == [started["run_id"]]
@@ -485,7 +503,9 @@ def test_rpc_low_disk_with_sensitive_workspace_words_never_misclassifies_code(
             return 0
         raise OSError("挂载点不可访问：不能读取或目标不存在")
 
-    with closing(EventLog(db, blob_dir=tmp_path / "blobs")) as log:
+    with closing(EventLog(
+        db, blob_dir=default_material_paths(db, data_root)[1], data_root=data_root,
+    )) as log:
         stack = build_stack(log, data_root=data_root)
         stack.tasks._disk_admission = DiskAdmission(
             stack.tasks.disk_admission.context, probe=probe
@@ -508,7 +528,9 @@ def test_rpc_run_effects_disallowed_preserves_internal_code_and_rule_id(
 
     db = tmp_path / "events.db"
     data_root = tmp_path / "data"
-    with closing(EventLog(db, blob_dir=tmp_path / "blobs")) as log:
+    with closing(EventLog(
+        db, blob_dir=default_material_paths(db, data_root)[1], data_root=data_root,
+    )) as log:
         stack = build_stack(log, data_root=data_root)
         plane = ControlPlane(stack, model=ScriptedModel([]))
         plane._methods["probe.pure_gate"] = lambda _params: (_ for _ in ()).throw(
