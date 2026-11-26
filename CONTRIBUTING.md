@@ -117,6 +117,10 @@ Windows required 检查由 Ubuntu 汇总 job 承担：job 级 `always()` 保证�
 缓存只在函数级隔离生效后生成，每片首个消费者仍需实跑，CLI 对比保留一次全新完整执行。
 这种局部复用及固定权重只是成本估计，完整原生 CI 仍须在最终冻结上验证。
 
+macOS 和 Windows 每个 Python 分片在 `always()` step 上传 `slo-state-pressure.json`。
+测试在首次断言前原子写出完整脱敏 JSON，工件名绑定 run ID、attempt 与 shard；
+缺少可选诊断只告警，不能覆盖 pytest 或包装器的退出码。
+
 Windows 包装器用 Python 线程输出超过60秒的用例（含 setup/call/teardown）的线程栈，避免 CPython 3.12 原生定时转储的 frame 遍历竞态；原生 fatal handler 仍启用。栈只含文件/行号/函数，不打印源码或 locals，且有输出上限。诊断线程等待/采样/写出异常或2秒内不能收尾时不得报绿；原 pytest 失败/中断退出码保留。`--stack-timeout=0` 可在本地明确禁用定时诊断；阈值必须有限且介于0和平台`threading.TIMEOUT_MAX`之间，同时设置 `faulthandler_timeout` 或禁用内建 fatal 插件也会报配置错误。**边界**：C 扩展长期独占 GIL 时，Python 线程无法保证在60秒出栈；fatal handler 与仍为25分钟的 job 上限不是这个诊断缺口的等价替代。相关原生风险的 Windows 实验、故障负控和未验证范围见 [DEBUG-IO](docs/DEBUG-IO-2026-11-13.md)。
 
 候选冻结按以下顺序执行，避免“改一处、提交一次、跑整套、再改一处”：
@@ -172,7 +176,7 @@ Windows 原生 Rust 检查仍作为独立 job，由现有 Windows required 汇�
 | 必过检查（GitHub 名称须逐字匹配） | 覆盖范围 |
 |---|---|
 | `test (ubuntu-latest) · py3.12` | Linux Python 套件、锁文件与 lint |
-| `test (macos-latest) · py3.12` | Ubuntu 严格汇总两个原生 macOS job：完整 Python 套件、锁文件/lint/SBOM；R1 桌面壳 Rust fmt/test/clippy，两者必须 success |
+| `test (macos-latest) · py3.12` | Ubuntu 严格汇总两个原生 macOS Python 分片（含锁文件/lint/SBOM）与 R1 桌面壳 Rust fmt/test/clippy，均须 success |
 | `test (windows-latest) · py3.12` | 四个独立 Windows runner 的完整 Python 套件分片、各自锁文件与 lint；Ubuntu 汇总按真实 attempt 核对上游成功、报告身份与完整覆盖；另绑定原生 Windows 的 Rust fmt/test/clippy |
 | `ui · typecheck / test / build` | UI 类型、测试、构建与已提交产物一致性 |
 

@@ -38,3 +38,11 @@
 本记录只证明上述冻结 code/review tree 的本地与独立复审结果。#225 的 hosted run
 `45756307163` 已全绿，但 #227 刷新后的最终 head 仍必须绑定自己的 hosted required CI；
 不能用旧 head 或本机绿代替。测试临时数据根与真实 Keychain、生产凭据和全局锁隔离。
+
+## 基于实际主干的刷新
+
+#225 已合入 `3017f09740756da0c3db7e02d1568b2eeced4da3`。此次同步的非文档内容与本机
+预整合树 `748f2264c3c7645a8702ccc349f2ad975f0df78f` 完全一致；相对各自基线的
+`tests/` 二进制 diff 也逐字节一致。定向回归、裸 `uv run --frozen pytest`、lock、Ruff 和 diff
+通过。全量日志 SHA256：`96183f0ae79e3b24f655d480b5a35905c1f39941e27085fed37c6cdc8fd3bc2f`。
+本节记录本机验证，最终 PR 仍须绑定其当前 head/base 的完整 GitHub CI。
