@@ -32,12 +32,14 @@
   `restart_recovery_ms p95=2259.816ms > 2000.0ms` 真实拒绝；同轮单 macOS Python
   runner 在99%触及25分钟上限。当前本地修复保持阈值、repeats、权重、完整覆盖与
   required 名称不变，将 SLO/soak 固定到所属分片首位，并把 macOS Python 拆为 count2
-  独立 runner。`575ccda` 已通过本机全量、静态门禁与独立复审，且 hosted run
-  `45751111103` 的 Windows 四片、Ubuntu、UI 和 Rust 均成功；但 macOS shard1 暴露
-  `test_retry_exhausts_and_reports` 的平台相关夹具缺陷。确定性修复的新代码树已重新通过
-  本机全量、最终静态、有效变异与独立复审，P0/P1/P2 均无；新 head 的 hosted required CI
-  仍须完成。这不代表主干、发行版或完整跨平台自主执行已交付。精确验证与未决范围见
-  [本轮 CI 修复记录](changelog/2026-11-26-pr225-ci-slo-isolation.md)。
+  独立 runner。`575ccda` 的 hosted run `45751111103` 虽在 Windows 四片、Ubuntu、UI 和
+  Rust 成功，但 macOS shard1 暴露了 `test_retry_exhausts_and_reports` 的平台相关夹具缺陷。
+  确定性修复 head `d8b47a7` 已重新通过本机全量、最终静态、有效变异与独立复审，且 hosted
+  run `45756307163` 的 12 个 job 与四项 required checks 全部 success。#227 已用正常双父
+  合并刷新到该基线，新代码树再次通过本机全量与独立复审，P0/P1/P2 均无；其新 head 的
+  hosted required CI 仍须单独完成。这不代表主干、发行版或完整跨平台自主执行已交付。
+  精确验证与未决范围见[本轮 CI 修复记录](changelog/2026-11-26-pr225-ci-slo-isolation.md)
+  与 [#227 刷新记录](changelog/2026-11-26-pr227-stack-refresh.md)。
 - **Goal 模式 G1 候选（2026-11-22，本地未合入）**：支持 `/goal`、目标配置、
   每轮手动推进和逐项人工验收；创建只保存配置，不启动模型。状态由事件及 Run
   派生，失败、空正文及 `partial/unknown` 结果均阻断继续与验收。已整合固定主干
@@ -606,14 +608,13 @@
 
 ## 7. 已知限制 / 未决问题
 
-- **SLO-first 与 macOS count2 仍待新冻结的 hosted 证明（2026-11-26）**：
+- **SLO-first 与 macOS count2 已获 hosted 证明，仍不承诺消除宿主抖动（2026-11-26）**：
   本地真子进程测试证明 SLO/soak 在所属分片首位执行、完整 collection 与分组权重不变，
   verifier 也拒绝换回后置顺序的伪造报告；这证明调度契约，不证明 hosted runner 的 SLO
-  必然通过。旧 Windows SLO 红与 macOS 99% 超时保留；`575ccda` 的本机全量、静态与
-  独立复审通过，hosted run `45751111103` 的 Windows 四片也全部成功，但 macOS shard1
-  因网络重试测试把平台相关连接超时误当成立即拒绝而失败。确定性测试修复的新代码树已重新
-  完成本机全量、静态、两项有效变异与独立复审，下一步必须用新 head 的 hosted required CI
-  收口，不能用旧绿或重跑后的绿覆盖旧失败。
+  必然通过。旧 Windows SLO 红、macOS 99% 超时与 `575ccda` 的 macOS 夹具红均保留。
+  确定性修复 head `d8b47a7` 的 hosted run `45756307163` 已让 12 个 job 与四项 required
+  checks 全部 success，证明该候选的 Windows count4、macOS count2 与严格汇总通过；OS 或
+  hosted runner 负载抖动仍可能触发真实超限，不得用重跑后的绿覆盖旧失败。
 
 - **Mission / MCP 接缝候选不等于自动隔离交付（2026-11-22）**：
   pending/frozen 输入和稳定语义版本仅修复路由与发现顺序；受管 stdio 正向测试使用

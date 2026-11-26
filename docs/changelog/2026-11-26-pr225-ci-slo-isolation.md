@@ -72,9 +72,13 @@
   日志 `.omc/artifacts/pr225-slo/netfix-review/fresh-parent-replay.log` 的 SHA256 为
   `64e15aab34cc264549e39afcd5d3e98878adcbe961de1ebea9c7ff56076101b0`。
 
-## 待完成证据
+## Hosted 收口
 
 `575ccda` 的本机全量、静态门禁与独立复审虽通过，但 hosted run `45751111103` 因上述
 macOS 测试夹具平台差异真实失败，旧冻结证据不能覆盖新候选。确定性测试与诊断文案修复的
-新代码树已完成本机全量、最终静态门禁、有效变异和独立第二读者 Tier 1 addendum；下一步
-只须提交推送形成新 head，并以该 head 的 hosted required CI 完整 success 收口。
+head `d8b47a75affd9ebc5ca004f8ed88d479f97acb8e` 已完成本机全量、最终静态门禁、有效变异、
+独立第二读者 Tier 1 addendum，并由 hosted run
+[`45756307163`](https://github.com/lorek666/tianshu-agent/actions/runs/45756307163)
+完成 12 个 job 与 Ubuntu/macOS/Windows/UI 四项 required checks 的全部 success。
+PR synthetic merge SHA 为 `df187ddef3bf443e03fa862a7530c06bf1b1e51e`，与 head SHA 分别记录；
+历史失败不删除、不覆盖，后续 stacked PR 仍须绑定自己的最终 head。

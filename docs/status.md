@@ -5,13 +5,15 @@
 
 ## 里程碑
 
-**Agent 主循环本地候选（2026-11-23）**已集成 Mission、DAG/独立验收、
+**Agent 主循环本地候选（2026-11-26）**已集成 Mission、DAG/独立验收、
 Goal V2 的手动/有限自动推进与累计边界、有限授权和命令/MCP 准入。
-桌面入口及 dist 已落地；前两轮完整原生 CI 真实失败，后一轮为 Windows 分片累计超时。
-新候选 `ccce3e3` 已通过新的本机全量与独立增量复审，完整 required CI 由最终 PR 对象单独验收；
-尚未合入或发布。
+桌面入口及 dist 已落地；旧 Windows 分片累计超时与 macOS 夹具失败均保留。
+#225 确定性修复 head `d8b47a7` 的 hosted run `45756307163` 已让 12 个 job 与四项
+required checks 全部 success；#227 已正常双父刷新到该基线，新代码树通过本机全量与
+独立复审，新 head 的 hosted required CI 仍由最终 PR 对象单独验收；尚未合入或发布。
 Windows 原生隔离、完整四边界自动执行及真实模型 UI 仍有未决项，
-详见[实施记录](changelog/2026-11-23-agent-loop-implementation.md)。
+详见[实施记录](changelog/2026-11-23-agent-loop-implementation.md)与
+[#227 刷新记录](changelog/2026-11-26-pr227-stack-refresh.md)。
 
 **形态**：M0–M4 是命令行内核；M5 交付 Daemon、Python Host 与 React UI 的三进程闭环；
 R0–R3 是 Tauri 桌面壳与发行构建链。
