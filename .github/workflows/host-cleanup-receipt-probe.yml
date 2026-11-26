@@ -1,0 +1,53 @@
+name: Windows Host cleanup frame separation probe
+
+on:
+  push:
+    branches: [codex/windows-host-frame-separation-probe]
+
+permissions:
+  contents: read
+
+jobs:
+  host-receipt:
+    name: Windows Host receipt (diagnostic only)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Check the actual checkout and lock
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git show -s --format='%H %T %P'
+          git rev-parse HEAD:tests/test_host_cleanup.py
+          uv python install 3.12
+          uv lock --check
+          uv sync --frozen
+          uv run --frozen ruff check .
+      - name: Run the full Host cleanup module
+        env:
+          PYTEST_ADDOPTS: ""
+        run: >-
+          uv run --frozen python scripts/pytest_with_stacks.py -o addopts=""
+          -v -rs --tb=short --stack-timeout=60 tests/test_host_cleanup.py
+      - name: Repeat the affected real-process cases
+        env:
+          PYTEST_ADDOPTS: ""
+        run: |
+          for attempt in 1 2 3; do
+            printf 'receipt repetition %s\n' "$attempt"
+            uv run --frozen python scripts/pytest_with_stacks.py -o addopts="" \
+              -v -rs --tb=short --stack-timeout=60 \
+              tests/test_host_cleanup.py::test_starting_host_cannot_leave_two_published_bridges \
+              tests/test_host_cleanup.py::test_late_real_host_cannot_replace_the_running_owner_or_stop_its_daemon \
+              tests/test_host_cleanup.py::test_running_host_exits_without_stopping_daemon_when_identity_is_replaced
+          done
