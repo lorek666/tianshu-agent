@@ -24,6 +24,9 @@ Windows hosted CI 曾在首次 `schedule.create` 报 `sqlite3.OperationalError: 
 
 - 修复前，`claim_next`、`wake_stale_parents`、`reconcile_finished_subtasks` 三项均真实报 `database is locked`。
 - 修复后，三项均在外部写锁存在时返回空结果，不再申请写锁。
+- 独立复审未发现 P0/P1；其 P2 指回归测试握手可能无限等待且清理不足。现已改为有界
+  reader queue、15 秒握手/退出上限、强杀兜底与 `BrokenPipeError` 容错，重新冻结后需重跑
+  最终全量与复审。
 - 受影响回归：`tests/test_job_claims.py`、`tests/test_g2_delegation_exec.py`、`tests/test_g2_delegation_fence.py`、`tests/test_schedule_webhook.py` 通过。
 - `uv lock --check`、`uv run --frozen ruff check .`、`git diff --check` 通过。
 

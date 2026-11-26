@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import queue
 import sqlite3
 import subprocess
 import sys
@@ -228,21 +229,44 @@ def test_empty_poll_does_not_take_write_lock(env, store_name, operation, expecte
         stderr=subprocess.PIPE,
         **CHILD_TEXT,
     )
+    ready: queue.Queue[str | BaseException] = queue.Queue()
+
+    def read_ready():
+        try:
+            assert child.stdout is not None
+            ready.put(child.stdout.readline())
+        except BaseException as exc:
+            ready.put(exc)
+
+    reader = threading.Thread(target=read_ready, daemon=True)
+    reader.start()
     try:
-        assert child.stdout is not None
-        assert child.stdin is not None
-        assert child.stdout.readline().strip() == "locked"
+        line = ready.get(timeout=15)
+        assert isinstance(line, str), line
+        assert line.strip() == "locked"
         store = jobs if store_name == "jobs" else tasks
         assert getattr(store, operation)() == expected
     finally:
         if child.poll() is None:
-            child.stdin.write("x")
-            child.stdin.flush()
-        child.wait(timeout=15)
-        assert child.returncode == 0, child.stderr.read()
-        child.stdin.close()
-        child.stdout.close()
-        child.stderr.close()
+            try:
+                assert child.stdin is not None
+                child.stdin.write("x")
+                child.stdin.flush()
+            except (BrokenPipeError, OSError):
+                pass
+            try:
+                child.wait(timeout=15)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                child.wait(timeout=15)
+        assert child.stderr is not None
+        stderr = child.stderr.read()
+        assert child.returncode == 0, stderr
+        for stream in (child.stdin, child.stdout, child.stderr):
+            if stream is not None:
+                stream.close()
+        reader.join(timeout=5)
+        assert not reader.is_alive()
 
 
 def test_second_claim_bumps_epoch_and_fences_old(env):
