@@ -736,6 +736,10 @@ class _SubtaskStoreMixin:
         """
         if self._claims is None:
             return []
+        if self._conn.execute(
+            "SELECT 1 FROM jobs WHERE state=? LIMIT 1", (JOB_WAITING,)
+        ).fetchone() is None:
+            return []
         woken: list[str] = []
         with self._log.transaction():
             for job in self._claims.list_jobs(state=JOB_WAITING):
@@ -760,6 +764,11 @@ class _SubtaskStoreMixin:
         退出猜"它大概没跑完"就会把一次成功说成失败。
         """
         if self._claims is None:
+            return []
+        if self._conn.execute(
+            "SELECT 1 FROM subtasks WHERE state IN (?,?,?) LIMIT 1",
+            (SUBTASK_QUEUED, SUBTASK_RUNNING, SUBTASK_CANCELLING),
+        ).fetchone() is None:
             return []
         fixed: list[str] = []
         with self._log.transaction() as tx:
