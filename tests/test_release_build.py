@@ -364,6 +364,16 @@ def test_source_version_requires_all_live_release_identity_sites():
         module.verify_source_version(ROOT, "0.1.1")
 
 
+def test_source_version_reports_missing_identity_file_as_build_error(tmp_path):
+    module = _load_module()
+    repo = _repo_fixture(tmp_path)
+    _write_fixture_version(repo, "0.1.2")
+    (repo / "src" / "tianshu" / "control.py").unlink()
+
+    with pytest.raises(module.BuildError, match="无法读取发行版本身份文件"):
+        module.verify_source_version(repo, "0.1.2")
+
+
 def test_runtime_lock_pins_full_download_urls_and_published_hashes():
     module = _load_module()
 

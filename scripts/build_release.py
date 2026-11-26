@@ -221,7 +221,15 @@ def verify_source_version(repo_root: Path, version: str) -> None:
         tauri = json.loads(
             (repo_root / "desktop" / "src-tauri" / "tauri.conf.json").read_text(encoding="utf-8")
         )
-    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+        source_versions = {
+            "src/tianshu/__init__.py": _source_string(
+                repo_root / "src" / "tianshu" / "__init__.py", "__version__"
+            ),
+            "src/tianshu/control.py": _source_string(
+                repo_root / "src" / "tianshu" / "control.py", "DAEMON_VERSION"
+            ),
+        }
+    except (OSError, ValueError) as exc:
         raise BuildError(f"无法读取发行版本身份文件：{exc}") from exc
 
     python_packages = [p for p in python_lock.get("package", []) if p.get("name") == "tianshu"]
@@ -230,12 +238,7 @@ def verify_source_version(repo_root: Path, version: str) -> None:
     ]
     sites = {
         "pyproject.toml": project.get("project", {}).get("version"),
-        "src/tianshu/__init__.py": _source_string(
-            repo_root / "src" / "tianshu" / "__init__.py", "__version__"
-        ),
-        "src/tianshu/control.py": _source_string(
-            repo_root / "src" / "tianshu" / "control.py", "DAEMON_VERSION"
-        ),
+        **source_versions,
         "uv.lock": python_packages[0].get("version") if len(python_packages) == 1 else None,
         "desktop/src-tauri/Cargo.toml": cargo.get("package", {}).get("version"),
         "desktop/src-tauri/Cargo.lock": (
