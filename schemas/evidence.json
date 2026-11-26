@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "evidence",
+  "$ref": "#/$defs/evidence",
+  "$defs": {
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "format_version": {
+          "type": "integer",
+          "const": 1
+        },
+        "evidence_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$"
+        },
+        "task_id": {
+          "type": "string"
+        },
+        "mission_id": {
+          "type": "string"
+        },
+        "plan_digest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "step_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$"
+        },
+        "run_id": {
+          "type": "string"
+        },
+        "attempt_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "file_observation",
+            "command_result",
+            "source_snapshot",
+            "human_decision"
+          ]
+        },
+        "event_seqs": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 0
+        },
+        "content_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^content://sha256:[0-9a-f]{64}$"
+          },
+          "minItems": 0
+        },
+        "input_fingerprint": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "format_version",
+        "evidence_id",
+        "task_id",
+        "mission_id",
+        "plan_digest",
+        "step_id",
+        "run_id",
+        "attempt_id",
+        "kind",
+        "event_seqs",
+        "content_refs",
+        "input_fingerprint"
+      ]
+    }
+  }
+}

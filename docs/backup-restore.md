@@ -73,7 +73,7 @@ uv run --frozen tianshu data migrate --data-root /absolute/data-root --backup /a
 |---|---|---|---|
 | `events.db` | ✅ | `event_log` | **SQLite 在线备份 API** 取一致点，不是文件复制 |
 | `artifacts/blobs/<sha256>` | ✅ | `blob` | 快照写前内容与内容对象，内容寻址、不可变 |
-| `blobs/<sha256>` | ✅ | `artifact_other` | 内核 CLI 大事件 payload 的默认位置 |
+| `blobs/<sha256>` | ✅ | `artifact_other` | 内核 CLI 大事件 payload 的默认位置；Mission 首轮消息与模板正文也使用配置的事件 blob 目录 |
 | `memory_blobs/<sha256>` | ✅ | `artifact_other` | 记忆正文；未擦除记忆的正文引用须完整 |
 | `artifacts/snapshots/<run>.json` | ✅ | `snapshot_manifest` | 撤销/恢复证据；原子整文件替换 |
 | `artifacts/undo/<run>.json` | ✅ | `undo_journal` | 撤销意图日志（含未完成撤销） |
@@ -109,7 +109,13 @@ uv run --frozen tianshu data migrate --data-root /absolute/data-root --backup /a
    更新的超集（多出来的证据，不破坏一致性）；要严格跨库一致必须停止写者，本轮
    必须由调用者持独占准入；本轮 CLI 已持有。直接使用库函数仍有此边界。
 
-发布前必须对临时备份做完整校验；缺材料的源数据不能发布一个“成功备份”。校验从**备份中的数据库**重新推导事件、内容对象与未擦除记忆的引用，不仅信任 `backup.json.references`。源目录已丢失或被符号链接替换时也不回源读取。
+发布前必须对临时备份做完整校验；缺材料的源数据不能发布一个“成功备份”。校验从**备份中的数据库**重新推导事件、Mission 首轮输入、内容对象与未擦除记忆的引用，不仅信任 `backup.json.references`。源目录已丢失或被符号链接替换时也不回源读取。
+
+`run.mission` 与 `run.mission_pending` 的 `material_storage=blob` 记录均保护
+`messages_ref` 和 `mission.prompt.content_ref` 指向的消息、模板文件。备份将这些引用
+记录为可选的 `mission_blobs` 组；旧 v1 清单缺少该组时仍从保存的事件重推导。
+`material_storage=inline` 的历史记录只依赖事件内正文，不要求额外 blob 文件。
+引用与保存正文摘要不一致、文件缺失或损坏时，备份校验与 GC 均拒绝继续。
 
 历史绝对引用可能使用同一数据根的另一种拼写，例如 macOS 的 `/tmp` 与 `/private/tmp`。创建备份时仅在活源上核对“别名根解析后等于 canonical 根、材料相对后缀完全一致”，再将验证过的根保存到可选 `source_aliases`。后续 `verify` 与 `restore-plan` 只按保存的根做词法映射并读取备份材料，不解析或读取活源。无此字段的旧 v1 备份仍可校验 canonical 引用；确实需要别名却缺映射时明确失败，不猜测根外材料属于该备份。
 
@@ -139,7 +145,7 @@ uv run --frozen tianshu data migrate --data-root /absolute/data-root --backup /a
 | `source_aliases` | 可选的已核对同根别名，默认为空；仅创建时发现，保存后的校验不回源解析。格式版本仍为 `1` |
 | `files[]` | 每个文件的 `path`（数据根相对、`/` 分隔）、`sha256`、`size`、`category` |
 | `event_count` / `event_seq_head` / `run_ids` | 一致点的事件统计与 Run 清单 |
-| `references` | 事件 payload、Receipt材料、快照、撤销日志、内容对象和未擦除记忆的引用；兼容旧字段。校验时从备份材料重新推导，删除清单里的引用也不能隐藏缺材料 |
+| `references` | 事件 payload、Mission 首轮输入、Receipt材料、快照、撤销日志、内容对象和未擦除记忆的引用；兼容旧字段。校验时从备份材料重新推导，删除清单里的引用也不能隐藏缺材料 |
 | `writer` | 备份时只读探到的写者状态（不是锁，不停止任何进程） |
 | `excluded` | 明确排除的顶层条目 |
 | `retention` | 保留期声明（§6） |
@@ -279,7 +285,7 @@ T1 已在所有正常 EventLog 的实际连接前缀接入共享准入与只读�
 | `diagnostic_trace` | 默认 30 天 | 50 MiB | 人工清理，不参与备份 |
 | `indexes` | 可重建；同库派生表随 `events.db` 一并保存 | — | 不单独备份外置索引；重建代替清理 |
 
-`collect_references(data_root)` 汇总事件外置 payload、执行流溢出、Receipt、快照、撤销、内容对象和未擦除记忆引用。受保护材料以登记路径和核验后的原生文件身份共同判定。大小写等不同拼写解析到同一文件时，该文件仍保留。扫描 `artifacts/blobs/` 与根 `blobs/` 下的内容对象，保留 `memory_blobs/`。`cleanup_plan(data_root)` 只生成候选。引用读取或材料完整性无法确认时，清理拒绝。
+`collect_references(data_root)` 汇总事件外置 payload、Mission 首轮消息与模板、执行流溢出、Receipt、快照、撤销、内容对象和未擦除记忆引用。受保护材料以登记路径和核验后的原生文件身份共同判定。大小写等不同拼写解析到同一文件时，该文件仍保留。扫描 `artifacts/blobs/` 与根 `blobs/` 下的内容对象，保留 `memory_blobs/`。`cleanup_plan(data_root)` 只生成候选。引用读取或材料完整性无法确认时，清理拒绝。
 
 ```bash
 uv run --frozen tianshu data gc --data-root /absolute/data-root --json

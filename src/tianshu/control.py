@@ -42,7 +42,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
-from . import memory_control, settings_control
+from . import agent_control, consent_control, goal_control, memory_control, settings_control, skills
 from .conversation import (
     GUIDANCE_EVENTS,
     GUIDANCE_REQUESTED,
@@ -206,6 +206,10 @@ def event_view(event: Any) -> dict[str, Any]:
             {"name": record["name"], "media_type": record["media_type"]}
             for record in payload["attachments"]
         ]}
+    if event.type == "run.mission":
+        # 冻结的完整消息仅供内核恢复/回放；订阅视图不再复制附件字节或历史正文。
+        payload = {key: value for key, value in payload.items()
+                   if key not in ("messages", "template_content")}
     return {
         "seq": int(event.seq),
         "type": event.type,
@@ -305,6 +309,7 @@ class ControlPlane:
         model_slot: settings_control.RuntimeModelSlot | None = None,
         credential_stores: Mapping[str, Any] | None = None,
         mcp_configs: Mapping[str, Any] | None = None,
+        skills_root: Path | None = None,
     ) -> None:
         self._stack = stack
         self._model = model
@@ -322,11 +327,13 @@ class ControlPlane:
             )
         )
         self._mcp_configs = mcp_configs
+        self._skills_root = skills_root
         self._limits = limits or Limits()
         self._tasks = stack.tasks
         self._claims = stack.claims
         self._approvals = stack.approvals
         self._log = stack.log
+        agent_control.ensure_consents(stack)
         #: 驱动线程的唤醒队列。为 None 时 `run.resume`/`approvals.decide` 只记视图，
         #: 不承诺"已交给驱动"——单测（没有驱动线程）就是这样用的。
         self.resume_requests = resume_requests
@@ -344,6 +351,24 @@ class ControlPlane:
             "task.list": self._task_list,
             "task.create": self._task_create,
             "task.revise": self._task_revise,
+            "skill.list": self._skill_list,
+            "skill.prepare": self._skill_prepare,
+            "goal.get": lambda p: goal_control.handle(self, "get", p),
+            "goal.create": lambda p: goal_control.handle(self, "create", p),
+            "goal.advance": lambda p: goal_control.handle(self, "advance", p),
+            "goal.close": lambda p: goal_control.handle(self, "close", p),
+            **self._goal_v2_methods(),
+            "plan.graph.get": lambda p: agent_control.handle(self, "get", p),
+            "plan.graph.confirm": lambda p: agent_control.handle(self, "confirm", p),
+            "plan.graph.replan": lambda p: agent_control.handle(self, "replan", p),
+            "plan.graph.verify": lambda p: agent_control.handle(self, "verify", p),
+            "verification.request": lambda p: agent_control.handle(self, "request", p),
+            "verification.decide": lambda p: agent_control.handle(self, "decide", p),
+            "agent.material": lambda p: agent_control.handle(self, "material", p),
+            "consent.prepare": lambda p: agent_control.consent_prepare(self, p),
+            "consent.issue": lambda p: consent_control.handle(self, "issue", p),
+            "consent.list": lambda p: consent_control.handle(self, "list", p),
+            "consent.revoke": lambda p: consent_control.handle(self, "revoke", p),
             "run.start": self._run_start,
             "run.follow_up": self._run_follow_up,
             "run.answer_clarification": self._run_answer_clarification,
@@ -420,6 +445,14 @@ class ControlPlane:
         self._log.close()
 
     # ------------------------------------------------------------------ 入口
+
+    def _goal_v2_methods(self):
+        from . import goal_v2_control
+        return {
+            "goal.v2." + action: (
+                lambda p, action=action: goal_v2_control.handle(self, action, p))
+            for action in ("create", "get", "advance", "pause", "resume", "recover", "close")
+        }
 
     def handle(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         """执行一个 RPC 方法。所有失败都抛 `ControlError`（daemon 转成 fail 帧）。"""
@@ -632,6 +665,19 @@ class ControlPlane:
         task = self._tasks.revise_task(task_id, goal=goal)
         return {"task": task_view(task)}
 
+    def _skill_list(self, params: dict[str, Any]) -> dict[str, Any]:
+        return skills.list_skills(
+            params.get("workspace_roots", []), user_root=self._skills_root,
+        )
+
+    def _skill_prepare(self, params: dict[str, Any]) -> dict[str, Any]:
+        return skills.prepare_skill(
+            params.get("workspace_roots", []),
+            _require_str(params, "skill"),
+            params.get("input"),
+            user_root=self._skills_root,
+        )
+
     # ------------------------------------------------------------------ run
 
     def _run_answer_clarification(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -658,6 +704,15 @@ class ControlPlane:
         if answering != (question is not None):
             raise ControlError("conflict", "请选择对应的澄清答复或普通追问入口")
         conversation = build_follow_up(source_id, events, message)
+        from .goal_v2 import GoalCoordinator, phase_for
+        if phase_for(self._log, source_id):
+            if not answering:
+                raise ControlError("conflict", "Goal 阶段只接受待决澄清的答复")
+            coordinator = GoalCoordinator(self.stack, model=self._model, limits=self._limits)
+            run_id = coordinator.answer(source_id, message, _require_str(params, "request_id"))
+            if run_id is None:
+                raise ControlError("conflict", "Goal 边界不允许新的澄清调用")
+            return {"run": self._run_view(self._require_run(run_id))}
         from .workflow import workflow_for
 
         old = workflow_for(self._log, source_id)
@@ -806,10 +861,44 @@ class ControlPlane:
                 "request_id": request_id, "requested_source_run_id": source_run_id,
             }
             if prior is not None:
+                from .mission import (
+                    MissionSpecV1,
+                    assert_pending_configuration,
+                    freeze_mission,
+                    mission_for,
+                    pending_mission_for,
+                )
                 from .model_route import model_route_fact
 
                 prior_events = self._log.read_run(prior.run_id)
                 old_route = model_route_fact(prior_events)
+                old_mission = mission_for(self._log, prior.run_id, events=prior_events)
+                pending = pending_mission_for(self._log, prior.run_id, events=prior_events)
+                requested_mission = params.get("mission")
+                if requested_mission is not None:
+                    requested_mission = MissionSpecV1.of(requested_mission)
+                if pending is not None:
+                    try:
+                        assert_pending_configuration(
+                            pending, mission=requested_mission,
+                            task_kind=params.get("task_kind", "general"),
+                            criteria=params.get("criteria", ()), tool_ids=params.get("tool_ids"),
+                        )
+                    except TianshuError as exc:
+                        raise ControlError(
+                            "conflict", "request_id 与已有 Mission 使命不一致",
+                        ) from exc
+                if old_mission is not None and pending is None:
+                    try:
+                        freeze_mission(
+                            self._log, prior.run_id, mission=requested_mission,
+                            task_kind=params.get("task_kind", "general"),
+                            criteria=params.get("criteria", ()), tool_ids=params.get("tool_ids"),
+                        )
+                    except TianshuError as exc:
+                        raise ControlError(
+                            "conflict", "request_id 与已有 Mission 使命不一致",
+                        ) from exc
                 if (prior_events[0].payload.get("out", "") != (out_name or "")
                         or self._tasks.run_execution_policy(prior.run_id) != execution_policy
                         or list(profile_names or ()) != (old_route or {}).get("requested", [])
@@ -829,7 +918,9 @@ class ControlPlane:
                 )
             elif needs_images and not self._model_slot.supports_image_attachments:
                 raise ControlError("bad_params", "所选模型未开启图片附件能力")
-            self._stack.dispatcher.prepare_run(task_id, execution_policy, discover_remote=False)
+            self._stack.dispatcher.prepare_run(
+                task_id, execution_policy, discover_remote=False, discover_mcp=False,
+            )
             payload = {
                 "task": task.goal,
                 "out": out_name or "",
@@ -839,6 +930,8 @@ class ControlPlane:
                 },
                 "tools": [] if mode == "compact" else _exposed_tool_ids(execution_policy),
             }
+            if mode != "compact" and task.mcp_servers and execution_policy != PURE_ONLY:
+                payload.pop("tools")
             # 旧调用没有续接材料时不产生新事件，保证历史视图与默认路径兼容。
             use_workflow = (
                 mode != "execute" or workflow.source_text
@@ -863,6 +956,15 @@ class ControlPlane:
             if route is not None:
                 tx.append(run.run_id, RUN_MODEL_ROUTE, route.to_payload(),
                           task_id=task_id, actor_kind="core")
+            from .mission import prepare_run_mission
+
+            if not task.is_control:
+                prepare_run_mission(
+                    self._log, run.run_id, registry=self._stack.dispatcher.registry,
+                    mission=params.get("mission"), task_kind=params.get("task_kind", "general"),
+                    criteria=params.get("criteria", ()), tool_ids=params.get("tool_ids"),
+                    selected_servers=task.mcp_servers,
+                )
             # 认领者（daemon 驱动线程）负责 created → queued → running。
             self._claims.enqueue(run.run_id)
         return {"run": self._run_view(run)}

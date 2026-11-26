@@ -108,6 +108,7 @@ class _DispatcherAuthorityMixin:
     _leases: LeaseStore
     _approvals: ApprovalStore
     _grants: GrantStore
+    _consents: Any
     _claims: JobStore
     _snapshots: SnapshotStore | None
     _data_root: Path | None
@@ -180,6 +181,7 @@ class _DispatcherAuthorityMixin:
         这里调用的是 F2 的同一个 `check_spawn()`，不是第二套策略实现；执行时
         `spawn()` 会再核一次（两边看到的必须是同一个世界）。
         """
+        self._verify_verification_command(request, args)
         task = self._tasks.get_task(request.task_id)
         policy = task.exec_policy if task is not None else None
         if policy is None:
@@ -243,6 +245,23 @@ class _DispatcherAuthorityMixin:
                 f"exec 后端不支持：{exc}", "c4.exec_unsupported"
             ) from exc
         return isolation_view(self._exec_backend, report)
+
+    def _verify_verification_command(self, request, args):
+        if request.tool_id != "run_command":
+            return
+        from types import SimpleNamespace
+
+        from .verification_driver import assert_execution_binding
+        try:
+            assert_execution_binding(
+                SimpleNamespace(log=self._log, tasks=self._tasks, contents=self._contents,
+                                dispatcher=self),
+                request.run_id, request.call_id, args,
+            )
+        except (ValueError, OSError, IndexError) as exc:
+            raise DispatchDenied(
+                f"验证命令前置条件失效：{exc}", "dispatch.stale_precondition",
+            ) from exc
 
     @contextlib.contextmanager
     def _begin_memory_execution(self, request: ActionRequest, claim: JobClaim):
@@ -551,6 +570,22 @@ class _DispatcherAuthorityMixin:
         args: dict[str, Any] | None = None,
         mcp_discovery: bool = False,
     ) -> _Authority:
+        from .goal_v2 import (
+            GoalAdmissionRefused,
+            action_denied,
+            phase_admission,
+            record_admission_refused,
+        )
+        category = phase_admission(
+            self._log, request.run_id, clock=self._clock,
+            runtime=self._leases.identity.instance_id)
+        if category:
+            record_admission_refused(
+                self._log, request.run_id, GoalAdmissionRefused(category),
+                source="dispatch", request_id=request.request_id)
+            raise DispatchDenied("Goal 当前不允许新的副作用：" + category, "dispatch.run_fenced")
+        if action_denied(self._log, request):
+            raise DispatchDenied("Goal 内该具体动作已被人否决", "c4.approval_rejected")
         if claim.run_id != request.run_id:
             raise DispatchDenied(
                 f"claim 属于另一个 Run：claim.run_id={claim.run_id}，"
@@ -835,14 +870,21 @@ class _DispatcherAuthorityMixin:
             )
         policy = task.exec_policy
         if policy is not None and tuple(policy.isolation_requires):
-            # 隔离实测报告来自 exec backend 的一次性探针，测的不是这个长连接
-            # server 进程；跨对象作证不可接受，所以非空要求一律拒绝（SPEC §3.1）。
-            raise DispatchDenied(
-                "任务声明了 isolation_requires，但 MCP server 进程不经过 exec 后端"
-                f"（现有实测报告测的不是它），拒绝调用 {ref.uri}"
-                "：等 MCP 专属探针/后端接缝落地",
-                "c4.mcp_isolation_unproven",
-            )
+            clients = self._mcp_clients
+            server = None if clients is None else clients.server(target.server)
+            scope = None if server is None else getattr(server, "_execution_scope", None)
+            execution = None if server is None else getattr(server, "_execution", None)
+            if (scope is None or execution is None
+                    or scope.get("task_id") != task.task_id
+                    or scope.get("run_id") != run.run_id):
+                raise DispatchDenied(
+                    "当前 MCP 没有绑定本 Task/Run 的本地隔离准入",
+                    "c4.mcp_isolation_unproven",
+                )
+            try:
+                execution.check_current()
+            except TianshuError as exc:
+                raise DispatchDenied(str(exc), "c4.mcp_isolation_unproven") from exc
         self._refuse_blocked_mcp_object(target.server, target.tool)
         if discovery:
             return _Authority(run, task, bindings, [], [])
@@ -1157,6 +1199,29 @@ class _DispatcherAuthorityMixin:
         issuer = "policy:auto"
 
         if self._requires_approval(request, target, args):
+            if self._approvals.rejected_for(request) is not None:
+                raise DispatchDenied("具体动作已被人否决", "c4.approval_rejected")
+            consent_id = self._consents.selected(request) if self._consents else None
+            if consent_id is not None:
+                decision = self._policy.classify(
+                    request.action, list(request.resources), auth.bindings,
+                    self._policy_preconditions(request, target, args),
+                    task_id=request.task_id, tool_id=request.tool_id,
+                )
+                if decision.is_denied:
+                    raise DispatchDenied(decision.reason, decision.rule_id)
+                self._consents.consume(request, args=args)
+                issuer = f"consent:{consent_id}"
+                lease_expires = self._lease_deadline(auth.lease_paths, request.run_id)
+                grant = self._grants.issue(
+                    subject=f"{request.run_id}#{request.claim_epoch}",
+                    request=request, issuer=issuer, max_expires_at=lease_expires,
+                )
+                self._grants.consume(
+                    grant.grant_id, request_digest=digest,
+                    subject=f"{request.run_id}#{request.claim_epoch}",
+                )
+                return None, grant.grant_id
             approval = (
                 self._approvals.get(stored.approval_id)
                 if stored.approval_id

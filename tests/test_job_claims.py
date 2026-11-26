@@ -219,65 +219,70 @@ def test_claim_next_skips_terminal_jobs(env):
         ("tasks", "reconcile_finished_subtasks", []),
     ],
 )
-def test_empty_poll_does_not_take_write_lock(env, store_name, operation, expected):
+def test_empty_poll_does_not_take_write_lock(env, tmp_path, store_name, operation, expected):
     log, tasks, _, jobs, _, _ = env
     log.conn.execute("PRAGMA busy_timeout=50")
-    child = subprocess.Popen(
-        [sys.executable, "-c", _WRITE_LOCK_CHILD, SRC, str(log.db_path)],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        **CHILD_TEXT,
-    )
-    ready: queue.Queue[str | BaseException] = queue.Queue()
+    with (tmp_path / "lock-child.stderr").open("w+b") as diagnostics:
+        # Own the lock holder directly: the Windows venv launcher can outlive
+        # or lose its child independently. A file keeps diagnostics independent of EOF.
+        child = subprocess.Popen(
+            [sys._base_executable, "-c", _WRITE_LOCK_CHILD, SRC, str(log.db_path)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=diagnostics,
+            **CHILD_TEXT,
+        )
+        ready: queue.Queue[str | BaseException] = queue.Queue()
 
-    def read_ready():
-        try:
-            assert child.stdout is not None
-            ready.put(child.stdout.readline())
-        except BaseException as exc:
-            ready.put(exc)
-
-    reader = threading.Thread(target=read_ready, daemon=True)
-    reader.start()
-    failure: BaseException | None = None
-    try:
-        line = ready.get(timeout=15)
-        assert isinstance(line, str), line
-        assert line.strip() == "locked"
-        store = jobs if store_name == "jobs" else tasks
-        assert getattr(store, operation)() == expected
-    except BaseException as exc:
-        failure = exc
-        raise
-    finally:
-        try:
+        def read_ready():
             try:
-                if child.poll() is None:
-                    try:
-                        assert child.stdin is not None
-                        child.stdin.write("x")
-                        child.stdin.flush()
-                    except (BrokenPipeError, OSError):
-                        pass
-                    try:
-                        child.wait(timeout=15)
-                    except subprocess.TimeoutExpired:
-                        child.kill()
-                        child.wait(timeout=15)
-                assert child.stderr is not None
-                stderr = child.stderr.read()
-                assert child.returncode == 0, stderr
-            finally:
-                for stream in (child.stdin, child.stdout, child.stderr):
-                    if stream is not None:
-                        stream.close()
-                reader.join(timeout=5)
-                assert not reader.is_alive()
+                assert child.stdout is not None
+                ready.put(child.stdout.readline())
+            except BaseException as exc:
+                ready.put(exc)
+
+        reader = threading.Thread(target=read_ready, daemon=True)
+        reader.start()
+        failure: BaseException | None = None
+        try:
+            line = ready.get(timeout=15)
+            assert isinstance(line, str), line
+            assert line.strip() == "locked"
+            store = jobs if store_name == "jobs" else tasks
+            assert getattr(store, operation)() == expected
         except BaseException as exc:
-            if failure is None:
-                raise
-            failure.add_note(f"清理写锁子进程失败：{exc!r}")
+            failure = exc
+            raise
+        finally:
+            try:
+                try:
+                    if child.poll() is None:
+                        try:
+                            assert child.stdin is not None
+                            child.stdin.write("x")
+                            child.stdin.flush()
+                        except (BrokenPipeError, OSError):
+                            pass
+                        try:
+                            child.wait(timeout=15)
+                        except subprocess.TimeoutExpired:
+                            child.kill()
+                            child.wait(timeout=15)
+                    if child.returncode != 0:
+                        diagnostics.seek(0)
+                        message = diagnostics.read(16_384).decode("utf-8", errors="replace")
+                        pytest.fail(f"写锁子进程退出 {child.returncode}：{message}")
+                finally:
+                    if child.stdin is not None:
+                        child.stdin.close()
+                    reader.join(timeout=5)
+                    assert not reader.is_alive(), "写锁子进程的握手读取未结束"
+                    if child.stdout is not None:
+                        child.stdout.close()
+            except BaseException as exc:
+                if failure is None:
+                    raise
+                failure.add_note(f"清理写锁子进程失败：{exc!r}")
 
 
 def test_second_claim_bumps_epoch_and_fences_old(env):

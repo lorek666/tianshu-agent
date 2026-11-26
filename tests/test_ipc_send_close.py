@@ -66,7 +66,8 @@ def test_abort_after_real_partial_write_exits_sender_cleanly(monkeypatch):
                 peer, _ = control.accept()
                 peer.settimeout(5)
                 assert peer.recv(5) == b"ready"
-                original_send = raw._conn._send
+                connection_type = type(raw._conn)
+                original_send = connection_type._send
 
                 def short_write(fd, buf):
                     if len(buf) > 16384 and not sent.is_set():
@@ -78,7 +79,8 @@ def test_abort_after_real_partial_write_exits_sender_cleanly(monkeypatch):
                     return os.write(fd, buf)
 
                 monkeypatch.setattr(
-                    raw._conn, "_send", lambda buf: original_send(buf, write=short_write)
+                    connection_type, "_send",
+                    lambda transport, buf: original_send(transport, buf, write=short_write),
                 )
                 thread_errors = []
                 original_hook = threading.excepthook
@@ -96,7 +98,7 @@ def test_abort_after_real_partial_write_exits_sender_cleanly(monkeypatch):
                 def record_closed(message):
                     try:
                         original_raw_send(message)
-                    except ipc.ConnectionClosed as exc:
+                    except (OSError, ipc.ConnectionClosed) as exc:
                         send_errors.append(exc)
                         raise
 
@@ -110,7 +112,7 @@ def test_abort_after_real_partial_write_exits_sender_cleanly(monkeypatch):
                 assert conn.join_sender(2), "关闭后发送线程未退出"
                 assert not thread_errors, thread_errors
                 assert len(send_errors) == 1
-                assert isinstance(send_errors[0].__cause__, TypeError)
+                assert isinstance(send_errors[0], (OSError, ipc.ConnectionClosed))
                 assert conn.drop_reason == "send_stall"
                 assert conn.sent_frames == 0
             finally:
@@ -157,3 +159,199 @@ def test_encode_type_error_is_not_hidden_even_if_connection_is_closed():
     raw = ipc.ServerConnection(ClosedConnection())
     with pytest.raises(TypeError):
         raw.send({"not_json": object()})
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX socket 文件描述符复用")
+@pytest.mark.parametrize("close_method", ["abort", "close"])
+def test_abort_during_socket_read_cannot_consume_reused_file(tmp_path, monkeypatch, close_method):
+    """关闭后的四字节帧头读取不能偷走另一个文件的前缀。"""
+    from multiprocessing.connection import Connection
+
+    local, remote = socket.socketpair()
+    raw = ipc.ServerConnection(Connection(local.detach()))
+    original_fd = raw._conn.fileno()
+    prefix = b'{"cold_start":true,"metric":"restart_recover_ms","value":1}\n'
+    target = tmp_path / "metrics.jsonl"
+    target.write_bytes(prefix)
+    entered, release = threading.Event(), threading.Event()
+    original_read = Connection._read
+    errors = []
+
+    def gated_read(fd, size):
+        entered.set()
+        if not release.wait(5):
+            raise AssertionError("读取屏障未释放")
+        return original_read(fd, size)
+
+    monkeypatch.setattr(Connection, "_read", staticmethod(gated_read))
+    child = subprocess.Popen(
+        [sys.executable, "-c",
+         "import os,struct,sys\n"
+         "fd=int(sys.argv[1]);body=b'{}'\n"
+         "os.write(fd,struct.pack('!i',len(body))+body)\n"
+         "sys.stdin.buffer.read(1)\n"
+         "os.close(fd)\n", str(remote.fileno())],
+        pass_fds=(remote.fileno(),), stdin=subprocess.PIPE,
+    )
+    remote.close()
+
+    def receive():
+        try:
+            assert raw.recv(timeout=5) is None
+        except BaseException as exc:  # noqa: BLE001 - 交还测试线程
+            errors.append(exc)
+
+    receiver = threading.Thread(target=receive, daemon=True)
+    receiver.start()
+    file_fd = None
+    try:
+        assert entered.wait(5), "真实帧头读取没有开始"
+        getattr(raw, close_method)()
+        file_fd = os.open(target, os.O_RDONLY)
+        assert file_fd == original_fd, "未真正复用刚关闭的传输描述符"
+        release.set()
+        receiver.join(5)
+        assert not receiver.is_alive()
+        assert not errors, errors
+        assert os.read(file_fd, len(prefix)) == prefix, "IPC 读取偷走了文件前四字节"
+    finally:
+        release.set()
+        raw.close()
+        receiver.join(5)
+        if file_fd is not None:
+            os.close(file_fd)
+        if child.stdin is not None:
+            child.stdin.close()
+        child.wait(timeout=5)
+    assert child.returncode == 0
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX socket 文件描述符复用")
+@pytest.mark.parametrize("close_method", ["abort", "close"])
+def test_abort_during_socket_send_cannot_overwrite_reused_file(tmp_path, monkeypatch, close_method):
+    from multiprocessing.connection import Connection
+
+    local, remote = socket.socketpair()
+    raw = ipc.ServerConnection(Connection(local.detach()))
+    original_fd = raw._conn.fileno()
+    target = tmp_path / "metrics.jsonl"
+    prefix = b'{"metric":"untouched","value":1}\n'
+    target.write_bytes(prefix)
+    entered, release = threading.Event(), threading.Event()
+    original_send = Connection._send
+    errors = []
+
+    def gated_write(fd, data):
+        entered.set()
+        if not release.wait(5):
+            raise AssertionError("发送屏障未释放")
+        return os.write(fd, data)
+
+    monkeypatch.setattr(
+        Connection, "_send", lambda conn, data: original_send(conn, data, write=gated_write)
+    )
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import sys;sys.stdin.buffer.read(1)"],
+        pass_fds=(remote.fileno(),), stdin=subprocess.PIPE,
+    )
+    remote.close()
+
+    def send():
+        try:
+            raw.send({"ok": True})
+        except (OSError, ipc.ConnectionClosed) as exc:
+            errors.append(exc)
+
+    sender = threading.Thread(target=send, daemon=True)
+    sender.start()
+    file_fd = None
+    try:
+        assert entered.wait(5), "真实发送没有开始"
+        getattr(raw, close_method)()
+        file_fd = os.open(target, os.O_WRONLY)
+        assert file_fd == original_fd, "未真正复用刚关闭的传输描述符"
+        release.set()
+        sender.join(5)
+        assert not sender.is_alive()
+        assert target.read_bytes() == prefix, "IPC 发送覆盖了另一文件"
+        assert len(errors) == 1
+    finally:
+        release.set()
+        raw.close()
+        sender.join(5)
+        if file_fd is not None:
+            os.close(file_fd)
+        if child.stdin is not None:
+            child.stdin.close()
+        child.wait(timeout=5)
+    assert child.returncode == 0
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX socket 关闭唤醒")
+def test_close_wakes_socket_read_without_deadline(monkeypatch):
+    from multiprocessing.connection import Connection
+
+    local, remote = socket.socketpair()
+    raw = ipc.ServerConnection(Connection(local.detach()))
+    entered = threading.Event()
+    original_poll = Connection.poll
+    errors = []
+
+    def poll(conn, timeout=0):
+        entered.set()
+        return original_poll(conn, timeout)
+
+    monkeypatch.setattr(Connection, "poll", poll)
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import sys;sys.stdin.buffer.read(1)"],
+        pass_fds=(remote.fileno(),), stdin=subprocess.PIPE,
+    )
+    remote.close()
+
+    def receive():
+        try:
+            assert raw.recv() is None
+        except BaseException as exc:  # noqa: BLE001 - 交还测试线程
+            errors.append(exc)
+
+    reader = threading.Thread(target=receive, daemon=True)
+    reader.start()
+    try:
+        assert entered.wait(5)
+        raw.close()
+        reader.join(5)
+        assert not reader.is_alive(), "close 未唤醒持有传输副本的无限期 poll"
+        assert not errors, errors
+    finally:
+        raw.close()
+        if child.stdin is not None:
+            child.stdin.close()
+        child.wait(timeout=5)
+        reader.join(5)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX socket 生命周期")
+@pytest.mark.parametrize("already_closed", [False, True])
+def test_socket_close_finishes_when_handle_is_closed_or_dup_unavailable(
+    monkeypatch, already_closed,
+):
+    import errno
+    from multiprocessing.connection import Connection
+
+    local, remote = socket.socketpair()
+    raw = ipc.ServerConnection(Connection(local.detach()))
+    try:
+        if already_closed:
+            raw._conn.close()
+        else:
+            def no_descriptors(fd):
+                raise OSError(errno.EMFILE, "injected descriptor exhaustion")
+            monkeypatch.setattr(os, "dup", no_descriptors)
+        raw.close()
+        raw.close()
+        assert raw.closed
+        remote.settimeout(1)
+        assert remote.recv(1) == b""
+    finally:
+        raw._conn.close()
+        remote.close()

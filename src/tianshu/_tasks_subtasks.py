@@ -181,6 +181,9 @@ class _SubtaskStoreMixin:
                 parent_run_id=parent_run.run_id,
                 subtask_id=subtask_id,
             )
+            from .mission import freeze_mission
+
+            freeze_mission(self._log, child_run_id)
             job = self._claims.enqueue(child_run_id)
             self._conn.execute(
                 "INSERT INTO subtasks (subtask_id, parent_task_id, parent_run_id,"

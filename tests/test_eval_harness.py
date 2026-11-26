@@ -8,6 +8,7 @@ case，见 `docs/M4-verification.md`。
 from __future__ import annotations
 
 import dataclasses
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -98,8 +99,32 @@ def test_fixture_digest_is_stable_and_case_specific():
 # ---------------------------------------------------------------- 基线
 
 
-def test_scripted_baseline_is_all_green(tmp_path):
-    suite = _scripted_suite(tmp_path / "eval", repeat=3)
+def test_scripted_baseline_reuses_real_samples_with_private_copies(scripted_eval_suite):
+    first, second = scripted_eval_suite(), scripted_eval_suite()
+    identities = [(obs.case_id, obs.run_index, obs.run_id) for obs in first.observations]
+    assert identities == [
+        (obs.case_id, obs.run_index, obs.run_id) for obs in second.observations
+    ], "report-only checks must reuse the same real samples"
+    assert len({run_id for _, _, run_id in identities}) == len(CASES) * 3
+    for case in CASES:
+        assert [index for case_id, index, _ in identities if case_id == case.case_id] == [0, 1, 2]
+    assert first is not second
+    for original, copied in zip(first.observations, second.observations, strict=True):
+        assert original is not copied
+        assert original.events is not copied.events
+        assert original.files is not copied.files
+    original = first.observations[0]
+    files = dict(original.files)
+    payload = deepcopy(original.events[0].payload)
+    original.files.clear()
+    original.events[0].payload.clear()
+    third = scripted_eval_suite().observations[0]
+    assert third.files == second.observations[0].files == files
+    assert third.events[0].payload == second.observations[0].events[0].payload == payload
+
+
+def test_scripted_baseline_is_all_green(scripted_eval_suite):
+    suite = scripted_eval_suite()
     report = build_report(suite, CASES)
 
     assert report["schema"] == "tianshu.eval.v1"

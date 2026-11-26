@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import os
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -32,6 +33,32 @@ TEST_LOCK_ROOT_ENV = "TIANSHU_TEST_LOCK_ROOT"
 TEST_REGISTRY_HOME_ENV = "PYTEST_TIANSHU_REGISTRY_HOME"
 TEST_STARTUP_DIR = Path(__file__).resolve().parent / "_startup"
 SOURCE_DIR = Path(__file__).resolve().parents[1] / "src"
+
+
+@pytest.fixture(scope="session")
+def _scripted_eval_samples():
+    # Only the empty container has session scope; execution needs test isolation.
+    return []
+
+
+@pytest.fixture
+def scripted_eval_suite(tmp_path, _scripted_eval_samples):
+    """Provide private copies of real full-suite, three-repeat observations."""
+    from tianshu.eval import CASES, run_suite
+    from tianshu.model import ScriptedModel
+
+    def samples():
+        if not _scripted_eval_samples:
+            _scripted_eval_samples.append(run_suite(
+                CASES,
+                model_for=lambda case: ScriptedModel(list(case.script)),
+                repeat=3,
+                workdir=tmp_path / "scripted-eval",
+                identity={"adapter": "scripted", "vendor": None, "model": ""},
+            ))
+        return deepcopy(_scripted_eval_samples[0])
+
+    return samples
 
 
 @pytest.fixture(autouse=True)

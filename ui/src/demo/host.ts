@@ -75,6 +75,33 @@ export class DemoHostClient implements HostClient {
   async rpc<T = unknown>(method: string, params: RpcParams = {}): Promise<T> {
     const world = this.world;
     switch (method) {
+      case "goal.get":
+      case "goal.v2.get":
+        return { goal: null } as T;
+      case "consent.list":
+        return { consents: [] } as T;
+      case "goal.create":
+      case "goal.advance":
+      case "goal.close":
+      case "goal.v2.create":
+      case "goal.v2.advance":
+      case "goal.v2.pause":
+      case "goal.v2.resume":
+      case "goal.v2.recover":
+      case "goal.v2.close":
+      case "consent.prepare":
+      case "consent.issue":
+      case "consent.revoke":
+        throw new HostRpcError("unsupported", "演示模式不支持持久化目标操作，请连接真实 Host。");
+      case "skill.list":
+        return {
+          format_version: 1, skills: [],
+          issues: [{ path: "演示模式", message: "演示模式不读取本机技能，请连接真实 Host。" }],
+        } as T;
+
+      case "skill.prepare":
+        throw new HostRpcError("unsupported", "演示模式不读取或执行本机技能");
+
       case "state":
         return world.snapshot() as T;
 

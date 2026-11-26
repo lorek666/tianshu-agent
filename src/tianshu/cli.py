@@ -114,6 +114,10 @@ def _build_parser() -> argparse.ArgumentParser:
                    help="只读绑定目录（不能写入）")
     r.add_argument("--task", default=None, help="兼容入口的目标文本")
     r.add_argument("--out", default=None, help="兼容入口的输出文件名")
+    from .mission import TASK_KINDS
+
+    r.add_argument("--task-kind", choices=TASK_KINDS, default="general",
+                   help="新 Mission 的任务类型；只决定工作方法与工具候选，不授予权限")
     r.add_argument(
         "--execution-mode",
         choices=("effects", "pure_only"),
@@ -433,7 +437,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
             plane = ControlPlane(
                 stack, model=model, limits=Limits(args.max_turns, args.max_total_tokens),
             )
-            params = {}
+            params = {"task_kind": args.task_kind}
             if args.request_id is not None:
                 params["request_id"] = args.request_id
             if action == "execute-plan":
@@ -462,6 +466,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 args.task_id or "",
                 out_name=args.out,
                 execution_policy=_run_execution_policy(args),
+                task_kind=args.task_kind,
             )
             return _report(stack, result, args)
         # resume
@@ -507,6 +512,7 @@ def _run_compat(stack, args: argparse.Namespace) -> int:
         task.task_id,
         out_name=args.out,
         execution_policy=_run_execution_policy(args),
+        task_kind=args.task_kind,
     )
     return _report(stack, result, args)
 
