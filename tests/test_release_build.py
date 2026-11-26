@@ -374,6 +374,26 @@ def test_source_version_reports_missing_identity_file_as_build_error(tmp_path):
         module.verify_source_version(repo, "0.1.2")
 
 
+@pytest.mark.parametrize(
+    ("relative", "content"),
+    [
+        ("pyproject.toml", 'project = "invalid"\n'),
+        ("uv.lock", 'version = 1\npackage = "invalid"\n'),
+        ("desktop/src-tauri/tauri.conf.json", "[]\n"),
+    ],
+)
+def test_source_version_reports_malformed_identity_shape_as_build_error(
+    tmp_path, relative, content
+):
+    module = _load_module()
+    repo = _repo_fixture(tmp_path)
+    _write_fixture_version(repo, "0.1.2")
+    (repo / relative).write_text(content, encoding="utf-8")
+
+    with pytest.raises(module.BuildError, match="必须是"):
+        module.verify_source_version(repo, "0.1.2")
+
+
 def test_runtime_lock_pins_full_download_urls_and_published_hashes():
     module = _load_module()
 

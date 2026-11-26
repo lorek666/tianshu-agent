@@ -205,6 +205,24 @@ def _source_string(path: Path, name: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _identity_table(value: object, label: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise BuildError(f"{label} 必须是 object")
+    return value
+
+
+def _locked_package_version(value: object, name: str, label: str) -> object:
+    packages = _identity_table(value, label).get("package")
+    if not isinstance(packages, list):
+        raise BuildError(f"{label}.package 必须是 array")
+    matches: list[dict[str, Any]] = []
+    for package in packages:
+        table = _identity_table(package, f"{label}.package")
+        if table.get("name") == name:
+            matches.append(table)
+    return matches[0].get("version") if len(matches) == 1 else None
+
+
 def verify_source_version(repo_root: Path, version: str) -> None:
     if _VERSION_RE.fullmatch(version) is None:
         raise BuildError("version 必须匹配 0.x.y")
@@ -232,19 +250,22 @@ def verify_source_version(repo_root: Path, version: str) -> None:
     except (OSError, ValueError) as exc:
         raise BuildError(f"无法读取发行版本身份文件：{exc}") from exc
 
-    python_packages = [p for p in python_lock.get("package", []) if p.get("name") == "tianshu"]
-    desktop_packages = [
-        p for p in cargo_lock.get("package", []) if p.get("name") == "tianshu-desktop"
-    ]
+    project_table = _identity_table(project, "pyproject.toml")
+    project_section = _identity_table(project_table.get("project"), "pyproject.toml.project")
+    cargo_table = _identity_table(cargo, "desktop/src-tauri/Cargo.toml")
+    cargo_package = _identity_table(
+        cargo_table.get("package"), "desktop/src-tauri/Cargo.toml.package"
+    )
+    tauri_table = _identity_table(tauri, "desktop/src-tauri/tauri.conf.json")
     sites = {
-        "pyproject.toml": project.get("project", {}).get("version"),
+        "pyproject.toml": project_section.get("version"),
         **source_versions,
-        "uv.lock": python_packages[0].get("version") if len(python_packages) == 1 else None,
-        "desktop/src-tauri/Cargo.toml": cargo.get("package", {}).get("version"),
-        "desktop/src-tauri/Cargo.lock": (
-            desktop_packages[0].get("version") if len(desktop_packages) == 1 else None
+        "uv.lock": _locked_package_version(python_lock, "tianshu", "uv.lock"),
+        "desktop/src-tauri/Cargo.toml": cargo_package.get("version"),
+        "desktop/src-tauri/Cargo.lock": _locked_package_version(
+            cargo_lock, "tianshu-desktop", "desktop/src-tauri/Cargo.lock"
         ),
-        "desktop/src-tauri/tauri.conf.json": tauri.get("version"),
+        "desktop/src-tauri/tauri.conf.json": tauri_table.get("version"),
     }
     for path, actual in sites.items():
         if actual != version:
