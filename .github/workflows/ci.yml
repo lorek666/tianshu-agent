@@ -2,7 +2,7 @@ name: CI
 
 # Python 检查与 CONTRIBUTING.md §5 使用同一锁文件和测试套件：
 # uv lock --check 与 ruff 命令相同；pytest 增加汇总、跳过原因及 Windows
-# 长等待诊断参数，并在两个独立 Windows runner 按文件分片。
+# 长等待诊断参数，并在三个独立 Windows runner 按文件分片。
 # UI 另有类型、测试、构建与 dist 一致性检查；macOS required job 与 Windows
 # required 汇总还会覆盖 R1 Tauri 壳的 fmt/test/clippy。
 # 三个平台的 Python 检查和 UI 检查均为 required，准确名称见 CONTRIBUTING §6。
@@ -116,6 +116,13 @@ jobs:
         run: uv run --frozen python scripts/check_licenses_and_sbom.py --out "${RUNNER_TEMP}/tianshu-sbom.cdx.json"
       - name: Pytest
         run: uv run --frozen pytest -o addopts="" -q -rs
+      - name: 上传 state 背压诊断证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: slo-state-pressure-macos-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/slo-state-pressure.json
+          if-no-files-found: warn
 
   desktop_macos:
     name: desktop rust checks · macos
@@ -153,7 +160,7 @@ jobs:
           test "$PYTHON_RESULT" = success
           test "$DESKTOP_RESULT" = success
 
-  # Windows 保留完整覆盖（含 issue #21/#50 回归），分到两个独立 runner。
+  # Windows 保留完整覆盖（含 issue #21/#50 回归），分到三个独立 runner。
   # 节点数和固定的实测文件权重只用于分组，不改变25分钟上限或验收。
   windows_shards:
     name: windows shard ${{ matrix.shard }} · py3.12
@@ -163,7 +170,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1]
+        shard: [0, 1, 2]
     defaults:
       run:
         shell: bash
@@ -194,9 +201,16 @@ jobs:
         # 时仍不能保证采样。此 step 唯一直接命令保留 wrapper 最终退出码。
         run: >-
           uv run --frozen python scripts/pytest_with_stacks.py -p pytest_ci_shards
-          --ci-shard-index=${{ matrix.shard }} --ci-shard-count=2
+          --ci-shard-index=${{ matrix.shard }} --ci-shard-count=3
           --ci-shard-report="$CI_SHARD_REPORT" -o addopts="" -vv -rs --tb=short
           --durations=20 --stack-timeout=60
+      - name: 上传 state 背压诊断证据
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: slo-state-pressure-windows-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.shard }}
+          path: ${{ runner.temp }}/slo-state-pressure.json
+          if-no-files-found: warn
       - name: 上传本分片原始报告
         if: always()
         uses: actions/upload-artifact@v4
@@ -233,7 +247,7 @@ jobs:
         run: cargo clippy --locked --all-targets -- -D warnings
 
   windows_summary:
-    # 名称保留为原 required check；此 job 在 Ubuntu 核验两个 Windows job。
+    # 名称保留为原 required check；此 job 在 Ubuntu 核验三个 Windows job。
     name: test (windows-latest) · py3.12
     runs-on: ubuntu-latest
     needs: [windows_shards, desktop_windows]
@@ -262,6 +276,12 @@ jobs:
         with:
           name: windows-pytest-${{ github.run_id }}-${{ github.run_attempt }}-1
           path: ${{ runner.temp }}/windows-ci-shards/1
+      - name: 下载分片 2
+        if: always()
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-pytest-${{ github.run_id }}-${{ github.run_attempt }}-2
+          path: ${{ runner.temp }}/windows-ci-shards/2
       - name: 验证上游结论与完整覆盖
         if: always()
         env:
@@ -272,7 +292,7 @@ jobs:
         run: >-
           uv run --frozen python scripts/pytest_ci_shards.py verify
           --reports-root "$SHARD_REPORTS" --sha "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID"
-          --run-attempt "$GITHUB_RUN_ATTEMPT" --count 2 --indices 0 1
+          --run-attempt "$GITHUB_RUN_ATTEMPT" --count 3 --indices 0 1 2
           --needs-result "$UPSTREAM_RESULT"
       - name: 验证 Windows 桌面壳门禁
         if: always()

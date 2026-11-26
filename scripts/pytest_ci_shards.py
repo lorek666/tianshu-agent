@@ -1,4 +1,4 @@
-"""Two Windows CI shards: preserve file order and verify complete pytest evidence.
+"""Three Windows CI shards: preserve file order and verify complete pytest evidence.
 
 This is development-only CI evidence, not a product contract.
 The upstream job result also matters: the stack wrapper can fail after pytest exits.
@@ -14,6 +14,9 @@ from collections import Counter
 from pathlib import Path, PurePosixPath
 
 import pytest
+
+SHARD_COUNT = 3
+SHARD_INDICES = list(range(SHARD_COUNT))
 
 # Unmeasured files use ~0.5s per node as a rough proxy. Calibrated files use
 # the larger complete-file interval from Windows runs 44927917869/44939541307,
@@ -226,7 +229,8 @@ def require(condition, message):
 
 def partition(full, count):
     """Balance estimated work by whole file; retain original collection order."""
-    require(type(count) is int and count == 2, "exactly two shards are required")
+    require(type(count) is int and count == SHARD_COUNT,
+            f"exactly {SHARD_COUNT} shards are required")
     require(isinstance(full, list) and full, "empty or invalid full collection")
     for pair in full:
         require(isinstance(pair, list) and len(pair) == 2
@@ -262,8 +266,10 @@ def pytest_configure(config):
     if index is None and count is None and report is None:
         return
     try:
-        require(count == 2 and index in (0, 1) and report is not None and report.is_absolute(),
-                "use index 0/1, count 2 and an absolute report path")
+        require(type(index) is int and index in SHARD_INDICES
+                and count == SHARD_COUNT and report is not None and report.is_absolute(),
+                f"use index {'/'.join(map(str, SHARD_INDICES))}, count {SHARD_COUNT} "
+                "and an absolute report path")
         selectors = ("keyword", "markexpr", "ignore", "ignore_glob", "deselect", "lf",
                      "failedfirst", "newfirst", "stepwise", "stepwise_skip", "stepwise_reset",
                      "maxfail", "collectonly", "pyargs")
@@ -341,7 +347,8 @@ class Shard:
 
 def verify(args):
     require(args.needs_result == "success", "Windows shard jobs did not all succeed")
-    require(args.count == 2 and args.indices == [0, 1], "expected shard indices 0 and 1")
+    require(args.count == SHARD_COUNT and args.indices == SHARD_INDICES,
+            f"expected shard indices {' '.join(map(str, SHARD_INDICES))}")
     paths = [args.reports_root / str(index) / "shard.json" for index in args.indices]
     require({p for p in args.reports_root.rglob("*") if p.is_file()} == set(paths),
             "missing or extra shard artifacts")
@@ -373,7 +380,7 @@ def verify(args):
             expected_phases = ({"setup", "teardown"} if node_phases.get("setup") == "skipped"
                                else {"setup", "call", "teardown"})
             require(set(node_phases) == expected_phases, "missing or unexpected phase report")
-    print(f"Verified {len(full)} collected nodes across two Windows shards")
+    print(f"Verified {len(full)} collected nodes across {args.count} Windows shards")
 
 
 def main():
