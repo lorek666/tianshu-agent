@@ -393,10 +393,10 @@ class PreparedExecution:
                 type(self.backend) in (SeatbeltExecBackend, SeatbeltLeafExecBackend)
                 and seatbelt_available()
             ):
-                self._single_process = type(self.backend) is SeatbeltLeafExecBackend
+                self._single_process = not self.backend._allow_fork
                 profile = _build_sbpl_profile(
                     self.policy, argv0=self.argv[0], extra_rw_roots=(self._tmp,),
-                    allow_fork=not self._single_process,
+                    allow_fork=self.backend._allow_fork,
                 )
                 self._prefix = (SANDBOX_EXEC_PATH, "-p", profile)
             elif type(self.backend) is LandlockExecBackend and landlock_available():
