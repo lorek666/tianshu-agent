@@ -130,6 +130,112 @@ def test_leaf_command_tool_passes_full_subject_admission(tmp_path):
 
 
 @native
+@pytest.mark.parametrize("fork_required", [False, True], ids=["leaf-command", "fork-denied"])
+def test_automatic_goal_leaf_command_closure(tmp_path, monkeypatch, fork_required):
+    from support import approve_pending, engine_for, stack_for
+    from test_goal_v2 import advance, candidate, create, drive, get
+
+    from tianshu.control import ControlPlane
+    from tianshu.exec_backends import EXEC_BACKEND_ENV
+    from tianshu.goal_v2 import GoalCoordinator
+    from tianshu.loop import Limits
+    from tianshu.model import ModelResponse, ScriptedModel, ToolCall
+    from tianshu.plans import PlanStore
+    from tianshu.run_policy import EFFECTS
+    from tianshu.worker import Worker
+
+    monkeypatch.setenv(EXEC_BACKEND_ENV, "seatbelt_leaf")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    log = EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")
+    try:
+        stack = stack_for(log, data_root=tmp_path)
+        policy = ExecPolicy(
+            argv_allowlist=(sys.executable,), cwd_roots=(workspace,),
+            env_allowlist=("PATH",), timeout_ms=3000, max_output_bytes=65536,
+            isolation_requires=ISOLATION_BOUNDARIES,
+        )
+        task = stack.tasks.create_task("隔离命令闭环", [str(workspace)], exec_policy=policy)
+        plane = ControlPlane(stack, model=ScriptedModel([]), limits=Limits(max_turns=3))
+        env = plane, stack, task, workspace
+        goal = create(
+            env, mode="bounded_auto", completion_policy="verified",
+            execution_policy=EFFECTS.to_dict(),
+            isolation_requirements=list(ISOLATION_BOUNDARIES),
+        )
+        advance(env, goal)
+        mission = GoalCoordinator(stack).mission(goal["goal_id"])
+        drive(stack, json.dumps(candidate(mission)))
+        planned = get(env, goal)
+        plan = PlanStore(stack).get(planned["plan_id"])
+        PlanStore(stack).confirm(
+            plan["plan_id"], expected_revision=1,
+            document_digest=plan["document_digest"], request_id="confirm",
+        )
+        code = (
+            "import os;os.fork();from pathlib import Path;Path('escaped').write_text('bad')"
+            if fork_required else
+            "from pathlib import Path;Path('report.md').write_text('leaf')"
+        )
+        model = ScriptedModel([
+            ModelResponse("tool_use", tool_calls=[ToolCall("command", "run_command", {
+                "argv": [sys.executable, "-c", code], "cwd": str(workspace),
+            })], usage={"input_tokens": 1, "output_tokens": 1}),
+            ModelResponse("end_turn", content="命令已结束",
+                          usage={"input_tokens": 1, "output_tokens": 1}),
+        ])
+        with Worker(stack, model=model, heartbeat_interval_ms=0) as worker:
+            worker.drain(max_jobs=10)
+            assert not worker.errors
+        pending = stack.approvals.pending(run_id=get(env, planned)["phase_run_id"])
+        assert len(pending) == 1
+        run_id = pending[0].run_id
+        assert approve_pending(stack, run_id) == [pending[0].approval_id]
+        engine_for(stack, model).resume_run(run_id)
+        GoalCoordinator(stack).tick(goal["goal_id"])
+        drive(stack)
+        result = get(env, goal)
+        admitted = [
+            event for run in stack.tasks.list_runs(task.task_id)
+            for event in log.read_run(run.run_id, event_types=("execution.admitted",))
+            if event.payload["subject"]["kind"] == "command"
+        ]
+        assert admitted, result["blocker"]
+        assert all(
+            event.payload["admission"]["backend"] == "seatbelt_leaf"
+            and all(event.payload["admission"]["boundaries"][boundary] == "enforced"
+                    for boundary in ISOLATION_BOUNDARIES)
+            for event in admitted
+        )
+        command_run_ids = {event.run_id for event in admitted}
+        assert all(
+            log.read_run(run_id, event_types=("execution.ended",))[-1].payload["process_tree"]
+            == "exited"
+            for run_id in command_run_ids
+        )
+        assert not stack.approvals.pending()
+        command_results = [
+            event for event in log.read_run(run_id, event_types=("tool.result",))
+            if event.payload["tool_id"] == "run_command"
+        ]
+        assert len(command_results) == 1
+        assert command_results[0].payload["status"] == (
+            "failed" if fork_required else "succeeded"
+        )
+        assert not (workspace / "escaped").exists()
+        if fork_required:
+            assert result["status"] == "blocked", result
+            assert result["blocker"]["category"] == "verification_failed"
+            assert not (workspace / "report.md").exists()
+        else:
+            assert result["status"] == "completed", result["blocker"]
+            assert (workspace / "report.md").read_text(encoding="utf-8") == "leaf"
+        assert_no_unresolved_executions(log, workspace=workspace)
+    finally:
+        log.close()
+
+
+@native
 def test_leaf_automatic_mcp_initializes_calls_and_stops(tmp_path):
     settings = _settings(tmp_path)
     script = settings["workspace"] / "server.py"
