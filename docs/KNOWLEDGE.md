@@ -33,7 +33,7 @@
   macOS `seatbelt_leaf`、Host/停止身份修复、Windows 四独立 runner、state 背压诊断与
   SLO-first 调度。冲突解决初稿漏合并 SLO-first 已由真实 RED/GREEN 检出并修复，最终
   代码 head `a2e0ba0` 已通过本机全量、独立 Tier 1 复审与最终静态门禁；自己的 hosted
-  required CI 仍须按最终 PR 对象单独验收。不代表主干、发行版或完整跨平台自主执行已交付。
+  required CI 只按最终 PR 对象的实际 run 判定。不代表主干、发行版或完整跨平台自主执行已交付。
   精确范围见
   [实施记录](changelog/2026-11-23-agent-loop-implementation.md)、
   [#227 刷新记录](changelog/2026-11-26-pr227-stack-refresh.md)与

@@ -12,8 +12,8 @@ Goal V2 的手动/有限自动推进与累计边界、有限授权和命令/MCP 
 required checks 全部 success；#227 文档收口 head `d55568f` 的 hosted run `45762177178`
 同样完成 12 个 job 与四项 required checks。#228 已正常双父刷新到该 hosted-green 基线，
 并修复冲突解决漏合并的 SLO-first 调度契约，最终代码 head 为 `a2e0ba0`；本机全量、
-独立 Tier 1 复审与最终静态门禁已通过，自己的 hosted required CI 仍须按最终 PR 对象
-单独验收。尚未合入或发布。
+独立 Tier 1 复审与最终静态门禁已通过，自己的 hosted required CI 只按最终 PR 对象的
+实际 run 判定。尚未合入或发布。
 Windows 原生隔离、完整四边界自动执行及真实模型 UI 仍有未决项，
 详见[实施记录](changelog/2026-11-23-agent-loop-implementation.md)、
 [#227 刷新记录](changelog/2026-11-26-pr227-stack-refresh.md)与
