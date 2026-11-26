@@ -1,0 +1,48 @@
+name: Windows approval RPC diagnostic
+
+on:
+  push:
+    branches: [codex/windows-approval-rpc-diagnostics]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostic:
+    name: Approval timing on Windows (diagnostic only)
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: probe
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: 281dd22261105d32910ae5838a7873f0a1c693f1
+          path: frozen
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v5
+      - name: Reproduce the standalone approval workload and capture numeric spans
+        shell: pwsh
+        working-directory: frozen
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          uv python install 3.12
+          uv lock --check
+          uv sync --frozen
+          $probe = Join-Path $env:GITHUB_WORKSPACE 'probe/scripts/approval_rpc_diagnostic'
+          $root = Join-Path $env:RUNNER_TEMP 'approval-diagnostic'
+          $env:TIANSHU_CREDENTIAL_BACKEND = 'env'
+          $env:PYTHONPATH = "$probe/hooks;$PWD/scripts;$PWD/src"
+          New-Item -ItemType Directory -Path $root | Out-Null
+          foreach ($index in 0..2) {
+            uv run --frozen python "$probe/suite2.py" "$root/run-$index"
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: approval-rpc-diagnostic-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/approval-diagnostic
+          if-no-files-found: error
