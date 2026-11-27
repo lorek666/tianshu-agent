@@ -862,6 +862,32 @@
             "type": "integer",
             "minimum": 1
           },
+          "command": {
+            "type": "object",
+            "properties": {
+              "argv": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1
+              },
+              "cwd": {
+                "type": "string",
+                "pattern": "^.+$"
+              },
+              "backend": {
+                "type": "string",
+                "pattern": "^.+$"
+              }
+            },
+            "additionalProperties": false,
+            "required": [
+              "argv",
+              "cwd",
+              "backend"
+            ]
+          },
           "isolation": {
             "type": "object",
             "properties": {

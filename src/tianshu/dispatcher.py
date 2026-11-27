@@ -428,6 +428,20 @@ class Dispatcher(
         ).fetchone()
         return _row_to_dispatch(row) if row is not None else None
 
+    def _dispatched_result(self, request: ActionRequest) -> ToolResult | None:
+        """读取同一次调用已提交的结果，供幂等重放原样返回。"""
+        events = self._log.read_run(request.run_id, event_types=("tool.result",))
+        for event in reversed(events):
+            payload = event.payload
+            if (
+                payload.get("call_id") == request.call_id
+                and payload.get("tool_id") == request.tool_id
+            ):
+                return ToolResult(
+                    payload["status"], payload["effect_state"], payload["output"]
+                )
+        return None
+
     def get_request(self, request_id: str) -> StoredRequest | None:
         row = self._conn.execute(
             "SELECT * FROM dispatch_requests WHERE request_id = ?", (request_id,)
@@ -489,6 +503,7 @@ class Dispatcher(
             raise DispatchError("args 与 request.args_hash 不符（请求被改过）")
 
         isolation: dict[str, Any] | None = None
+        command: dict[str, Any] | None = None
         try:
             auth = self._authority(request, claim, args=args)
             target = self._resolve_target(request, auth)
@@ -509,6 +524,13 @@ class Dispatcher(
             else:
                 if request.action == ACTION_EXEC:
                     isolation = self._precheck_exec(request, args, target.path)
+                    # 与真正 spawn 使用同一份已校验 argv 和解析后的 cwd；后端取
+                    # 当前实际装配，而不是请求字符串或 capability 声明另造来源。
+                    command = {
+                        "argv": list(args["argv"]),
+                        "cwd": str(target.path),
+                        "backend": self._exec_backend.capabilities.name,
+                    }
                 else:
                     isolation = None
                 ok, reason = check_request_preconditions(
@@ -634,7 +656,7 @@ class Dispatcher(
                 if config is not None and config.url:
                     decision = replace(decision, reason=f"{decision.reason} · 端点：{config.url}")
             approval = self._approvals.request(
-                request, decision, isolation=isolation
+                request, decision, isolation=isolation, command=command
             )
 
         state = STATE_WAITING if approval.state == "pending" else STATE_ADMITTED
@@ -693,6 +715,39 @@ class Dispatcher(
             raise DispatchError(f"派发请求不存在：{request_id}")
         request, args = stored.request, stored.args
 
+        # 终态请求的 args_payload 可能已按审计策略脱敏，不能拿它重算完整参数摘要。
+        # 先认已提交的 dispatch/result；同一调用只返回原结论，绝不重复副作用或改写终态。
+        existing = self.dispatch_record(request.run_id, request.call_id)
+        if existing is not None and existing.state in (
+            DISPATCH_FINISHED,
+            DISPATCH_ERROR,
+        ):
+            if existing.request_digest != request.digest():
+                rejected = self._reject(
+                    request,
+                    args,
+                    f"call_id 已被另一次请求占用：{request.call_id}"
+                    f"（已有 state={existing.state}）",
+                    D_DISPATCH_CALL_ID_REUSED,
+                    event=DISPATCH_REJECTED,
+                )
+                return ToolResult(
+                    "rejected",
+                    "none_applied",
+                    {
+                        "error": rejected.reason,
+                        "rule_id": rejected.rule_id,
+                        "request_id": request_id,
+                    },
+                )
+            result = self._dispatched_result(request)
+            if result is None:
+                raise DispatchError(
+                    f"这次调用已派发但缺少 tool.result：call_id={request.call_id}"
+                    f"（state={existing.state}）"
+                )
+            return result
+
         if stored.state == STATE_REJECTED:
             return ToolResult(
                 "rejected",
@@ -704,9 +759,84 @@ class Dispatcher(
                 },
             )
 
+        if existing is not None:
+            if existing.request_digest != request.digest():
+                rejected = self._reject(
+                    request,
+                    args,
+                    f"call_id 已被另一次请求占用：{request.call_id}"
+                    f"（已有 state={existing.state}）",
+                    D_DISPATCH_CALL_ID_REUSED,
+                    event=DISPATCH_REJECTED,
+                )
+                return ToolResult(
+                    "rejected",
+                    "none_applied",
+                    {
+                        "error": rejected.reason,
+                        "rule_id": rejected.rule_id,
+                        "request_id": request_id,
+                    },
+                )
+            raise DispatchError(
+                f"这次调用已经派发过：call_id={request.call_id}"
+                f"（state={existing.state}）"
+            )
+
+        if stored.state == STATE_DONE:
+            result = self._dispatched_result(request)
+            if result is None:
+                raise DispatchError(
+                    f"这次调用已完成但缺少 tool.result：call_id={request.call_id}"
+                )
+            return result
+
+        # 审批绑定的是 request.args_hash / action_digest，不是后来从权威请求表
+        # 读出的 args。必须在消费审批、签 grant、写 intent 之前核对真实参数；
+        # 否则改了 args_payload 的攻击会先消费审批，再由执行器发现不匹配。
+        if sha256_hex(canonical_bytes(args)) != request.args_hash:
+            rejected = self._reject(
+                request,
+                args,
+                "args 与 request.args_hash 不符（请求被改过）",
+                "dispatch.not_admitted",
+                event=DISPATCH_REJECTED,
+            )
+            return ToolResult(
+                "rejected",
+                "none_applied",
+                {
+                    "error": rejected.reason,
+                    "rule_id": rejected.rule_id,
+                    "request_id": request_id,
+                },
+            )
+
         # ---- 阶段一：同一事务里核验 + 消费审批 + 签发票据 + 登记 intent ----
         try:
             with self._log.transaction() as tx:
+                # 外层读取之后仍可能被另一进程抢先派发；事务内先复核既有记录，
+                # 再允许任何审批消费/grant/intent 写入。
+                existing = self.dispatch_record(request.run_id, request.call_id)
+                if existing is not None:
+                    if existing.request_digest != request.digest():
+                        raise DispatchDenied(
+                            f"call_id 已被另一次请求占用：{request.call_id}"
+                            f"（已有 state={existing.state}）",
+                            D_DISPATCH_CALL_ID_REUSED,
+                        )
+                    if existing.state in (DISPATCH_FINISHED, DISPATCH_ERROR):
+                        result = self._dispatched_result(request)
+                        if result is None:
+                            raise DispatchError(
+                                f"这次调用已派发但缺少 tool.result：call_id={request.call_id}"
+                                f"（state={existing.state}）"
+                            )
+                        return result
+                    raise DispatchError(
+                        f"这次调用已经派发过：call_id={request.call_id}"
+                        f"（state={existing.state}）"
+                    )
                 auth = self._authority(request, claim, args=args)
                 target = self._resolve_target(request, auth)
                 self._check_run_execution(request, target)
@@ -723,22 +853,6 @@ class Dispatcher(
                     and request.action == ACTION_EXEC
                 ):
                     self._precheck_exec(request, args, target.path)
-
-                existing = self.dispatch_record(request.run_id, request.call_id)
-                if existing is not None:
-                    # 同一个 call_id 换个参数再来一次：唯一索引会挡住双写，
-                    # 但那是 `IntegrityError` 从 INSERT 里炸出来，调用方只能
-                    # 看到"主循环异常"。这里显式区分两种拒绝原因。
-                    if existing.request_digest != request.digest():
-                        raise DispatchDenied(
-                            f"call_id 已被另一次请求占用：{request.call_id}"
-                            f"（已有 state={existing.state}）",
-                            D_DISPATCH_CALL_ID_REUSED,
-                        )
-                    raise DispatchError(
-                        f"这次调用已经派发过：call_id={request.call_id}"
-                        f"（state={existing.state}）"
-                    )
 
                 if isinstance(target, _MemoryTarget):
                     self._check_memory_preconditions(request, target, args)

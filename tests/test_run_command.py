@@ -38,6 +38,7 @@ from tianshu.receipt import receipts_of, verify_receipts
 from tianshu.replay import replay
 from tianshu.snapshot import SnapshotStore
 from tianshu.tasks import RUN_RUNNING, TaskStore
+from tianshu.tools import ToolResult
 
 PY = sys.executable
 WS = "ws"
@@ -229,6 +230,121 @@ def test_exec_requires_approval(env):
 
     assert decision.is_waiting
     assert env.approvals.pending(run_id=run.run_id)
+
+
+def test_exec_approval_records_complete_command_before_execution(env):
+    nested = env.ws / "nested directory"
+    nested.mkdir()
+    task, run, claim = env.new_run(exec_policy=_policy(env.ws))
+    argv = [PY, "-c", "print('approval detail')", "  padded argument  "]
+    _, decision = _prepare(
+        env,
+        task,
+        run,
+        claim,
+        args={"argv": argv, "cwd": "nested directory"},
+        cwd=nested,
+    )
+
+    assert decision.is_waiting
+    (requested,) = [
+        event.payload
+        for event in env.log.read_run(run.run_id)
+        if event.type == "approval.requested"
+    ]
+    assert requested["command"] == {
+        "argv": argv,
+        "cwd": str(nested),
+        "backend": env.dispatcher._exec_backend.capabilities.name,
+    }
+    assert requested["isolation"]["level"] == "none"
+    # 只验证审批事件，不为展示字段启动子进程或产生执行结果。
+    assert "tool.result" not in _types(env.log, run.run_id)
+
+
+@pytest.mark.parametrize("changed_field", ["argv", "cwd"])
+def test_approved_command_tampering_is_rejected_before_consumption(
+    env, monkeypatch, changed_field
+):
+    """审批后改权威 args：args_hash 先拒绝，零 spawn/result，审批仍未消费。"""
+    task, run, claim = env.new_run(exec_policy=_policy(env.ws))
+    args = {"argv": [PY, "-c", "print('approved')"]}
+    request, decision = _prepare(env, task, run, claim, args=args)
+    assert decision.is_waiting
+    _approve(env, decision.approval_id)
+
+    changed = dict(args)
+    if changed_field == "argv":
+        changed["argv"] = [PY, "-c", "print('tampered')"]
+    else:
+        changed["cwd"] = "."
+    from tianshu.events import canonical_bytes
+
+    env.log.conn.execute(
+        "UPDATE dispatch_requests SET args_payload=? WHERE request_id=?",
+        (canonical_bytes(changed).decode("utf-8"), request.request_id),
+    )
+    spawned = []
+    monkeypatch.setattr(
+        type(env.dispatcher._exec_backend),
+        "spawn",
+        lambda self, *a, **kw: spawned.append((a, kw)),
+    )
+
+    result = env.dispatcher.dispatch(decision.request_id, claim)
+
+    assert isinstance(result, ToolResult)
+    assert result.status == "rejected"
+    assert result.effect_state == "none_applied"
+    assert result.output["rule_id"] == "dispatch.not_admitted"
+    assert spawned == []
+    assert "tool.intent" not in _types(env.log, run.run_id)
+    assert "tool.result" not in _types(env.log, run.run_id)
+    approval = env.approvals.get(decision.approval_id)
+    assert approval is not None and approval.state == "approved"
+    assert approval.consumed_at is None
+
+
+def test_forged_command_display_cannot_authorize_changed_argv(env, monkeypatch):
+    """approval.requested.command 只供展示；把它伪造也不能放行真实 argv 篡改。"""
+    from tianshu.events import canonical_bytes
+    from tianshu.permissions import PolicyDecision
+
+    task, run, claim = env.new_run(exec_policy=_policy(env.ws))
+    approved_args = {"argv": [PY, "-c", "print('approved')"]}
+    request = _request(env, task, run, claim, args=approved_args)
+    forged = {
+        "argv": [PY, "-c", "print('forged display')"],
+        "cwd": str(env.ws),
+        "backend": env.dispatcher._exec_backend.capabilities.name,
+    }
+    approval = env.approvals.request(
+        request, PolicyDecision("approve", "exec", "c4.exec"), command=forged
+    )
+    _approve(env, approval.approval_id)
+    decision = env.dispatcher.prepare(request, claim, args=approved_args)
+    assert decision.is_admitted
+
+    env.log.conn.execute(
+        "UPDATE dispatch_requests SET args_payload=? WHERE request_id=?",
+        (canonical_bytes({"argv": forged["argv"]}).decode("utf-8"), request.request_id),
+    )
+    spawned = []
+    monkeypatch.setattr(
+        type(env.dispatcher._exec_backend),
+        "spawn",
+        lambda self, *a, **kw: spawned.append((a, kw)),
+    )
+
+    result = env.dispatcher.dispatch(decision.request_id, claim)
+
+    assert isinstance(result, ToolResult)
+    assert result.status == "rejected"
+    assert result.effect_state == "none_applied"
+    assert result.output["rule_id"] == "dispatch.not_admitted"
+    assert spawned == []
+    assert "tool.result" not in _types(env.log, run.run_id)
+    assert env.approvals.get(approval.approval_id).state == "approved"
 
 
 def test_nonzero_exit_is_reported_not_swallowed(env):

@@ -214,11 +214,11 @@ def test_crash_between_actions_resumes_from_breakpoint(tmp_path):
     log.close()
 
 
-def _resume(tmp_path: Path, run_id: str = RUN):
+def _resume(tmp_path: Path, run_id: str = RUN, *, scope: Path | None = None):
     """用新的进程身份续做（与真实重启同构），结束后关掉事件连接。"""
     log, stack = _stack(tmp_path)
     try:
-        return undo_journal.resume(stack, run_id)
+        return undo_journal.resume(stack, run_id, scope=scope)
     finally:
         stack.log.close()
 
@@ -243,7 +243,13 @@ def test_completed_journal_missing_event_is_backfilled_once(tmp_path):
     found = undo_journal.outstanding(tmp_path, log=log)
     assert len(found) == 1 and found[0].needs_completion_event is True
 
-    outcome = _resume(tmp_path)
+    different_scope = tmp_path / "different-workspace"
+    different_scope.mkdir()
+    with pytest.raises(UndoRefused, match="范围与 --workspace 不一致"):
+        _resume(tmp_path, scope=different_scope)
+    assert _events_of(log, "undo.completed") == []
+
+    outcome = _resume(tmp_path, scope=ws)
     assert outcome.ok, outcome.problems
     events = _events_of(log, "undo.completed")
     assert len(events) == 1, "完成事件只补一条"

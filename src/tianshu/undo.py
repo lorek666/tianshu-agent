@@ -14,6 +14,7 @@ D3 定稿的「默认可写就必须默认可撤销」是这一模块存在的�
 from __future__ import annotations
 
 import base64
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,7 @@ from .errors import SnapshotCorrupt, TianshuError, ToolNotAllowed
 from .guard import ensure_not_blocked
 from .jobs import JOB_CLAIMED, TERMINAL_JOB_STATES, JobClaim, JobLost, JobUnavailable
 from .permissions import HumanIdentity
+from .restore_access import RestoreAccessError
 from .tasks import TERMINAL_STATES
 from .workspace import Workspace, WorkspaceBinding
 
@@ -171,10 +173,9 @@ def _journal_items(journal: undo_journal.UndoJournal) -> list[UndoItem]:
     ]
 
 
-def _plan_journal_undo(
-    store, journal: undo_journal.UndoJournal, scope: Path | None
-) -> UndoPlan:
-    """未完成/已完成 journal 的只读预演：先核对磁盘，再说明还要做什么。"""
+def _journal_scope(
+    journal: undo_journal.UndoJournal, scope: Path | None,
+) -> tuple[list[str], Path | None, Workspace | None]:
     roots = sorted({item.root for item in journal.items})
     resolved = scope.resolve() if scope is not None else None
     if resolved is not None and roots != [str(resolved)]:
@@ -198,6 +199,14 @@ def _plan_journal_undo(
                 code=2,
                 lines=[f"拒绝撤销：workspace 不可用：{resolved}（{redact(str(exc))}）"],
             ) from exc
+    return roots, resolved, scope_workspace
+
+
+def _plan_journal_undo(
+    store, journal: undo_journal.UndoJournal, scope: Path | None
+) -> UndoPlan:
+    """未完成/已完成 journal 的只读预演：先核对磁盘，再说明还要做什么。"""
+    roots, resolved, scope_workspace = _journal_scope(journal, scope)
     try:
         store.check_undo_journal(journal, scope_workspace)
     except undo_journal.UndoJournalConflict as exc:
@@ -509,6 +518,15 @@ def apply_undo(
     - 有 in_progress：先核对磁盘（done 与剩余项），从断点继续，绝不从头再来；
     - 有 completed 但缺 `undo.completed` 事件：只核对 + 幂等补写事件，不动文件。
     """
+    with ExitStack() as access:
+        try:
+            access.enter_context(stack.snapshots._undo_material_access(run_id))
+        except RestoreAccessError as exc:
+            raise UndoRefused("撤销材料未准入", lines=[redact(str(exc))]) from exc
+        return _apply_undo_admitted(stack, run_id, scope=scope)
+
+
+def _apply_undo_admitted(stack, run_id: str, *, scope: Path | None) -> UndoOutcome:
     store = stack.snapshots
     journal = _load_journal(store, run_id)
     if journal is not None:
@@ -516,8 +534,9 @@ def apply_undo(
 
     if journal is not None and journal.completed:
         # 全是已完成的动作：不再动文件；只核对"记录与磁盘一致"后补事件。
+        _, _, scope_workspace = _journal_scope(journal, scope)
         try:
-            store.check_undo_journal(journal)
+            store.check_undo_journal(journal, scope_workspace)
         except undo_journal.UndoJournalConflict as exc:
             raise UndoRefused(
                 "撤销已完成，但磁盘状态与日志不一致",

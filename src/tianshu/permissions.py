@@ -874,6 +874,7 @@ class ApprovalStore:
         self, request: ActionRequest, decision: PolicyDecision, *,
         ttl_ms: int = APPROVAL_TTL_MS,
         isolation: dict[str, Any] | None = None,
+        command: dict[str, Any] | None = None,
     ) -> Approval:
         """登记一个待批请求。同一个摘要已有 pending/approved 时不重复创建。"""
         if decision.is_denied:
@@ -936,6 +937,9 @@ class ApprovalStore:
             if isolation is not None:
                 # 审批卡片要能在**批准之前**说明"这条命令不受隔离"（PRD §8.1）。
                 payload["isolation"] = dict(isolation)
+            if command is not None:
+                # 只复制派发侧已校验的展示字段；授权仍只认 request / args_hash。
+                payload["command"] = dict(command)
             tx.append(
                 request.run_id,
                 APPROVAL_REQUESTED,
