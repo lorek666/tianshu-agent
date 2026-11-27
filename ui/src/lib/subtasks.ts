@@ -5,7 +5,7 @@
  * src/tianshu/tasks.py），父 Run 事件流里的 `subtask.spawned` / `subtask.finished`
  * 才是 Append-only 的事实。UI 读事件，不发明第二份委派台账。
  *
- * 只有 `subtask.spawned` 没有 `subtask.finished` = 进行中（不冒充终态）；
+ * 只有 `subtask.spawned` 没有 `subtask.finished` = 尚未收到委派结果；
  * `finished.usage` 缺失 = 用量未知（D1 时代不写这条事件），不当 0。
  */
 
@@ -30,7 +30,7 @@ export interface SubtaskRow {
   /** 目标正文不进父 Run（契约只有 sha256）；展示截短摘要，正文在子 Task 里。 */
   goalDigest: string | null;
   limits: SubtaskLimitsView | null;
-  /** `subtask.finished` 的 state；null = 只有 spawned（进行中）。 */
+  /** `subtask.finished` 的 state；null = 尚未收到委派结果。 */
   finishedState: string | null;
   resultRef: string | null;
   error: string | null;
