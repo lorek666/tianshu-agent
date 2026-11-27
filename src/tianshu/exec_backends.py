@@ -100,6 +100,16 @@ _EXPECTED_ISOLATION = {
     "windows_job_object": {"none"},
 }
 
+_EXPECTED_FEATURES: dict[str, dict[str, bool]] = {
+    "windows_job_object": {
+        "supports_pty": False,
+        "supports_signals": False,
+        "supports_process_group": False,
+        "supports_job_objects": True,
+        "supports_network_isolation": False,
+    },
+}
+
 #: 可变的"未实现清单"：注册真实实现会移除对应条目。测试可用
 #: `reset_exec_backends()` 恢复。
 UNIMPLEMENTED_EXEC_BACKENDS: dict[str, str] = dict(_DEFAULT_UNIMPLEMENTED)
@@ -264,12 +274,24 @@ def register_exec_backend(
                 "（用自己的名字冒充更强的后端等于在能力表上撒谎）"
             )
     expected = _EXPECTED_ISOLATION.get(key, set())
+    if key in _EXPECTED_ISOLATION and host.capabilities.name != key:
+        raise TianshuError(
+            f"执行后端 {key!r} 是已知后端：注册实现必须自报同一名字，"
+            f"收到 capabilities.name={host.capabilities.name!r}"
+            "（首次注册和替换都不能用别名改变能力承诺）"
+        )
     if expected and host.capabilities.isolation not in expected:
         raise TianshuError(
             f"执行后端 {key!r} 声明的隔离级别是 "
             f"{host.capabilities.isolation!r}，与名字不相称（期望 {sorted(expected)}）"
             "（替换已知后端也不能改变名字的隔离承诺）"
         )
+    for feature, required in _EXPECTED_FEATURES.get(key, {}).items():
+        actual = getattr(host.capabilities, feature)
+        if actual is not required:
+            raise TianshuError(
+                f"执行后端 {key!r} 的能力 {feature} 必须是 {required}，收到 {actual}"
+            )
     _BACKENDS[key] = host
     UNIMPLEMENTED_EXEC_BACKENDS.pop(key, None)
     return key

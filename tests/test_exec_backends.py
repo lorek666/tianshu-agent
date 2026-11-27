@@ -388,12 +388,50 @@ def test_replacing_known_backend_cannot_change_its_isolation_promise():
         )
 
 
+def test_windows_job_object_first_registration_requires_job_capability():
+    capabilities = replace(
+        LOCAL_EXEC_BACKEND.capabilities,
+        name="windows_job_object",
+        isolation="none",
+        supports_pty=False,
+        supports_signals=False,
+        supports_process_group=False,
+        supports_job_objects=False,
+        supports_network_isolation=False,
+    )
+    with pytest.raises(TianshuError, match="supports_job_objects"):
+        register_exec_backend(
+            RecordingBackend(capabilities=capabilities),
+            name="windows_job_object",
+            replace=True,
+        )
+
+
+def test_known_backend_replacement_cannot_change_its_name():
+    register_exec_backend(ContainerDouble(), name="container", replace=True)
+
+    with pytest.raises(TianshuError, match="自报同一名字"):
+        register_exec_backend(
+            RecordingBackend(
+                capabilities=ExecBackendCapabilities(
+                    name="other_container", isolation="container"
+                )
+            ),
+            name="container",
+            replace=True,
+        )
+
+
 def test_windows_job_object_replacement_cannot_claim_stronger_isolation():
     capabilities = replace(
         LOCAL_EXEC_BACKEND.capabilities,
         name="windows_job_object",
         isolation="none",
+        supports_pty=False,
+        supports_signals=False,
+        supports_process_group=False,
         supports_job_objects=True,
+        supports_network_isolation=False,
     )
     register_exec_backend(
         RecordingBackend(capabilities=capabilities),
@@ -408,7 +446,11 @@ def test_windows_job_object_replacement_cannot_claim_stronger_isolation():
                     LOCAL_EXEC_BACKEND.capabilities,
                     name="windows_job_object",
                     isolation="process_tree",
+                    supports_pty=False,
+                    supports_signals=False,
+                    supports_process_group=False,
                     supports_job_objects=True,
+                    supports_network_isolation=False,
                 )
             ),
             name="windows_job_object",

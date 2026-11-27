@@ -22,6 +22,7 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from . import exec_job_object
 from .events import canonical_bytes, sha256_hex
 from .exec import (
     BOUNDARY_ENFORCED,
@@ -355,7 +356,8 @@ class PreparedExecution:
         self._preexec: Callable[[], None] | None = None
         self._sandboxed = False
         self._single_process = False
-        self._proc: subprocess.Popen[bytes] | None = None
+        self._job_backend = type(backend) is exec_job_object.WindowsJobObjectExecBackend
+        self._proc: Any | None = None
         self._birth: str | None = None
         self._used = False
         self._ended = False
@@ -379,6 +381,11 @@ class PreparedExecution:
         )
 
         if type(self.backend) is LocalExecBackend:
+            self.subject = self._current_subject()
+            return self
+        if self._job_backend:
+            self._sandboxed = True
+            self._profile_rules = {"windows_job_object": exec_job_object.native_profile()}
             self.subject = self._current_subject()
             return self
         self._tmp = Path(tempfile.mkdtemp(prefix="tianshu-subject-")).resolve()
@@ -453,14 +460,22 @@ class PreparedExecution:
                 feature="subject_pty",
             )
 
-    def _launch_process(self, argv, *, cwd, env) -> subprocess.Popen[bytes]:
+    def _launch_process(self, argv, *, cwd, env) -> Any:
+        if self._job_backend:
+            return exec_job_object.create_managed_process(
+                argv, cwd=cwd, env=self._child_env(env)
+            )
         return subprocess.Popen(
             (*self._prefix, *argv), cwd=cwd, env=self._child_env(env),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             start_new_session=os.name == "posix", preexec_fn=self._preexec, bufsize=0,
         )
 
-    def _process_tree_state(self, proc: subprocess.Popen[bytes]) -> str:
+    def _process_tree_state(self, proc: Any) -> str:
+        if self._job_backend:
+            if getattr(proc, "_closed", False):
+                return proc.tree_state
+            return proc.controller.query()
         if self._single_process:
             # The fixed native profile forbids descendants. The managed child
             # wait is authoritative; a reaped PID/PGID may already be reused.
@@ -476,7 +491,9 @@ class PreparedExecution:
                 pass
         return "unknown"
 
-    def _stop_process(self, proc: subprocess.Popen[bytes]) -> str:
+    def _stop_process(self, proc: Any) -> str:
+        if self._job_backend:
+            return proc.close(2)
         group_identity_safe = False
         if self._single_process:
             if proc.poll() is None:
@@ -514,6 +531,18 @@ class PreparedExecution:
         return self._process_tree_state(proc)
 
     def _collect_process(self, proc, *, policy, blob_dir=None) -> tuple[ExecResult, str | None]:
+        if self._job_backend:
+            result, state = _run_managed_pipes(
+                proc,
+                policy=policy,
+                blob_dir=blob_dir,
+                finalize_tree=lambda _timed_out: proc.controller.stop(2),
+                close_stdin=True,
+            )
+            if proc.close(0) != exec_job_object.TREE_EXITED:
+                state = "unknown"
+                result = replace(result, descendants_may_survive=True)
+            return result, state
         return _run_managed_pipes(
             proc,
             policy=policy,
@@ -563,8 +592,104 @@ class PreparedExecution:
         )
         return self.admission
 
+    def _probe_windows_descendant(self) -> IsolationFinding:
+        root = Path(tempfile.mkdtemp(prefix=".tianshu-detach-probe-", dir=self.workspace))
+        descendant_file = root / "descendant.pid"
+        breakaway_file = root / "breakaway.pid"
+        child = (
+            "import os,pathlib,sys,threading;"
+            "pathlib.Path(sys.argv[1]).write_bytes(str(os.getpid()).encode('ascii'));"
+            "print('ready',flush=True);threading.Event().wait(120)"
+        )
+        payload = (
+            "import json,subprocess,sys\n"
+            "flags=0x01000000|0x00000008|0x00000200\n"
+            "try:\n"
+            f" p=subprocess.Popen([sys.executable,'-I','-S','-c',{child!r},sys.argv[1]],"
+            "stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,"
+            "creationflags=0x00000200)\n"
+            " p.stdout.readline()\n"
+            "except OSError as exc:\n"
+            " print(json.dumps({'error':exc.winerror}),flush=True)\n"
+            " sys.exit(2)\n"
+            "facts={'descendant_pid':p.pid}\n"
+            "try:\n"
+            f" b=subprocess.Popen([sys.executable,'-I','-S','-c',{child!r},sys.argv[2]],"
+            "stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,"
+            "creationflags=flags)\n"
+            " b.stdout.readline()\n"
+            " facts['breakaway_pid']=b.pid\n"
+            "except OSError as exc:\n"
+            " facts['denied_winerror']=exc.winerror\n"
+            "print(json.dumps(facts),flush=True)\n"
+        )
+        evidence = "Windows Job detached/breakaway 探针没有给出可核对结果"
+        status = BOUNDARY_UNKNOWN
+        observed: list[tuple[int, str | None]] = []
+        try:
+            policy = ExecPolicy(
+                argv_allowlist=(sys.executable,), cwd_roots=(self.workspace,),
+                env_allowlist=("PATH",), timeout_ms=5000, max_output_bytes=4096,
+            )
+            result = self.spawn(
+                (
+                    sys.executable, "-I", "-S", "-c", payload,
+                    str(descendant_file), str(breakaway_file),
+                ),
+                cwd=self.workspace, env={"PATH": os.defpath}, policy=policy,
+            )
+            try:
+                facts = json.loads(result.stdout)
+            except (ValueError, TypeError):
+                facts = {}
+            for path in (descendant_file, breakaway_file):
+                try:
+                    pid = int(path.read_bytes())
+                except (OSError, ValueError):
+                    continue
+                observed.append((pid, process_birth_identity(pid)))
+            alive = [pid for pid, birth in observed if birth is not None]
+            if result.exit_code == 0 and not result.timed_out:
+                if alive:
+                    status = BOUNDARY_NOT_ENFORCED
+                    evidence = f"Job 外仍存在真实后代/breakaway 进程：{alive}"
+                elif (
+                    facts.get("denied_winerror") == 5
+                    and descendant_file.exists()
+                    and not breakaway_file.exists()
+                ):
+                    status = BOUNDARY_ENFORCED
+                    evidence = (
+                        "普通后代在 leader 退出后由 Job 清空，"
+                        "breakaway 创建被 ACCESS_DENIED 拒绝"
+                    )
+                else:
+                    evidence += f"；facts={facts} exit_code={result.exit_code}"
+            else:
+                evidence += (
+                    f"；facts={facts} exit_code={result.exit_code} "
+                    f"timeout={result.timed_out}"
+                )
+        except (OSError, subprocess.SubprocessError, exec_job_object.JobObjectError) as exc:
+            evidence += f"：{type(exc).__name__}: {exc}"
+        finally:
+            cleanup_confirmed = True
+            for pid, birth in observed:
+                if birth is not None and process_birth_identity(pid) == birth:
+                    try:
+                        os.kill(pid, signal.SIGTERM)
+                    except OSError:
+                        pass
+                if _wait_pid_gone(pid, 3000) is not False:
+                    cleanup_confirmed = False
+            evidence += f"；探针清理={'confirmed' if cleanup_confirmed else 'unknown'}"
+            shutil.rmtree(root, ignore_errors=True)
+        return IsolationFinding("process_tree", status, evidence)
+
     def _probe_detached_descendant(self) -> IsolationFinding:
         """负控：真正脱离原 session 的孙进程不得被 killpg 的成功洗白。"""
+        if os.name == "nt":
+            return self._probe_windows_descendant()
         if os.name != "posix":
             return IsolationFinding(
                 "process_tree", BOUNDARY_UNKNOWN,
@@ -678,7 +803,7 @@ class PreparedExecution:
         self._emit_end(state)
         return result
 
-    def open_stdio(self) -> subprocess.Popen[bytes]:
+    def open_stdio(self) -> Any:
         self._before_start()
         try:
             self._proc = self._launch_process(self.argv, cwd=self.cwd, env=self.env)

@@ -406,11 +406,25 @@ def _finalize_local_tree(
 ) -> str | None:
     if not timed_out:
         return None
+    pgid: int | None = None
+    if os.name == "posix":
+        try:
+            pgid = os.getpgid(proc.pid)
+        except (OSError, ProcessLookupError):
+            pass
     tree_killed = _kill_tree(proc)
     try:
         proc.wait(timeout=_JOIN_TIMEOUT_S)
     except subprocess.TimeoutExpired:
-        pass
+        return "unknown"
+    if pgid is not None:
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return "exited"
+        except OSError:
+            return "unknown"
+        return "unknown"
     return "exited" if tree_killed else "unknown"
 
 
@@ -425,28 +439,46 @@ def _run_managed_pipes(
     """共享双流收集；后端决定 leader 退出后如何确认并清理整树。"""
     started = time.monotonic()
     assert proc.stdout is not None and proc.stderr is not None
-    if close_stdin:
-        assert proc.stdin is not None
-        proc.stdin.close()
-    os.set_blocking(proc.stdout.fileno(), False)
-    os.set_blocking(proc.stderr.fileno(), False)
-    out = _StreamCollector(policy.max_output_bytes, blob_dir, "stdout")
-    err = _StreamCollector(policy.max_output_bytes, blob_dir, "stderr")
     stop_reading = threading.Event()
-    threads = [
-        _start_pump(_pump_file, proc.stdout, out, stop_reading),
-        _start_pump(_pump_file, proc.stderr, err, stop_reading),
-    ]
+    threads: list[threading.Thread] = []
     timed_out = False
+    failed = False
     try:
-        proc.wait(timeout=policy.timeout_ms / 1000)
-    except subprocess.TimeoutExpired:
-        timed_out = True
+        if close_stdin:
+            assert proc.stdin is not None
+            proc.stdin.close()
+        os.set_blocking(proc.stdout.fileno(), False)
+        os.set_blocking(proc.stderr.fileno(), False)
+        out = _StreamCollector(policy.max_output_bytes, blob_dir, "stdout")
+        err = _StreamCollector(policy.max_output_bytes, blob_dir, "stderr")
+        threads = [
+            _start_pump(_pump_file, proc.stdout, out, stop_reading),
+            _start_pump(_pump_file, proc.stderr, err, stop_reading),
+        ]
+        try:
+            proc.wait(timeout=policy.timeout_ms / 1000)
+        except subprocess.TimeoutExpired:
+            timed_out = True
+    except BaseException:
+        failed = True
+        raise
     finally:
         try:
-            state = finalize_tree(timed_out)
+            state = finalize_tree(timed_out or failed)
         finally:
-            _join_pumps(threads, stop_reading)
+            stopped = _join_pumps(
+                threads, stop_reading, streams=(proc.stdout, proc.stderr)
+            )
+            if not stopped:
+                state = "unknown"
+            if failed:
+                for stream in (
+                    proc.stdin if close_stdin else None,
+                    proc.stdout,
+                    proc.stderr,
+                ):
+                    if stream is not None:
+                        _close_quietly(stream)
     result = _build_result(
         proc,
         out,
@@ -488,29 +520,31 @@ def _spawn_pty(
     if preexec_fn is not None:
         popen_kwargs["preexec_fn"] = preexec_fn
     try:
-        proc = subprocess.Popen(list(argv), **popen_kwargs)
+        try:
+            proc = subprocess.Popen(list(argv), **popen_kwargs)
+        finally:
+            # 父进程必须关掉从端，否则读主端永远等不到 EOF。
+            os.close(slave_fd)
+
+        os.set_blocking(master_fd, False)
+        collector = _StreamCollector(policy.max_output_bytes, blob_dir, "stdout")
+        stop_reading = threading.Event()
+        reader = _start_pump(_pump_fd, master_fd, collector, stop_reading)
+        timed_out, tree_killed = _wait_with_timeout(proc, policy.timeout_ms)
+        _join_pumps([reader], stop_reading)
+
+        # PTY 把 stdout/stderr 合成一条流：都写进 `stdout`，`stderr` 为空。
+        return _build_result(
+            proc,
+            collector,
+            None,
+            timed_out=timed_out,
+            tree_killed=tree_killed,
+            duration_ms=_elapsed_ms(started),
+            stderr_merged=True,
+        )
     finally:
-        # 父进程必须关掉从端，否则读主端永远等不到 EOF。
-        os.close(slave_fd)
-
-    os.set_blocking(master_fd, False)
-    collector = _StreamCollector(policy.max_output_bytes, blob_dir, "stdout")
-    stop_reading = threading.Event()
-    reader = _start_pump(_pump_fd, master_fd, collector, stop_reading)
-    timed_out, tree_killed = _wait_with_timeout(proc, policy.timeout_ms)
-    _join_pumps([reader], stop_reading)
-    _close_fd_quietly(master_fd)
-
-    # PTY 把 stdout/stderr 合成一条流：都写进 `stdout`，`stderr` 为空。
-    return _build_result(
-        proc,
-        collector,
-        None,
-        timed_out=timed_out,
-        tree_killed=tree_killed,
-        duration_ms=_elapsed_ms(started),
-        stderr_merged=True,
-    )
+        _close_fd_quietly(master_fd)
 
 
 # --------------------------------------------------------------- 等待与杀树
@@ -596,17 +630,28 @@ def _pump_fd(
 
 
 def _join_pumps(
-    threads: list[threading.Thread], stop_reading: threading.Event
-) -> None:
+    threads: list[threading.Thread],
+    stop_reading: threading.Event,
+    *,
+    streams: tuple[Any, ...] = (),
+) -> bool:
     deadline = time.monotonic() + _JOIN_TIMEOUT_S
     for thread in threads:
         thread.join(timeout=max(0.0, deadline - time.monotonic()))
     if not any(thread.is_alive() for thread in threads):
-        return
-    # 只发停止信号；每条读线程自己关闭所属流，主线程不争 BufferedReader 锁。
+        return True
+    # 先让读线程自行退出；仍不退出才关闭流，避免 finish() 与 feed() 并发。
     stop_reading.set()
     for thread in threads:
         thread.join(timeout=1.0)
+    if any(thread.is_alive() for thread in threads):
+        for stream in streams:
+            _close_quietly(stream)
+        for thread in threads:
+            thread.join(timeout=1.0)
+    if any(thread.is_alive() for thread in threads):
+        raise TianshuError("输出读取线程未能在收尾上限内停止，拒绝并发收尾")
+    return False
 
 
 def _close_quietly(target) -> None:

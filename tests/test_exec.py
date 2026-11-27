@@ -27,6 +27,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -551,6 +552,91 @@ def test_managed_pipes_report_unknown_tree_after_normal_leader_exit(
     assert result.stdout == "out\n"
     assert result.stderr == "err\n"
     assert result.descendants_may_survive is may_survive
+
+
+@pytest.mark.parametrize(("group_exists", "expected"), [(True, "unknown"), (False, "exited")])
+def test_local_timeout_requires_process_group_disappearance(
+    monkeypatch, group_exists, expected
+):
+    proc = SimpleNamespace(pid=4242, wait=lambda timeout: 0)
+    monkeypatch.setattr(execution, "_kill_tree", lambda current: True)
+    monkeypatch.setattr(execution.os, "getpgid", lambda pid: 4242)
+
+    def probe_group(pgid, signal_number):
+        assert (pgid, signal_number) == (4242, 0)
+        if group_exists:
+            return None
+        raise ProcessLookupError
+
+    monkeypatch.setattr(execution.os, "killpg", probe_group)
+
+    assert execution._finalize_local_tree(proc, True) == expected
+
+
+def test_managed_pipe_initialization_failure_stops_tree_and_closes_streams(
+    tmp_path, monkeypatch
+):
+    cwd = _cwd(tmp_path)
+
+    class Stream:
+        def __init__(self):
+            self.closed = False
+
+        def fileno(self):
+            return 11
+
+        def close(self):
+            self.closed = True
+
+    streams = [Stream() for _ in range(3)]
+    proc = SimpleNamespace(
+        stdin=streams[0], stdout=streams[1], stderr=streams[2],
+        wait=lambda timeout: pytest.fail("初始化失败不得等待 leader"),
+    )
+    finalized = []
+
+    def fail_blocking(fd, blocking):
+        raise OSError("injected set_blocking failure")
+
+    monkeypatch.setattr(execution.os, "set_blocking", fail_blocking)
+    with pytest.raises(OSError, match="set_blocking"):
+        execution._run_managed_pipes(
+            proc,
+            policy=_policy(cwd),
+            blob_dir=None,
+            finalize_tree=lambda timed_out: finalized.append(timed_out),
+            close_stdin=True,
+        )
+
+    assert finalized == [True]
+    assert all(stream.closed for stream in streams)
+
+
+def test_held_output_pipe_after_leader_exit_is_unknown(tmp_path, monkeypatch):
+    cwd = _cwd(tmp_path)
+    out_read, out_write = os.pipe()
+    err_read, err_write = os.pipe()
+    proc = SimpleNamespace(
+        stdin=None,
+        stdout=os.fdopen(out_read, "rb", buffering=0),
+        stderr=os.fdopen(err_read, "rb", buffering=0),
+        returncode=0,
+        wait=lambda timeout: 0,
+    )
+    monkeypatch.setattr(execution, "_JOIN_TIMEOUT_S", 0.01)
+    try:
+        result, state = execution._run_managed_pipes(
+            proc,
+            policy=_policy(cwd),
+            blob_dir=None,
+            finalize_tree=lambda timed_out: None,
+        )
+    finally:
+        os.close(out_write)
+        os.close(err_write)
+
+    assert state == "unknown"
+    assert result.descendants_may_survive is True
 
 
 # ---------------------------------------------------------------- Windows 专属

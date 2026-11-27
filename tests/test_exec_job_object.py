@@ -20,7 +20,7 @@ from types import SimpleNamespace
 import pytest
 
 from tianshu import exec_job_object as job
-from tianshu.execpolicy import PolicyUnsupported
+from tianshu.execpolicy import ExecPolicy, PolicyUnsupported
 
 HIGH_JOB = 0x800001234567
 HIGH_PROCESS = 0x800002345678
@@ -45,6 +45,7 @@ class FakeNative:
         self.deleted_attributes: list[int] = []
         self.freed_attributes: list[int] = []
         self.terminated: list[int] = []
+        self.terminated_processes: list[tuple[int, int]] = []
         self.create_calls: list[dict[str, object]] = []
         self.inherited_handle_lists: list[tuple[int, ...]] = []
         self.create_inherits = True
@@ -98,7 +99,7 @@ class FakeNative:
         handles = ctypes.cast(
             value, ctypes.POINTER(job._HANDLE * 3)
         ).contents
-        self.inherited_handle_lists.append(tuple(handle.value for handle in handles))
+        self.inherited_handle_lists.append(tuple(handles))
         return self.failure != "handle_list"
 
     def delete_attributes(self, memory: int) -> None:
@@ -149,6 +150,12 @@ class FakeNative:
         if self.failure == "terminate":
             return False
         self.active = self.terminate_active if self.terminate_active is not None else self.active
+        return True
+
+    def terminate_process(self, process: int, exit_code: int) -> bool:
+        self.terminated_processes.append((process, exit_code))
+        self.exit_code_value = exit_code
+        self.active = 0
         return True
 
     def exit_code(self, process: int) -> int | None:
@@ -258,6 +265,7 @@ def test_every_native_api_has_explicit_argtypes_and_restype():
                 "SetInformationJobObject",
                 "QueryInformationJobObject",
                 "TerminateJobObject",
+                "TerminateProcess",
                 "CreatePipe",
                 "SetHandleInformation",
                 "GetProcessHeap",
@@ -284,6 +292,7 @@ def test_every_native_api_has_explicit_argtypes_and_restype():
     assert kernel32.QueryInformationJobObject.argtypes[0] is job._HANDLE
     assert kernel32.QueryInformationJobObject.argtypes[2] is job._LPVOID
     assert kernel32.TerminateJobObject.restype is job._BOOL
+    assert kernel32.TerminateProcess.argtypes == [job._HANDLE, job._UINT]
     assert kernel32.ResumeThread.restype is job._DWORD
     assert kernel32.CloseHandle.argtypes == [job._HANDLE]
 
@@ -387,13 +396,31 @@ def test_creation_failures_cleanup_every_allocated_resource(
     )
     if failure in {"membership", "not_in_job", "resume"}:
         assert fake_windows.terminated == [HIGH_JOB]
+        assert fake_windows.terminated_processes == [(HIGH_PROCESS, 1)]
         assert HIGH_PROCESS in fake_windows.closed
         assert HIGH_THREAD in fake_windows.closed
-        assert fake_windows.resume_calls == []
+        assert fake_windows.resume_calls == ([HIGH_THREAD] if failure == "resume" else [])
     elif failure in {"handle_list", "create"}:
         assert fake_windows.terminated == [HIGH_JOB]
     if failure != "job":
         assert HIGH_JOB in fake_windows.closed
+
+
+def test_creation_cleanup_terminates_exact_process_even_if_job_terminate_fails(
+    fake_windows, tmp_path
+):
+    fake_windows.failure = "not_in_job"
+
+    def fail_job(handle):
+        raise job.JobObjectError("TerminateJobObject injected failure")
+
+    fake_windows.terminate_job = fail_job
+    with pytest.raises(job.JobObjectError, match="未在目标 Job"):
+        _create(fake_windows, tmp_path)
+
+    assert fake_windows.terminated_processes == [(HIGH_PROCESS, 1)]
+    assert HIGH_PROCESS in fake_windows.closed
+    assert HIGH_THREAD in fake_windows.closed
 
 
 def test_child_handle_close_failure_is_fail_closed(fake_windows, tmp_path):
@@ -496,7 +523,11 @@ def test_wait_timeout_does_not_terminate_job_or_fake_returncode(
     fake_windows, tmp_path, monkeypatch
 ):
     now = [10.0]
-    monkeypatch.setattr(job.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(
+        job,
+        "time",
+        SimpleNamespace(monotonic=lambda: now[0], sleep=time.sleep),
+    )
     fake_windows.exit_code_value = job.STILL_ACTIVE
     fake_windows.wait_result = job.WAIT_TIMEOUT
     fake_windows.active = 1
@@ -523,6 +554,87 @@ def test_close_after_confirmed_exit_does_not_terminate_again(fake_windows, tmp_p
     assert process.close() == job.TREE_EXITED
     assert process.close() == job.TREE_EXITED
     assert fake_windows.terminated == []
+
+
+def test_backend_spawn_collects_binary_pipes_and_closes_job(fake_windows, tmp_path):
+    policy = ExecPolicy(
+        argv_allowlist=(sys.executable,), cwd_roots=(tmp_path,),
+        env_allowlist=(), timeout_ms=1000, max_output_bytes=4096,
+    )
+    result = job.WindowsJobObjectExecBackend().spawn(
+        [sys.executable, "-c", "pass"], cwd=tmp_path, env={}, policy=policy
+    )
+
+    assert result.exit_code == 7
+    assert result.stdout == "managed-out"
+    assert result.stderr == "managed-err"
+    assert result.descendants_may_survive is False
+    assert fake_windows.terminated == []
+    assert fake_windows.pipe_handles == set()
+    assert HIGH_JOB in fake_windows.closed
+
+
+def test_backend_timeout_cleans_tree_without_fake_leader_exit(fake_windows, tmp_path):
+    fake_windows.exit_code_value = job.STILL_ACTIVE
+    fake_windows.wait_result = job.WAIT_TIMEOUT
+    fake_windows.active = 1
+    fake_windows.terminate_active = 0
+    policy = ExecPolicy(
+        argv_allowlist=(sys.executable,), cwd_roots=(tmp_path,),
+        env_allowlist=(), timeout_ms=20, max_output_bytes=4096,
+    )
+    result = job.WindowsJobObjectExecBackend().spawn(
+        [sys.executable, "-c", "pass"], cwd=tmp_path, env={}, policy=policy
+    )
+
+    assert result.timed_out is True
+    assert result.exit_code is None
+    assert result.descendants_may_survive is False
+    assert fake_windows.terminated == [HIGH_JOB]
+
+
+def test_backend_pty_is_refused_before_process_creation(fake_windows, tmp_path):
+    policy = ExecPolicy(
+        argv_allowlist=(sys.executable,), cwd_roots=(tmp_path,),
+        env_allowlist=(), timeout_ms=1000, max_output_bytes=4096, allow_pty=True,
+    )
+    with pytest.raises(PolicyUnsupported, match="pty"):
+        job.WindowsJobObjectExecBackend().spawn(
+            [sys.executable, "-c", "pass"], cwd=tmp_path, env={}, policy=policy, pty=True
+        )
+    assert fake_windows.created_jobs == 0
+
+
+def test_subject_admission_uses_native_job_without_popen_fallback(
+    fake_windows, tmp_path, monkeypatch
+):
+    from tianshu import execution_admission
+
+    monkeypatch.setattr(
+        execution_admission.subprocess, "Popen",
+        lambda *args, **kwargs: pytest.fail("Job subject 不得回落 Popen"),
+    )
+    policy = ExecPolicy(
+        argv_allowlist=(sys.executable,), cwd_roots=(tmp_path,),
+        env_allowlist=(), timeout_ms=1000, max_output_bytes=4096,
+    )
+    argv = (sys.executable, "-c", "pass")
+    with execution_admission.PreparedExecution(
+        job.WindowsJobObjectExecBackend(), kind="command", task_id="task",
+        run_id="run", argv=argv, cwd=tmp_path, env={}, policy=policy,
+        workspace=tmp_path, data_root=tmp_path,
+    ) as execution:
+        assert execution._tmp is None
+        assert execution._profile_rules["windows_job_object"]["backend"] == (
+            "windows_job_object"
+        )
+        result = execution.spawn(argv, cwd=tmp_path, env={}, policy=policy)
+
+    assert result.exit_code == 7
+    assert result.stdout == "managed-out"
+    assert result.stderr == "managed-err"
+    assert result.descendants_may_survive is False
+    assert HIGH_JOB in fake_windows.closed
 
 
 # --------------------------------------------------------------- Windows 原生证据
@@ -620,6 +732,31 @@ class TestWindowsNative:
         finally:
             process.close()
             _cleanup_records(records)
+
+    def test_subject_admission_process_tree_and_run(self, tmp_path):
+        from tianshu.execution_admission import PreparedExecution
+
+        workspace = tmp_path / "workspace"
+        data_root = tmp_path / "data"
+        workspace.mkdir()
+        data_root.mkdir()
+        policy = ExecPolicy(
+            argv_allowlist=(sys.executable,), cwd_roots=(workspace,),
+            env_allowlist=("PATH",), timeout_ms=15_000, max_output_bytes=64 * 1024,
+        )
+        with PreparedExecution(
+            job.WindowsJobObjectExecBackend(), kind="command", task_id="native-task",
+            run_id="native-run", argv=(sys.executable, "-c", "pass"),
+            cwd=workspace, env={"PATH": os.defpath}, policy=policy,
+            workspace=workspace, data_root=data_root,
+        ) as execution:
+            admission = execution.admit(required_boundaries=("process_tree",))
+            assert admission.boundaries["process_tree"] == "enforced"
+            result = execution.run()
+            assert execution.reconcile()["process_tree"] == "exited"
+
+        assert result.exit_code == 0
+        assert result.descendants_may_survive is False
 
     def test_breakaway_is_denied_and_regular_descendant_is_killed(self, tmp_path):
         script = tmp_path / "breakaway.py"

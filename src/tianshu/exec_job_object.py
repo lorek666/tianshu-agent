@@ -208,6 +208,7 @@ def _declare_prototypes(kernel32: ctypes.CDLL) -> None:
             _BOOL,
         ),
         "TerminateJobObject": ([_HANDLE, _UINT], _BOOL),
+        "TerminateProcess": ([_HANDLE, _UINT], _BOOL),
         "CreatePipe": (
             [
                 ctypes.POINTER(_HANDLE),
@@ -318,6 +319,9 @@ class _NativeAPI:
 
     def terminate_job(self, job: int) -> bool:
         return bool(self.kernel32.TerminateJobObject(_HANDLE(job), 1))
+
+    def terminate_process(self, process: int, exit_code: int) -> bool:
+        return bool(self.kernel32.TerminateProcess(_HANDLE(process), exit_code))
 
     def create_pipe(self) -> tuple[int, int]:
         read = _HANDLE()
@@ -510,7 +514,10 @@ class _Handles:
 
     def close_all(self) -> None:
         for handle in tuple(self.values):
-            self.api.close_handle(handle)
+            try:
+                self.api.close_handle(handle)
+            except (JobObjectError, OSError):
+                pass
             self.values.discard(handle)
 
 
@@ -755,6 +762,13 @@ class ManagedProcess:
     def __exit__(self, *_exc: object) -> None:
         self.close()
 
+    @property
+    def tree_state(self) -> TreeState:
+        if self._closed:
+            assert self._close_state is not None
+            return self._close_state
+        return self.controller.state
+
 
 def _create_with_api(
     api, argv: Sequence[str], cwd: os.PathLike[str] | str, env: Mapping[str, str]
@@ -826,8 +840,18 @@ def _create_with_api(
         if "job" in locals() and job in handles.values:
             try:
                 api.terminate_job(job)
-                if process in handles.values:
+            except (JobObjectError, OSError):
+                pass
+            if process in handles.values:
+                try:
+                    api.terminate_process(process, 1)
+                except (JobObjectError, OSError):
+                    pass
+                try:
                     api.wait(process, int(_TREE_JOIN_TIMEOUT_S * 1000))
+                except (JobObjectError, OSError):
+                    pass
+            try:
                 deadline = time.monotonic() + _TREE_JOIN_TIMEOUT_S
                 while time.monotonic() < deadline:
                     if api.query_job(job) == 0:
