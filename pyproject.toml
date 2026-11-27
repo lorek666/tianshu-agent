@@ -1,6 +1,6 @@
 [project]
 name = "tianshu"
-version = "0.1.1"
+version = "0.1.2"
 description = "天枢 Agent — 桌面 Agent OS"
 requires-python = ">=3.12,<3.13"
 dependencies = []

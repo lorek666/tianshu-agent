@@ -18,7 +18,7 @@ from tianshu.consent import (
     tool_binding,
     workspace_binding_digest,
 )
-from tianshu.dispatcher import Dispatcher, DispatchError, build_request
+from tianshu.dispatcher import Dispatcher, build_request
 from tianshu.errors import TianshuError
 from tianshu.permissions import HumanIdentity
 from tianshu.workspace import ResourceIdentity
@@ -94,10 +94,15 @@ def test_scope_produces_exact_grant_and_original_intent_before_effect(env):
     assert grant.issuer == "consent:scope-human-issue"
     assert grant.request_digest == request.digest()
     assert grant.remaining_uses == 0
-    assert env.consent.list(run_id=env.run.run_id)[0]["remaining_uses"] == 0
-    with pytest.raises(DispatchError, match="已经派发"):
-        env.dispatcher.dispatch(request.request_id, env.claim)
-    assert sum(event.type == "consent.used" for event in env.log.read_run(env.run.run_id)) == 1
+    consents = env.consent.list(run_id=env.run.run_id)
+    assert consents[0]["remaining_uses"] == 0
+    assert types.count("consent.used") == 1
+
+    assert env.dispatcher.dispatch(request.request_id, env.claim) == result
+    assert env.log.read_run(env.run.run_id) == events
+    assert env.grants.get(row.grant_id) == grant
+    assert env.consent.list(run_id=env.run.run_id) == consents
+    assert (env.ws / "note.md").read_bytes() == b"new"
 
 
 def test_count_and_total_bytes_apply_to_future_content(env):

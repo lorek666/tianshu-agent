@@ -111,6 +111,19 @@ function normalizeIsolation(raw: unknown): IsolationView | null {
   };
 }
 
+function normalizeApprovalCommand(raw: unknown): ApprovalView["command"] {
+  if (raw === undefined || raw === null) return null;
+  const record = asRecord(raw);
+  const items = asArray(record.argv);
+  // 畸形 argv 不静默丢项：整体置空，让卡片显示“详情不完整”而不是少看参数。
+  const argv = items.every((item): item is string => typeof item === "string") ? items : [];
+  return {
+    argv,
+    cwd: asString(record.cwd) ?? "",
+    backend: asString(record.backend) ?? "",
+  };
+}
+
 export function normalizeApproval(raw: unknown): ApprovalView | null {
   const record = asRecord(raw);
   const approvalId = readString(record, "approval_id", "id");
@@ -124,6 +137,7 @@ export function normalizeApproval(raw: unknown): ApprovalView | null {
     reason: readString(record, "reason"),
     rule_id: readString(record, "rule_id"),
     isolation: normalizeIsolation(record.isolation),
+    command: normalizeApprovalCommand(record.command),
     state: asString(record.state) ?? "unknown",
     created_at: asNumber(record.created_at),
     expires_at: asNumber(record.expires_at),

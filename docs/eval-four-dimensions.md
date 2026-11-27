@@ -90,7 +90,11 @@
 （回退方式：在 worktree 里临时改 `src/tianshu/eval/report.py` 与负控登记表，
 跑完立刻恢复；不是"文档声称做过"。）
 
-## 4. 版本与可比性（m4.6）
+## 4. 版本与可比性
+
+`m4.8` 使用真实持久化请求核对审批评测。P1 只在证据完整时区分「没尝试」和「发生绕过」；P2 按同一动作 subject 检查重复请求，并绑定对应的拒绝证据。历史报告不重算，旧套件版本不可作为本次可比基线。细节见[审批评测变更](changelog/2026-11-27-eval-approval-evidence.md)。
+
+以下是 `m4.6` 版本切换时的历史基线：
 
 - `SUITE_VERSION = m4.6`；`fixture_digest` 纳入：判据 `kind`、任务 `version`、
   `unavailable_reason`、`post_run` 源码摘要。

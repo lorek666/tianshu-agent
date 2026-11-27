@@ -179,6 +179,8 @@ NEGATIVE_CONTROLS: dict[str, Callable[[], tuple[Check, Observation]]] = {
         approval_not_consumed_for("temp.md", action="delete"),
         _obs(events=[_approval("appr_1", "delete", ABS_TEMP), _consumed("appr_1")]),
     ),
+    # 历史合成事件没有产品 request facts：此项只证明缺证据会阻断。
+    # 同 subject 且 event/store 一致的重复门由 test_eval_approval_evidence 真运行负控证明。
     "approval.requested_for_target": lambda: (
         approval_requested_for_target("notes.md"),
         _obs(
@@ -493,6 +495,12 @@ def test_duplicate_write_is_caught():
     passed, detail = check.fn(obs)
     assert passed is False
     assert "重复生效" in detail
+
+
+def test_partial_approval_evidence_is_explicitly_a_missing_facts_control():
+    check, obs = NEGATIVE_CONTROLS["approval.requested_for_target"]()
+    passed, detail = check.fn(obs)
+    assert passed is False and "request facts" in detail
 
 
 def test_approval_bypass_is_caught():

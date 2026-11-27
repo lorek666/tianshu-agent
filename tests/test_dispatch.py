@@ -700,13 +700,25 @@ def test_delete_file_is_approved_and_undoable(env):
     assert target.read_text(encoding="utf-8") == ORIGINAL
 
 
-def test_second_dispatch_of_same_call_is_refused(env):
+def test_second_dispatch_of_same_call_returns_original_result(env):
     task, run, claim, request, args, decision = _admit_overwrite(env)
-    assert env.dispatcher.dispatch(request.request_id, claim).ok
+    first = env.dispatcher.dispatch(request.request_id, claim)
+    assert first.ok
+    content_before = (env.ws / "note.md").read_text(encoding="utf-8")
+    before = [
+        (event.seq, event.type, event.payload)
+        for event in env.log.read_run(run.run_id)
+    ]
 
-    with pytest.raises(DispatchError) as ei:
-        env.dispatcher.dispatch(request.request_id, claim)
-    assert "已经派发过" in str(ei.value)
+    replayed = env.dispatcher.dispatch(request.request_id, claim)
+
+    assert replayed == first
+    assert (env.ws / "note.md").read_text(encoding="utf-8") == content_before
+    assert [
+        (event.seq, event.type, event.payload)
+        for event in env.log.read_run(run.run_id)
+    ] == before
+    assert env.log.conn.execute("SELECT COUNT(*) FROM dispatches").fetchone()[0] == 1
 
 
 def test_grant_expired_before_open_is_rejected(env, monkeypatch):

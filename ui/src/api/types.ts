@@ -78,6 +78,15 @@ export interface IsolationView {
   enforced_boundaries: string[];
 }
 
+export interface ApprovalCommandView {
+  /** 已校验的完整 argv；UI 逐项纯文本展示，不重新解析或执行。 */
+  argv: string[];
+  /** 派发侧解析后的绝对执行目录。 */
+  cwd: string;
+  /** 实际装配的执行后端名称。 */
+  backend: string;
+}
+
 export interface ApprovalView {
   approval_id: string;
   run_id: string;
@@ -88,6 +97,8 @@ export interface ApprovalView {
   rule_id: string | null;
   /** F2：审批前可见的隔离视图；null = 这条动作不涉及执行隔离。 */
   isolation: IsolationView | null;
+  /** exec 审批详情；null = 非 exec 或历史审批。 */
+  command: ApprovalCommandView | null;
   state: string;
   created_at: number | null;
   expires_at: number | null;

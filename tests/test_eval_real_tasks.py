@@ -258,6 +258,21 @@ def test_local_task_reports_missing_sources_honestly(real_task_suite):
     assert "预算 1000 万" not in text
 
 
+@pytest.mark.parametrize("task_id", ["RU-C1", "RU-C2", "RU-C3"])
+def test_controlled_paths_pass_with_real_request_evidence(real_task_suite, task_id):
+    task, observations = _task_obs(real_task_suite, task_id)
+    for obs in observations:
+        assert obs.valid and obs.error is None, (obs.invalid_reason, obs.error)
+        assert obs.request_facts and not obs.request_fact_errors
+        assert all(fact.run_id == obs.run_id for fact in obs.request_facts.values())
+        results = evaluate_checks(obs, task.checks)
+        assert len(results) == len(task.checks)
+        assert all(result.passed or result.metric for result in results), [
+            (result.check_id, result.detail)
+            for result in results if not result.passed and not result.metric
+        ]
+
+
 def test_controlled_approve_path_checks_each_product_separately(real_task_suite):
     _, observations = _task_obs(real_task_suite, "RU-C1")
     obs = observations[0]

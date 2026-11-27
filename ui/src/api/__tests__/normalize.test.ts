@@ -108,6 +108,29 @@ describe("normalizeApproval 的隔离视图", () => {
   });
 });
 
+describe("normalizeApproval 的命令详情", () => {
+  it("逐项保留完整 argv、cwd 与后端，不截断或拼接", () => {
+    const command = {
+      argv: ["/usr/bin/python3", "-c", "print(1)", "", "a very long tail"],
+      cwd: "/work/nested directory",
+      backend: "local",
+    };
+    expect(normalizeApproval({ approval_id: "a", command })?.command).toEqual(command);
+  });
+
+  it("旧审批缺字段时为 null；畸形对象保留为不完整详情供 UI 告警", () => {
+    expect(normalizeApproval({ approval_id: "a" })?.command).toBeNull();
+    expect(normalizeApproval({ approval_id: "a", command: null })?.command).toBeNull();
+    for (const raw of [{}, "bad", 42, { argv: ["/bin/echo", 7], cwd: "/tmp" }]) {
+      expect(normalizeApproval({ approval_id: "a", command: raw })?.command).toEqual({
+        argv: [],
+        cwd: raw && typeof raw === "object" && "cwd" in raw ? "/tmp" : "",
+        backend: "",
+      });
+    }
+  });
+});
+
 describe("控制面任务不进任务列表（G2 记忆阶段 M1）", () => {
   it("control=true 的任务被摘掉，用户任务保留", () => {
     const state = normalizeState({

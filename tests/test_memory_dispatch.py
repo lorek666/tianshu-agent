@@ -1608,6 +1608,87 @@ def test_accepted_memory_write_args_are_redacted_at_terminal_state(env: Env):
     assert stored["kind"] == "preference"
 
 
+def test_memory_propose_replay_keeps_applied_result_after_terminal_redaction(env: Env):
+    """终态脱敏不能把同一 dispatch 的重放误判为参数篡改。"""
+    content = "以后用中文回答，并且先列结论"
+    user = MemoryScope.user()
+    task, run, claim = env.new_run()
+    request, _args, decision = _propose(
+        env, task, run, claim, content=content, call_id="replay-propose"
+    )
+    assert decision.is_admitted, decision
+    first = env.dispatcher.dispatch(decision.request_id, claim)
+    assert first.status == "succeeded" and first.effect_state == "applied"
+    memory_id = first.output["memory_id"]
+    row_before = tuple(_request_row(env, decision.request_id))
+    events_before = [
+        (event.seq, event.type, event.payload)
+        for event in _events(env.log, run.run_id)
+    ]
+
+    replayed = env.dispatcher.dispatch(decision.request_id, claim)
+
+    assert replayed == first
+    assert replayed.status == "succeeded" and replayed.effect_state == "applied"
+    assert tuple(_request_row(env, decision.request_id)) == row_before
+    assert [
+        (event.seq, event.type, event.payload)
+        for event in _events(env.log, run.run_id)
+    ] == events_before
+    memories = env.memory.list_memories(allowed=(user,))
+    assert [item.memory_id for item in memories] == [memory_id]
+    assert env.memory.observe(memory_id, allowed=(user,)) == ("candidate", 1)
+    assert env.dispatcher.dispatch_record(run.run_id, "replay-propose").state == "done"
+
+
+def test_pending_memory_args_tampering_is_rejected_before_authority(env: Env):
+    """未派发的记忆写改正文后，仍在消费审批/签 grant/写 intent 前拒绝。"""
+    user = MemoryScope.user()
+    _task, run, claim, proposed = _proposed(env, content="原始记忆正文")
+    memory_id = proposed["memory_id"]
+    existing = env.memory.get(memory_id, allowed=(user,))
+    assert existing is not None
+    content_before = env.memory.read_content(existing)
+    args = {"memory_id": memory_id, "revision": 1, "content": "审批后的篡改正文"}
+    request = env.request(
+        env.tasks.get_task(_task.task_id),
+        env.tasks.get_run(run.run_id),
+        claim,
+        tool_id="memory.edit",
+        target=user.to_uri(),
+        args=args,
+        call_id="tampered-edit",
+    )
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    assert decision.is_waiting, decision
+    _approve(env, decision.approval_id)
+    grants_before = env.log.conn.execute("SELECT COUNT(*) FROM grants").fetchone()[0]
+    env.log.conn.execute(
+        "UPDATE dispatch_requests SET args_payload=? WHERE request_id=?",
+        (canonical_bytes({**args, "content": "权威表里的篡改正文"}).decode("utf-8"),
+         request.request_id),
+    )
+
+    result = env.dispatcher.dispatch(decision.request_id, claim)
+
+    assert result.status == "rejected" and result.effect_state == "none_applied"
+    assert result.output["rule_id"] == "dispatch.not_admitted"
+    approval = env.approvals.get(decision.approval_id)
+    assert approval is not None and approval.state == "approved"
+    assert approval.consumed_at is None
+    assert env.log.conn.execute("SELECT COUNT(*) FROM grants").fetchone()[0] == grants_before
+    assert not [
+        event for event in _events(env.log, run.run_id)
+        if event.type == "tool.intent" and event.payload["call_id"] == request.call_id
+    ]
+    assert not [
+        event for event in _events(env.log, run.run_id)
+        if event.type == "tool.result" and event.payload["call_id"] == request.call_id
+    ]
+    current = env.memory.get(memory_id, allowed=(user,))
+    assert current is not None and env.memory.read_content(current) == content_before
+
+
 def test_gate_blocked_memory_write_is_redacted_after_dispatch(env: Env):
     """被采纳又被内容闸门挡掉的请求：终态后同样脱敏。"""
     import json
