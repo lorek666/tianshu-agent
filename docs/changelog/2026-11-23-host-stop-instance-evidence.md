@@ -507,3 +507,31 @@ SHA256 为 `b4bb9df38ad42eee3e327082c6b7d4ba30eb93105cab474f81c317164d8df3e6`。
 该运行未展开逐项 skip 原因，不把跳过项写成通过；五个 code/test 文件与已复审 tree
 逐字节零变化。hosted required CI 仍待完成；不沿用 `b6200f9`、`0d1c15e` 或外部移动 main
 的旧证据。
+
+## Ubuntu cleanup 竞态修复与最终全量（2026-11-28）
+
+PR #259 首轮 required CI 的 Ubuntu 全量只在
+`tests/test_host_supervisor_exit.py:2361` 失败：shutdown helper 已经确认 OS 进程退出，
+但返回时精确 `Popen` 尚未完成最终 reap，随后 `daemon_proc.poll()` 才取得退出码。旧实现
+在 `exited()` 为真后直接返回；修复在已经确认 OS 退出后、返回前补一次非阻塞 `reap()`，
+不延长等待窗口，也不改变进程身份或终止授权条件。
+
+新增确定性回归固定首次 reap 返回 `None`、OS 已退出，并断言精确调用序列为两次 reap。
+父实现重放为 `1 failed`，候选实现为 `1 passed`；独立第二读者的真实子进程探针进一步
+显示父实现返回时 `returncode=null`、只 reap 一次，候选返回时 `returncode=0`、reap 两次。
+主控在全新私有副本重放同一测试，父实现 RED，候选与复原后均 GREEN；三份日志 SHA256
+分别为 `30c46a957e65273099653629fa9436c99df73ebd23833d99751e79da7b973c2a`、
+`91ac28e87543203edb8fac4612b815f59bf36ac9a72ab315b86b2e36637fba30` 与
+`0c33791aa03cbc8826ba04efd1b062adb3baa875c47625e4de7090bd753d7635`。
+
+修复 code/test HEAD 为 `6e4b001c0d1c319f831df9cf9800e142bdf40de7`，tree 为
+`2561d471727ca0db7c33166d3e497669a55d33cc`。独立第二读者结论为 `fixed`、0 finding，
+报告 SHA256 为 `5ccf3378b213c1b33255fce93093ebaa001f189941356233082fdbfd1912d8e0`；
+三文件受影响域回归退出 0。2026-11-28 在 Darwin 25.6.0 / arm64、Python 3.12.13 的
+隔离环境运行最终裸全量，清除模型凭据环境变量，并使用独立锁根、权限根与 `TMPDIR`；
+`uv run --frozen pytest` 实际退出 0，动态结果为 `6357 passed, 12 skipped in 1438.87s`。
+日志为 `/Volumes/Date/delivery-queue-27.XE8VY7li/evidence-native-v44/pytest-full-cleanup-race.log`，
+SHA256 为 `f5263de0537763d50384a688d444e4d72af06e7d42785e47426230720f3744c1`。
+该运行未展开逐项 skip 原因，不把跳过项写成通过。上面的 `6356 passed` 回执属于父树
+`59532a9`，不能替代本次 `6e4b001` 的新全量；本次纯文档回填不改 code/test tree。
+hosted required CI 仍须绑定推送后的最终 head。
