@@ -61,7 +61,8 @@ jobs:
           verified=0
           uv run --frozen python ../probe/scripts/startup_timing/check_startup_trace.py \
             "$TIANSHU_STARTUP_TIMING_DIR" "$TIANSHU_SLO_DIAGNOSTICS_DIR/slo-startup-phases.json" \
-            "$TIANSHU_SLO_DIAGNOSTICS_DIR/slo-samples.json" > "$DIAGNOSTIC_ROOT/verified-trace.json" || verified=$?
+            "$TIANSHU_SLO_DIAGNOSTICS_DIR/slo-samples.json" \
+            "$TIANSHU_SLO_DIAGNOSTICS_DIR/slo-smoke.json" > "$DIAGNOSTIC_ROOT/verified-trace.json" || verified=$?
           printf 'control=%s\ntraced=%s\nverify=%s\n' "$control" "$traced" "$verified" \
             | tee "$DIAGNOSTIC_ROOT/exit-codes.txt"
           test "$control" = 0 && test "$traced" = 0 && test "$verified" = 0
