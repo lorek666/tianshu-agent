@@ -499,5 +499,11 @@ Windows Job 候选夹带进 native PR。首次三文件受影响域运行未在�
 原冻结路径 `/Volumes/Date/native-v44-freeze.9M4Qp` 在复审最终阶段已被外部删除，且旧
 changelog 仍指向 `c1d90e3...`，因此交付绑定只能判 `partial_fixed`。最终归档改用上述
 Git object、五个 code/test SHA256、完整 bundle 与只读校验和共同绑定；本次文档修正不改
-code/test tree。裸全量与 hosted required CI 仍待完成；不沿用 `b6200f9`、`0d1c15e` 或
-外部移动 main 的旧证据。
+code/test tree。2026-11-28 在 Darwin 25.6.0 / arm64、Python 3.12.13 的上述归档树运行
+最终隔离裸全量，清除模型凭据环境变量，并使用独立锁根、权限根与 `TMPDIR`；
+`uv run --frozen pytest` 实际退出 0，结果为 `6356 passed, 12 skipped in 1193.76s`。
+日志为 `/Volumes/Date/delivery-queue-27.XE8VY7li/evidence-native-v44/pytest-full-final.log`，
+SHA256 为 `b4bb9df38ad42eee3e327082c6b7d4ba30eb93105cab474f81c317164d8df3e6`。
+该运行未展开逐项 skip 原因，不把跳过项写成通过；五个 code/test 文件与已复审 tree
+逐字节零变化。hosted required CI 仍待完成；不沿用 `b6200f9`、`0d1c15e` 或外部移动 main
+的旧证据。
