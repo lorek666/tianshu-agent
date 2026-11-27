@@ -461,7 +461,17 @@ def _cmd_undo(args: argparse.Namespace) -> int:
         stack = _authority_stack(args.db, args.data_root)
         run_id = args.run_id
         try:
-            plan = plan_undo(stack, run_id, scope=args.workspace)
+            if args.approve:
+                outcome = apply_undo(stack, run_id, scope=args.workspace)
+            else:
+                plan = plan_undo(stack, run_id, scope=args.workspace)
+                print("撤销会做这些事（尚未执行）：")
+                for action, desc in plan.describe():
+                    print(f"  - {action}: {desc}")
+                print("")
+                print("这些都属于覆盖/删除类操作，需要人工批准。")
+                print("确认无误后加 --approve 重跑同一条命令。")
+                return 3
         except UndoRefused as refused:
             # 拒绝的文案与退出码都由 undo 模块给出：UI 也走同一条判定，
             # 不能出现"CLI 说没可撤销、UI 说撤销失败"这种两种说法。
@@ -470,17 +480,6 @@ def _cmd_undo(args: argparse.Namespace) -> int:
                 print(line, file=stream)
             return refused.code
 
-        if not args.approve:
-            print("撤销会做这些事（尚未执行）：")
-            for action, desc in plan.describe():
-                print(f"  - {action}: {desc}")
-            print("")
-            print("这些都属于覆盖/删除类操作，需要人工批准。")
-            print("确认无误后加 --approve 重跑同一条命令。")
-            return 3
-
-        try:
-            outcome = apply_undo(stack, run_id, scope=args.workspace)
         except Exception as exc:  # noqa: BLE001 - 撤销中断必须如实报告，不能吞
             print(
                 f"撤销中断（可能已部分生效，请用 recover 核查）：{redact(str(exc))}",

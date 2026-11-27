@@ -513,10 +513,10 @@ class _SubtaskStoreMixin:
         data = text.encode("utf-8")
         digest = sha256_hex(data)
         blob = self._blob_dir / digest
-        if not blob.exists():
-            from .restore_access import ensure_material_write_allowed
+        from .restore_access import ensure_material_write_allowed
 
-            with ensure_material_write_allowed(self._blob_dir, owner_log=self._log):
+        with ensure_material_write_allowed(blob, owner_log=self._log):
+            if not blob.exists():
                 atomic_write_bytes(blob, data)
         self._contents.record(
             digest,
