@@ -338,6 +338,15 @@ def test_registering_a_known_unimplemented_name_requires_explicit_replace():
     assert exec_backend("container") is impl
 
 
+def test_replacing_known_backend_cannot_change_its_isolation_promise():
+    register_exec_backend(ContainerDouble(), name="container", replace=True)
+
+    with pytest.raises(TianshuError, match="不相称"):
+        register_exec_backend(
+            RecordingBackend(name="container"), name="container", replace=True
+        )
+
+
 # ---------------------------------------------------------------- 3. 注册纪律
 
 

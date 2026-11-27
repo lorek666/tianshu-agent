@@ -257,13 +257,13 @@ def register_exec_backend(
                 f"收到 capabilities.name={declared!r}"
                 "（用自己的名字冒充更强的后端等于在能力表上撒谎）"
             )
-        expected = _EXPECTED_ISOLATION.get(key, set())
-        if expected and host.capabilities.isolation not in expected:
-            raise TianshuError(
-                f"执行后端 {key!r} 声明的隔离级别是 "
-                f"{host.capabilities.isolation!r}，与名字不相称（期望 {sorted(expected)}）"
-                "（本地代理不能顶替 container/app_container 的名字）"
-            )
+    expected = _EXPECTED_ISOLATION.get(key, set())
+    if expected and host.capabilities.isolation not in expected:
+        raise TianshuError(
+            f"执行后端 {key!r} 声明的隔离级别是 "
+            f"{host.capabilities.isolation!r}，与名字不相称（期望 {sorted(expected)}）"
+            "（替换已知后端也不能改变名字的隔离承诺）"
+        )
     _BACKENDS[key] = host
     UNIMPLEMENTED_EXEC_BACKENDS.pop(key, None)
     return key
