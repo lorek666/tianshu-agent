@@ -54,7 +54,6 @@ from urllib.parse import parse_qs, urlsplit
 
 from . import ipc
 from .errors import TianshuError
-from .execution_admission import process_birth_identity
 from .fsutil import atomic_write_bytes
 from .leases import GuardTimeout, execution_guard, pid_alive
 
@@ -72,6 +71,14 @@ BACKOFF_RESET_AFTER_S = 60.0
 
 class HostError(TianshuError):
     """Host 层的可预期失败。"""
+
+
+def process_birth_identity(pid: int) -> str | None:
+    # Only attached shutdown reads process birth. The snapshot helper should
+    # not load execution backends just to bind the authenticated lock.
+    from .execution_admission import process_birth_identity as read_process_birth
+
+    return read_process_birth(pid)
 
 
 def _unreaped_child_state(pid: int) -> str:
