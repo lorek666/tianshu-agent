@@ -234,7 +234,7 @@ PID/PGID 发信号，以免误伤复用身份。该结论不推广到允许后�
 
 1. 使用 `CREATE_SUSPENDED` 创建根进程并保留线程句柄；优先用 `PROC_THREAD_ATTRIBUTE_JOB_LIST` 在创建时原子绑定 Job。若目标 Windows 不支持该属性，只能在所有线程恢复前用 `AssignProcessToJobObject` 绑定，失败则终止暂停进程并拒绝执行。
 2. Job handle 不可继承，设置 `KILL_ON_JOB_CLOSE`，禁止 breakaway。父进程崩溃、正常退出或句柄关闭都应由内核终止 Job 内进程；测试必须证明这一点。
-3. `Popen.wait()` 只证明 leader 被回收，不证明 Job 为空。超时、取消、fence 与宿主退出调用 `TerminateJobObject`，随后查询 `QueryInformationJobObject` 的 `ActiveProcesses`。
+3. `Popen.wait()` 只证明 leader 被回收，不证明 Job 为空。leader 正常退出后也必须查询 Job；仍有活跃进程时执行终止并有界等待。超时、取消、fence 与宿主退出调用 `TerminateJobObject`，随后查询 `QueryInformationJobObject` 的 `ActiveProcesses`。
 4. 只有活跃进程集合归零才可确认 `exited`。查询失败、仍有进程或身份不确定时保持 `unknown`，设置 `descendants_may_survive=true`，阻断冲突恢复；不得自动重放未知副作用。
 5. `ExecutionSubject` 记录实际后端、Job/profile 身份与创建证据；审批和结果视图只显示已经实测的边界，不把 Job Object 描述成完整沙箱。
 
@@ -244,7 +244,7 @@ Windows 原生 CI 至少覆盖：
 
 - 子进程与孙进程均在超时/取消后消失；
 - leader 先退出时 Job 内后代仍被清理；
-- detached 与 double fork 后代不能逃出 Job；
+- detached 创建与多代派生后代不能逃出 Job；
 - 父进程崩溃或关闭最后句柄触发 kill-on-close；
 - breakaway 被拒绝，PID 复用不导致误杀，64 位 HANDLE 不被截断；
 - 创建、绑定、恢复线程、终止和查询 API 的故障均 fail-closed；

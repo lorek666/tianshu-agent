@@ -1243,9 +1243,9 @@ Sandbox Worker     ← 执行者：拿到的是句柄，不是权限
 **契约要求**：
 
 1. 进程创建必须先处于暂停态，再原子或在对线程恢复前绑定不可继承、`KILL_ON_JOB_CLOSE` 的 Job；绑定失败必须终止暂停进程并拒绝执行。禁止 breakaway，detached 与二次 fork 后代仍留在 Job 内。
-2. leader 退出不等于进程树退出。超时、取消、fence 与宿主退出走 `TerminateJobObject`；只有 Job 的活跃进程集合归零才可确认 `exited`。无法确认时保持 `unknown`、`descendants_may_survive=true`，阻断冲突恢复，不自动重放。
+2. leader 退出不等于进程树退出。超时、取消、fence 与宿主退出走 `TerminateJobObject`；leader 正常退出后也必须查询 Job，仍有活跃进程时同样终止并有界等待。只有 Job 的活跃进程集合归零才可确认 `exited`。无法确认时保持 `unknown`、`descendants_may_survive=true`，阻断冲突恢复，不自动重放。
 3. `ExecutionSubject` 绑定实际后端与隔离 profile；`IsolationReport` 只在该后端 × Windows × 架构的原生探针通过后声明 `process_tree=enforced`。审批与结果视图必须展示“仅进程树受约束”，不得显示完整隔离。
-4. 验收至少覆盖子/孙进程、leader 先退、detached、double fork、timeout/cancel、父句柄关闭、breakaway、PID 复用、高-bit HANDLE，以及无 Job、无 kill-on-close、API 故障的负控。Windows CI 是必要证据，不替代用户设备、EDR、桌面会话与文件系统实测。
+4. 验收至少覆盖子/孙进程、leader 先退、detached 创建、多代派生、timeout/cancel、父句柄关闭、breakaway、PID 复用、高-bit HANDLE，以及无 Job、无 kill-on-close、API 故障的负控。Windows CI 是必要证据，不替代用户设备、EDR、桌面会话与文件系统实测。
 5. MCP 长连接进程、任意未进入该 Job 的宿主进程和 Job 外后代不在本切片承诺内。实现与契约分开提交；在原生证据齐备前不自动启用，不关闭 Issue #224 的完整原生沙箱目标。
 
 详细机制与验收边界见 [F2-sandbox-policy.md](F2-sandbox-policy.md) §10。
