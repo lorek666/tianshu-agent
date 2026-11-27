@@ -1014,9 +1014,8 @@ def test_normal_finish_and_pause_do_not_report_heartbeat_failure(
 ):
     """正常收尾/暂停时心跳线程晚一步看到"作业已结束""租约已释放"，不算失败。
 
-    收尾顺序是"先 `claims.finish`，再释放租约"。心跳线程可能刚好在这两步之间
-    醒来：它看到的是"作业已结束"，也可能是"租约不在了"。这两种都是**正常
-    结束**，记成 `心跳失效` 会让一次成功的执行以退出码 1 收场。
+    正常收尾时，作业终态与租约释放在一次提交中可见。暂停则先释放租约，再挂起
+    作业。这两种都是正常结束，记成 `心跳失效` 会让一次正常的执行以退出码 1 收场。
 
     这里用 Event 把第一拍心跳精确卡在目标窗口之后再放行。不能用 1ms 间隔反复
     抽样：Windows 上一次提交可能比 1ms 还久，后台线程会在提交后立刻再次抢写锁，
@@ -1059,15 +1058,17 @@ def test_normal_finish_and_pause_do_not_report_heartbeat_failure(
         ))
 
         if completion == "finish":
-            original_finish = env.stack.claims.finish
+            original_finish = AgentLoop._finish
 
-            def finish_then_release_beat(claim, *, outcome):
-                result = original_finish(claim, outcome=outcome)
+            def finish_then_release_beat(engine, run_id, claim, progress, *, outcome, error):
+                result = original_finish(
+                    engine, run_id, claim, progress, outcome=outcome, error=error,
+                )
                 release_beat.set()
                 return result
 
             stack.enter_context(patch.object(
-                env.stack.claims, "finish", finish_then_release_beat
+                AgentLoop, "_finish", finish_then_release_beat
             ))
         else:
             original_release = env.stack.leases.release_run
@@ -1121,7 +1122,7 @@ def test_normal_finish_and_pause_do_not_report_heartbeat_failure(
     if completion == "finish":
         assert env.stack.tasks.get_run(run_id).state == "succeeded"
         assert job is not None and job.state == "done"
-        assert observed[0][0] == "done"
+        assert observed[0] == ("done", [])
         assert env.payloads(run_id, "run.end")
         assert worker.beats == 0
     else:

@@ -98,6 +98,7 @@ from .dispatcher import (
 )
 from .errors import (
     RunFenced,
+    RunFinishPersistenceError,
     TianshuError,
     ToolArgumentError,
     WorkspaceBlocked,
@@ -314,7 +315,7 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
     ) -> None:
         self._tasks = tasks
         self._leases = leases
-        self._claims = claims
+        self._claims = claims.bind(tasks.log)
         self._dispatcher = dispatcher
         self._approvals = approvals
         self._snapshots = snapshots
@@ -826,6 +827,8 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
                         # 再存游标。留着它只会让下次恢复误以为还有活没干。
                         progress.model_turn = None
                     self._tasks.save_cursor(run_id, progress.to_cursor(), claim)
+        except RunFinishPersistenceError:
+            raise  # 收尾写库失败，不能再试着把同一个 Run 判成业务失败。
         except WorkspaceBlocked as exc:
             error = f"workspace 已被阻断，拒绝写入：{exc}"
             return self._finish(run_id, claim, progress, outcome="failed", error=error)
