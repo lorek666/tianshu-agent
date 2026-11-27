@@ -80,7 +80,7 @@ def test_text_config_reloads_and_reads_env_only(monkeypatch, tmp_path, provider,
     child_env = {
         name: os.environ[name]
         for name in (
-            "PATH", "PYTHONPATH", "SystemRoot",
+            "PATH", "PYTHONPATH", "SYSTEMROOT", "SystemRoot",
             "TIANSHU_TEST_LOCK_ROOT", "PYTEST_TIANSHU_REGISTRY_HOME",
             "TIANSHU_AUTHORITY_ROOT",
         )
