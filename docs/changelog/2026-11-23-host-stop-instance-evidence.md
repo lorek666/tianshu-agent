@@ -494,5 +494,10 @@ Windows Job 候选夹带进 native PR。首次三文件受影响域运行未在�
 主控停止该无效运行，补回边界后，截止时间负控与两项清理回归先转绿，完整受影响域
 随后实际退出 0；这不是靠延长超时掩盖失败。旧复审虽确认两项技术修复，但因复审期间
 原工作树被外部换树并删除，只能判 `partial_fixed`，其全量日志不绑定当前独立树。
-当前冻结 head `c1d90e3f80d43d5df7ac22d7fd15f6affd2331de` 的新独立复审、裸全量与
-hosted required CI 仍待完成；不沿用 `b6200f9`、`0d1c15e` 或外部移动 main 的旧证据。
+当前 code/test tree 绑定 `6beed60569d948cb87d83b0c3c4d895e2fa6b714`（tree
+`ca8111e988d90dbf2f10d0b11bf45993e28295f5`）。新独立复审确认技术修复与定向红绿，但
+原冻结路径 `/Volumes/Date/native-v44-freeze.9M4Qp` 在复审最终阶段已被外部删除，且旧
+changelog 仍指向 `c1d90e3...`，因此交付绑定只能判 `partial_fixed`。最终归档改用上述
+Git object、五个 code/test SHA256、完整 bundle 与只读校验和共同绑定；本次文档修正不改
+code/test tree。裸全量与 hosted required CI 仍待完成；不沿用 `b6200f9`、`0d1c15e` 或
+外部移动 main 的旧证据。
