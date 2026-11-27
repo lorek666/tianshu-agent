@@ -226,7 +226,7 @@ PID/PGID 发信号，以免误伤复用身份。该结论不推广到允许后�
 ### 10.1 范围与非目标
 
 - 目标是在 Windows 上提供显式选择的 `process_tree` 后端；建议注册名在实现 PR 中冻结，默认 `local` 与 `auto` 保持不变。
-- 只约束进入同一 Job Object 的受控进程树。文件、网络、凭据仍不是本切片的强制边界；`capabilities.isolation` 只有在原生探针通过后才能写 `process_tree`。
+- 只约束进入同一 Job Object 的受控进程树。文件、网络、凭据仍不是本切片的强制边界；`capabilities.isolation` 保持 `none`，`supports_job_objects=True` 只说明实现具备 Job 机制，不构成隔离证据。只有原生 `IsolationReport` 通过后才声明 `process_tree=enforced`，累计 `isolation_view.level` 不升级。
 - 不覆盖 MCP 长连接进程、Job 外宿主进程、允许 breakaway 的后代，也不承诺防御同 UID 宿主、内核攻击、EDR 或桌面会话差异。
 - 目标后端、API 或平台不可用时抛 `PolicyUnsupported` 或保持 `unknown`，绝不回落 `local`。
 
