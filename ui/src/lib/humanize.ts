@@ -386,7 +386,7 @@ const ISOLATION_BOUNDARY_LABELS: Record<string, string> = {
   process_tree: "进程树",
 };
 
-function isolationLevelLabel(level: string | null | undefined): string {
+export function isolationLevelLabel(level: string | null | undefined): string {
   if (level === null || level === undefined || level === "") return "未知";
   return ISOLATION_LEVEL_LABELS[level] ?? "未知";
 }

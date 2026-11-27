@@ -1369,6 +1369,88 @@ pre,
   font-size: 10.5px;
 }
 
+.approval-command {
+  margin-top: 9px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.approval-command h4 {
+  margin: 0 0 6px;
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
+.approval-command-meta {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 10.5px;
+}
+
+.approval-command-meta code {
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.approval-argv-title {
+  margin-top: 8px;
+  color: var(--text-muted);
+  font-size: 10.5px;
+}
+
+.approval-argv {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.approval-argv li {
+  display: grid;
+  grid-template-columns: 1.5em minmax(0, 1fr);
+  gap: 5px;
+  align-items: start;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+}
+
+.approval-argv-index {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  text-align: right;
+}
+
+.approval-argv code {
+  min-width: 0;
+  color: var(--text);
+  font-size: 10.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.approval-command-missing {
+  margin: 0;
+  color: var(--warn);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .approval-isolation {
   margin: 10px 0 0;
   padding: 6px 9px;
