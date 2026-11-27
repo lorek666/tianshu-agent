@@ -219,7 +219,8 @@ def local_isolation_claims() -> dict[str, str]:
     依据 `local_capabilities()` 如实给出：`isolation="none"` 意味着文件与凭据
     边界都没有隔离；`supports_network_isolation=False` 意味着出网不受控；
     进程树终止只在 `supports_process_group=True` 时声明能做到，否则是 unknown
-    （Windows 零依赖没有 Job Object，杀不干净子树——不能声明 enforced）。
+    （Windows 默认 local 不绑定 Job Object，杀不干净子树——不能声明 enforced；
+    显式 Job 后端的能力与实测证据另行判定）。
     """
     caps = LOCAL_EXEC_CAPABILITIES
     file_claim = (
@@ -451,10 +452,12 @@ def _run_managed_pipes(
         os.set_blocking(proc.stderr.fileno(), False)
         out = _StreamCollector(policy.max_output_bytes, blob_dir, "stdout")
         err = _StreamCollector(policy.max_output_bytes, blob_dir, "stderr")
-        threads = [
-            _start_pump(_pump_file, proc.stdout, out, stop_reading),
-            _start_pump(_pump_file, proc.stderr, err, stop_reading),
-        ]
+        for pump, stream, collector in (
+            (_pump_file, proc.stdout, out),
+            (_pump_file, proc.stderr, err),
+        ):
+            thread = _start_pump(pump, stream, collector, stop_reading)
+            threads.append(thread)
         try:
             proc.wait(timeout=policy.timeout_ms / 1000)
         except subprocess.TimeoutExpired:

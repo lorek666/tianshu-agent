@@ -1,7 +1,8 @@
 """Agent 自动执行的 subject 绑定、现场准入与受管进程生命周期。
 
-仅内置 local / Seatbelt / Landlock 有可核对的启动实现。未知后端和 Windows
-原生隔离保持 unsupported；能力声明不能代替实际启动配置和现场探针。
+内置 local / Seatbelt / Landlock 有可核对的启动实现；显式 Windows Job Object
+仅提供候选进程树治理，不构成完整沙箱。未知后端保持 unsupported；能力声明不能
+代替实际启动配置和现场探针。
 """
 
 from __future__ import annotations
@@ -532,14 +533,17 @@ class PreparedExecution:
 
     def _collect_process(self, proc, *, policy, blob_dir=None) -> tuple[ExecResult, str | None]:
         if self._job_backend:
-            result, state = _run_managed_pipes(
-                proc,
-                policy=policy,
-                blob_dir=blob_dir,
-                finalize_tree=lambda _timed_out: proc.controller.stop(2),
-                close_stdin=True,
-            )
-            if proc.close(0) != exec_job_object.TREE_EXITED:
+            try:
+                result, state = _run_managed_pipes(
+                    proc,
+                    policy=policy,
+                    blob_dir=blob_dir,
+                    finalize_tree=lambda _timed_out: proc.controller.stop(2),
+                    close_stdin=True,
+                )
+            finally:
+                close_state = proc.close(0)
+            if close_state != exec_job_object.TREE_EXITED:
                 state = "unknown"
                 result = replace(result, descendants_may_survive=True)
             return result, state
@@ -564,7 +568,17 @@ class PreparedExecution:
                 self.report, probe_version=SUBJECT_PROBE_VERSION,
                 findings=tuple(
                     detached if finding.boundary == "process_tree"
-                    and detached.status != BOUNDARY_ENFORCED else finding
+                    and (
+                        detached.status == BOUNDARY_NOT_ENFORCED
+                        or (
+                            detached.status != BOUNDARY_ENFORCED
+                            and finding.status != BOUNDARY_NOT_ENFORCED
+                        )
+                        or (
+                            finding.status == BOUNDARY_UNKNOWN
+                            and detached.status == BOUNDARY_ENFORCED
+                        )
+                    ) else finding
                     for finding in self.report.findings
                 ),
             )
@@ -592,97 +606,199 @@ class PreparedExecution:
         )
         return self.admission
 
+    def _windows_probe_record(
+        self, path: Path, facts: dict[str, object], prefix: str
+    ) -> dict[str, int] | None:
+        try:
+            value = json.loads(path.read_bytes())
+            pid, birth = value["pid"], value["birth"]
+            handle = facts[f"{prefix}_handle"]
+            if (
+                type(pid) is not int or pid <= 0
+                or type(birth) is not int or birth <= 0
+                or type(handle) is not int or handle <= 0
+                or facts.get(f"{prefix}_pid") != pid
+            ):
+                return None
+            api = exec_job_object._load_native_api()
+            if api.process_identity(handle) != (pid, birth):
+                return None
+        except (OSError, ValueError, TypeError, KeyError, exec_job_object.JobObjectError):
+            return None
+        return {"pid": pid, "birth": birth, "handle": handle}
+
+    @staticmethod
+    def _cleanup_windows_probe_records(
+        records: list[dict[str, int]],
+    ) -> tuple[bool, list[int]]:
+        confirmed = True
+        survivors: list[int] = []
+        try:
+            api = exec_job_object._load_native_api()
+        except (OSError, AttributeError):
+            return False, [record["pid"] for record in records]
+        for record in records:
+            handle = record["handle"]
+            try:
+                if api.process_identity(handle) != (record["pid"], record["birth"]):
+                    confirmed = False
+                    continue
+                state = api.wait(handle, 0)
+                if state == exec_job_object.WAIT_TIMEOUT:
+                    survivors.append(record["pid"])
+                    if not api.terminate_process(handle, 1):
+                        confirmed = False
+                    state = api.wait(handle, 3000)
+                if state != exec_job_object.WAIT_OBJECT_0:
+                    confirmed = False
+            except (exec_job_object.JobObjectError, OSError):
+                confirmed = False
+            finally:
+                try:
+                    if not api.close_handle(handle):
+                        confirmed = False
+                except (exec_job_object.JobObjectError, OSError):
+                    confirmed = False
+        return confirmed, survivors
+
     def _probe_windows_descendant(self) -> IsolationFinding:
         root = Path(tempfile.mkdtemp(prefix=".tianshu-detach-probe-", dir=self.workspace))
-        descendant_file = root / "descendant.pid"
-        breakaway_file = root / "breakaway.pid"
+        descendant_file = root / "descendant.json"
+        breakaway_file = root / "breakaway.json"
         child = (
-            "import os,pathlib,sys,threading;"
-            "pathlib.Path(sys.argv[1]).write_bytes(str(os.getpid()).encode('ascii'));"
+            "import ctypes,json,os,threading;from ctypes import wintypes;"
+            "k=ctypes.WinDLL('kernel32',use_last_error=True);"
+            "k.GetCurrentProcess.restype=ctypes.c_void_p;"
+            "k.GetProcessTimes.argtypes=[ctypes.c_void_p]+"
+            "[ctypes.POINTER(wintypes.FILETIME)]*4;"
+            "k.GetProcessTimes.restype=ctypes.c_int;"
+            "c=wintypes.FILETIME();e=wintypes.FILETIME();"
+            "q=wintypes.FILETIME();u=wintypes.FILETIME();"
+            "assert k.GetProcessTimes(k.GetCurrentProcess(),ctypes.byref(c),"
+            "ctypes.byref(e),ctypes.byref(q),ctypes.byref(u));"
+            "birth=(c.dwHighDateTime<<32)|c.dwLowDateTime;"
+            "open(sys.argv[1],'w').write(json.dumps({'pid':os.getpid(),'birth':birth}));"
             "print('ready',flush=True);threading.Event().wait(120)"
         )
+        child = "import sys\n" + child
         payload = (
-            "import json,subprocess,sys\n"
-            "flags=0x01000000|0x00000008|0x00000200\n"
+            "import ctypes,json,os,subprocess,sys\n"
+            "from ctypes import wintypes\n"
+            "k=ctypes.WinDLL('kernel32',use_last_error=True)\n"
+            "k.GetCurrentProcess.restype=wintypes.HANDLE\n"
+            "k.OpenProcess.argtypes=[wintypes.DWORD,wintypes.BOOL,wintypes.DWORD]\n"
+            "k.OpenProcess.restype=wintypes.HANDLE\n"
+            "k.DuplicateHandle.argtypes=[wintypes.HANDLE,wintypes.HANDLE,"
+            "wintypes.HANDLE,ctypes.POINTER(wintypes.HANDLE),wintypes.DWORD,"
+            "wintypes.BOOL,wintypes.DWORD]\n"
+            "k.DuplicateHandle.restype=wintypes.BOOL\n"
+            "k.CloseHandle.argtypes=[wintypes.HANDLE]\n"
+            "k.CloseHandle.restype=wintypes.BOOL\n"
+            "def duplicate(p):\n"
+            " parent=k.OpenProcess(0x40,False,os.getppid())\n"
+            " if not parent: raise ctypes.WinError(ctypes.get_last_error())\n"
+            " try:\n"
+            "  out=wintypes.HANDLE()\n"
+            "  if not k.DuplicateHandle(k.GetCurrentProcess(),p._handle,parent,"
+            "ctypes.byref(out),0,False,0): raise ctypes.WinError(ctypes.get_last_error())\n"
+            "  return out.value\n"
+            " finally: k.CloseHandle(parent)\n"
+            "facts={}\n"
+            "p=subprocess.Popen([sys.executable,'-I','-S','-c',"
+            f"{child!r},sys.argv[1]],stdin=subprocess.DEVNULL,"
+            "stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,creationflags=0x00000008)\n"
+            "p.stdout.readline()\n"
+            "facts['descendant_pid']=p.pid\n"
+            "facts['descendant_handle']=duplicate(p)\n"
             "try:\n"
-            f" p=subprocess.Popen([sys.executable,'-I','-S','-c',{child!r},sys.argv[1]],"
-            "stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,"
-            "creationflags=0x00000200)\n"
-            " p.stdout.readline()\n"
-            "except OSError as exc:\n"
-            " print(json.dumps({'error':exc.winerror}),flush=True)\n"
-            " sys.exit(2)\n"
-            "facts={'descendant_pid':p.pid}\n"
-            "try:\n"
-            f" b=subprocess.Popen([sys.executable,'-I','-S','-c',{child!r},sys.argv[2]],"
-            "stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,"
-            "creationflags=flags)\n"
+            " b=subprocess.Popen([sys.executable,'-I','-S','-c',"
+            f"{child!r},sys.argv[2]],stdin=subprocess.DEVNULL,"
+            "stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,"
+            "creationflags=0x01000000|0x00000200)\n"
             " b.stdout.readline()\n"
             " facts['breakaway_pid']=b.pid\n"
+            " facts['breakaway_handle']=duplicate(b)\n"
             "except OSError as exc:\n"
             " facts['denied_winerror']=exc.winerror\n"
             "print(json.dumps(facts),flush=True)\n"
         )
         evidence = "Windows Job detached/breakaway 探针没有给出可核对结果"
         status = BOUNDARY_UNKNOWN
-        observed: list[tuple[int, str | None]] = []
+        records: list[dict[str, int]] = []
+        breakaway_valid = False
+        cleanup_confirmed = False
+        survivors: list[int] = []
+        tree_state = "unknown"
+        result: ExecResult | None = None
+        proc = None
         try:
             policy = ExecPolicy(
                 argv_allowlist=(sys.executable,), cwd_roots=(self.workspace,),
                 env_allowlist=("PATH",), timeout_ms=5000, max_output_bytes=4096,
             )
-            result = self.spawn(
-                (
-                    sys.executable, "-I", "-S", "-c", payload,
-                    str(descendant_file), str(breakaway_file),
-                ),
-                cwd=self.workspace, env={"PATH": os.defpath}, policy=policy,
+            proc = self._launch_process(
+                (sys.executable, "-I", "-S", "-c", payload,
+                 str(descendant_file), str(breakaway_file)),
+                cwd=self.workspace, env={"PATH": os.defpath},
             )
+            result, tree_state = self._collect_process(proc, policy=policy)
             try:
                 facts = json.loads(result.stdout)
             except (ValueError, TypeError):
                 facts = {}
-            for path in (descendant_file, breakaway_file):
-                try:
-                    pid = int(path.read_bytes())
-                except (OSError, ValueError):
-                    continue
-                observed.append((pid, process_birth_identity(pid)))
-            alive = [pid for pid, birth in observed if birth is not None]
+            if not isinstance(facts, dict):
+                facts = {}
+            descendant = self._windows_probe_record(
+                descendant_file, facts, "descendant"
+            )
+            if descendant is not None:
+                records.append(descendant)
+            if breakaway_file.exists():
+                breakaway = self._windows_probe_record(
+                    breakaway_file, facts, "breakaway"
+                )
+                breakaway_valid = breakaway is not None
+                if breakaway is not None:
+                    records.append(breakaway)
             if result.exit_code == 0 and not result.timed_out:
-                if alive:
-                    status = BOUNDARY_NOT_ENFORCED
-                    evidence = f"Job 外仍存在真实后代/breakaway 进程：{alive}"
-                elif (
-                    facts.get("denied_winerror") == 5
+                if (
+                    tree_state == "exited"
+                    and not result.descendants_may_survive
+                    and descendant is not None
+                    and facts.get("denied_winerror") == 5
                     and descendant_file.exists()
                     and not breakaway_file.exists()
                 ):
                     status = BOUNDARY_ENFORCED
                     evidence = (
-                        "普通后代在 leader 退出后由 Job 清空，"
+                        "普通 DETACHED_PROCESS 后代在 leader 退出后由 Job 清空，"
                         "breakaway 创建被 ACCESS_DENIED 拒绝"
                     )
                 else:
-                    evidence += f"；facts={facts} exit_code={result.exit_code}"
+                    evidence += f"；facts={facts} tree_state={tree_state}"
             else:
                 evidence += (
                     f"；facts={facts} exit_code={result.exit_code} "
-                    f"timeout={result.timed_out}"
+                    f"timeout={result.timed_out} tree_state={tree_state}"
                 )
         except (OSError, subprocess.SubprocessError, exec_job_object.JobObjectError) as exc:
             evidence += f"：{type(exc).__name__}: {exc}"
         finally:
-            cleanup_confirmed = True
-            for pid, birth in observed:
-                if birth is not None and process_birth_identity(pid) == birth:
-                    try:
-                        os.kill(pid, signal.SIGTERM)
-                    except OSError:
-                        pass
-                if _wait_pid_gone(pid, 3000) is not False:
-                    cleanup_confirmed = False
+            cleanup_confirmed, survivors = self._cleanup_windows_probe_records(records)
+            if survivors:
+                status = BOUNDARY_NOT_ENFORCED
+                evidence += f"；Job 外仍存在精确句柄对应的后代：{survivors}"
+            if not cleanup_confirmed:
+                status = BOUNDARY_UNKNOWN
+            if breakaway_valid:
+                status = BOUNDARY_NOT_ENFORCED
             evidence += f"；探针清理={'confirmed' if cleanup_confirmed else 'unknown'}"
+            if proc is not None:
+                try:
+                    if proc.close(0) != exec_job_object.TREE_EXITED:
+                        status = BOUNDARY_UNKNOWN
+                except (exec_job_object.JobObjectError, OSError):
+                    status = BOUNDARY_UNKNOWN
             shutil.rmtree(root, ignore_errors=True)
         return IsolationFinding("process_tree", status, evidence)
 

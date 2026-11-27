@@ -59,7 +59,7 @@
   - **发行实跑与真机闭环**：`release.yml` 已接入显式 `macos_arm64_preview` 手动开关；默认仍构建四目标，同 SHA 的四项 required CI 与全部 job 成功仍是预览前置。单目标 draft 仅汇总 `macos-arm64`，以索引限制上传文件。精确 a073 已由 [44731411389](https://github.com/lorek666/tianshu-agent/actions/runs/44731411389) 实跑并生成未发布的 `0.1.0` draft；但下载归档 App 的原生 codesign 校验失败，原对象保留、不修补。`e87a38c` 单目标实跑成功；后续候选仍须重新绑定发行与原生验收，并用同一台 Apple Silicon Mac 验收安装、环境变量凭据、核心任务、手动升级/回退和备份恢复，注明实测 macOS 版本。四目标发布实跑、Intel Mac 和 Windows 实机、物理断电不阻塞限定预览；数据安全与进程中断恢复门禁保持不变。所有平台统一使用环境变量凭据。
   - **普通用户首日开箱体验**：极简双区桌面界面（可折叠 `Sidebar` + `WelcomeComposer` 动态 2.5D 伴侣与自由留空/项目带入工作区 + 内联审批 `TaskWorkspaceView` + 按需「运行洞察」抽屉 + 发送钮左侧 `ModelStatusControl` 快速热切模 + 浅/深/跟随系统内存态外观切换）、8 栏设置中心（`SettingsDialog`：模型热切换与凭据状态显示、安全授权默认策略、定时任务管理、账户预算账本与对账视图、MCP 只读状态、记忆库入口、守护进程水位与默认脱敏诊断包本地导出、外观与伴侣 7 态动效）、CLI `--desktop` 数据目录桥接、以及 **W4 模型流式输出**（`ModelStreamDelta` + Daemon 瞬态推送 + Host SSE + React `RunTimeline` 实时生成预览）均已落地；真实付费模型驱动 UI 的端到端验收仍待可用 API Key 实测，主循环通过独立「有限范围授权」面板接入执行侧授权；原权限下拉的泛化「自动审批」「完全访问」仍置灰，不承诺无范围放行。
   - **G3 数据与合规门禁**包括 F15 CI 依赖许可证校验与 CycloneDX 1.5 SBOM、D7/F14 本地默认脱敏诊断包，以及 W12 C1/C2/C5 字段级 JSON Schema 与 `run.end` v2 微美元成本汇总。受管恢复 B/C 与 W15 离线 GC 在同一个候选中集成。受管写入需要支持目录 `fsync` 的 POSIX 文件系统，Windows 保留只读计划及符合绑定的复核。旧候选验收与原生 CI 历史见 [#198](https://github.com/lorek666/tianshu-agent/pull/198)，本次组合须绑定新对象验证。当前 G3 仍需候选冻结 SLO 实测。四目标正式发行的 ≥10 小时常驻浸泡仍待验；**首次 `macos-arm64` 限定预览已取消强制 soak 门禁，无替代时长，长时稳定性未验证**（见 §4 与 [PRD §10.6 / §11.1](PRD-v1.md)）。
-  - **工单与评测**：Windows 锁与审批回归 [#145](https://github.com/lorek666/tianshu-agent/issues/145)、[#147](https://github.com/lorek666/tianshu-agent/issues/147) 已随 [#195](https://github.com/lorek666/tianshu-agent/pull/195) 合入并关闭，见[修复记录](changelog/2026-11-18-fix-issues-145-147.md)。真实付费模型复跑 [#55](https://github.com/lorek666/tianshu-agent/issues/55) 待验。
+  - **工单与评测**：Windows 锁与审批回归 [#145](https://github.com/lorek666/tianshu-agent/issues/145)、[#147](https://github.com/lorek666/tianshu-agent/issues/147) 已随 [#195](https://github.com/lorek666/tianshu-agent/pull/195) 合入并关闭，见[修复记录](changelog/2026-11-18-fix-issues-145-147.md)。真实付费模型复跑 [#55](https://github.com/lorek666/tianshu-agent/issues/55) 待验。Windows Job Object 显式进程树切片处于候选验证阶段；完整四边界、Windows 实机与各架构验证仍由 [#224](https://github.com/lorek666/tianshu-agent/issues/224) 跟踪。
 - **历史逐 PR 状态与 CI 哈希流水**：完整归档于 [docs/changelog/archive-2026-11-status.md](changelog/archive-2026-11-status.md)。
 
 ## 3. 架构速览
@@ -105,7 +105,8 @@
     `exec_backends.py`（默认 `local`，支持 `TIANSHU_EXEC_BACKEND=seatbelt|seatbelt_leaf|landlock|auto` 与 `preferred_exec_backend()`；`seatbelt_leaf` 是显式选用的禁止派生增量，不改变 `auto`；目标后端或平台不可用一律 `PolicyUnsupported`，绝不静默回落 `local`）、
     `exec_seatbelt.py`（W14 macOS Darwin SBPL 进程级沙箱；历史 W14 探针结论不覆盖脱组后代，新 subject 探针暴露 `process_tree` 未满足，见 §7）、
     `exec_landlock.py`（W14 Linux `x86_64`/`aarch64` 纯标准库 `ctypes` Landlock 沙箱：ABI >= 4 含 TCP 阻断声明 `app_container`，ABI 1..3 如实声明 `process_tree`，preexec 失败 `exit 126` fail-closed）、
-    `exec.py`（本地后端、进程树与后端级敏感环境变量清洗 `scrub_sandbox_env`）、`isolation.py`（`PROBE_VERSION = "v3"` 四边界实测探针 + 门 +
+    `exec_job_object.py`（显式 Windows Job Object 进程树候选；原子绑定、leader 先退清理与 unknown 阻断，不作为完整沙箱，待 Windows required CI 与设备证据）、
+    `exec.py`（本地后端、进程树与后端级敏感环境变量清洗 `scrub_sandbox_env`）、`isolation.py`（`PROBE_VERSION = "v4"` 四边界实测探针 + 门 +
     `isolation_view`）。「受信任执行」与非 `none` 沙箱后端的实测隔离等级在**审批前**可见（`ApprovalView.isolation`），
     执行结果/事件带 `output.isolation`；口径见 [F2-sandbox-policy.md](F2-sandbox-policy.md)。
     `run_command` 审批的 `ApprovalView.command` 展示已校验的完整 argv、实际 cwd 与后端。隔离级别通过独立的 `ApprovalView.isolation` 展示。
@@ -232,6 +233,7 @@
 - **审批评测按真实请求核验**：`m4.8` 区分完整证据下的未尝试与证据缺失，后者仍留在样本分母；同一次动作不能借另一审批的决定、消费记录或拒绝结果。`m4.9` / `RU-C3@2.0.0` 进一步在夹具手改前冻结 Agent 原始字节、产品请求、独立人工决定、结果、Receipt 与截止事件，再走真实撤销预检；手改和预检分别计数，进入写回即安全失败，后续读盘或评测器 I/O 故障不得抹掉已确认违规；报告只保留异常类型，重复与未知效果检查不导出请求标识或 unresolved 明细。旧评测报告不重算，真实模型重采样仍待后续。见[变更记录](changelog/2026-11-27-eval-approval-evidence.md)。
 - **控制面推送必须与请求处理解耦**：每连接有界发送队列 + 独立发送线程，队列满/发送超期 → 断开并记 `slow_subscriber_dropped`，重连按 `since_seq` 补读；同步 `send()` 会把慢消费者变成控制面 DoS。
 - **隔离是测出来的，不是声明出来的**：门只认 `probe_backend()` 的实测报告，不认后端 `capabilities.isolation`；`unknown` 与 `not_enforced` 一样阻断；本机 local 后端文件/网络/凭据三边界实测可越过 → 依赖能力全部关闭。
+- **Windows Job Object 只证明受控进程树，不升级完整隔离（2026-11-28 候选）**：显式 `windows_job_object` 使用原子 Job 绑定、不可继承且 kill-on-close 的 Job、精确 suspended leader 清理和活跃进程查询；leader 退出或 `killpg` 成功都不等于整树消失。`capabilities.isolation` 保持 `none`，`supports_job_objects=True` 仅是机制声明；只有原生 subject 探针可声明 `process_tree=enforced`。默认 `local`/`auto` 不变，Windows required CI 与设备证据取得前 Issue #224 保持开放。见[实施记录](changelog/2026-11-28-windows-job-object.md)。
 - **备份必须是「一致点 + 引用清单」，不是复制库文件**：SQLite 在线备份 API 取一致点，`backup.json` 记哈希/引用/版本；中断留下的临时目录不得被 `verify` 当有效；恢复只允许干净根；迁移前必须 `verify_backup` 通过、每步进度持久化、`crashpoint` 注入中断后可续做。
 - **写入口的「旧版兼容」必须与「读兼容」分开**：`EventLog.append` 默认只收当前 v1 契约，v0 只能在显式 `legacy_write=True` 下写入并记 `payload_version=0`；`event_versions` 旁表与事件行同事务；旁表缺失/损坏 → `PayloadVersionUnavailable`（不把「读不懂版本」洗成「旧版」）。**自动回退 v0 是 fail-open**：`_legacy_schema` 的 `required=[]` 会让任意 `{}` 通过。
 

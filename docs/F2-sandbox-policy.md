@@ -97,7 +97,7 @@ UI 映射优先级（`ui/src/lib/humanize.ts::isolationSentence`，顺序反了�
 | F2-c4 做不到必须 unsupported | 后端选择 + 能力判定 + 隔离门三处都不回落 |
 | F2-c5 受信任执行必须可见 | 审批前 `ApprovalView.isolation` + 结果/事件 + UI（PR #109） |
 | F2-c6 四边界实测证据 | `isolation.py` 探针 + 门接入产品路径 |
-| F2-c7 进程树（L2） | POSIX 交付；Windows ⛔（见 §7 决策） |
+| F2-c7 进程树（L2） | POSIX 交付；Windows `local` ⛔；显式 Job 候选待原生 CI 与设备证据（见 §10） |
 
 ---
 
@@ -127,7 +127,8 @@ UI 映射优先级（`ui/src/lib/humanize.ts::isolationSentence`，顺序反了�
 
 ## 6 未验证（与验收报告一致）
 
-- Windows **实机**：无；Job Object 未实现，进程树 `unknown`。
+- Windows **实机**：无；显式 `windows_job_object` 候选已实现，但 Windows required CI
+  与设备证据取得前，进程树支持状态保持未验证，默认 `local` 仍为 `unknown`。
 - macOS x64 / Linux x64 / arm64 无实机，矩阵保持 `unknown`。
 - 探针不覆盖：内核攻击面（ptrace/注入）、DNS/出站、磁盘配额、CPU 上限、
   TCC 交互。
@@ -196,7 +197,11 @@ Windows 实机验收，而不是直接复用本轮代码。
 
 ## 9. 显式单进程增量（2026-11-23，候选）
 
-上节保留 W14 的历史版本。当前探针升级为 `v3`，旧报告和 subject admission 不复用。
+上节保留 W14 的历史版本。当前探针升级为 `v4`，旧报告和 subject admission 不复用。
+`v3` 的受限 `os.fork()` 拒绝证明继续保留；`v4` 同时修正 Windows 通用进程树探针：
+根通过 `DuplicateHandle` 把孙进程精确句柄交给父进程，文件记录 PID 与原始
+FILETIME，父进程核验身份后用 `WaitForSingleObject` 观察、精确终止并关闭句柄。
+身份不符或句柄不可核实时保持 `unknown`，禁止按裸 PID 清理。
 进程边界增加一条受限证明路径：直接 `os.fork()` 被内核以 `EPERM` / `EACCES` 拒绝，
 根继续阻塞，实际超时后经受管等待确认被 `SIGKILL` 终止，且无清理未知标记。
 启动或导入失败、无输出、异常 errno、未超时、根退出证据不足均为 `unknown`。
@@ -219,15 +224,15 @@ PID/PGID 发信号，以免误伤复用身份。该结论不推广到允许后�
 
 ---
 
-## 10. Windows Job Object 进程树切片契约（2026-11-28，候选，未实现）
+## 10. Windows Job Object 进程树切片契约与候选实现（2026-11-28）
 
-> 对应 PRD §8.1.2 与 Issue #224。本节只定义后续实现必须满足的契约，不代表代码、Windows CI 或设备验收已经完成。
+> 对应 PRD §8.1.2 与 Issue #224。代码候选已实现；Windows required CI、独立复审结论与设备验收必须绑定最终冻结后，才能把支持状态从候选改为已交付。
 
 ### 10.1 范围与非目标
 
-- 目标是在 Windows 上提供显式选择的 `process_tree` 后端；建议注册名在实现 PR 中冻结，默认 `local` 与 `auto` 保持不变。
+- 目标是在 Windows 上提供显式选择的 `process_tree` 后端；注册名冻结为 `windows_job_object`，默认 `local` 与 `auto` 保持不变。
 - 只约束进入同一 Job Object 的受控进程树。文件、网络、凭据仍不是本切片的强制边界；`capabilities.isolation` 保持 `none`，`supports_job_objects=True` 只说明实现具备 Job 机制，不构成隔离证据。只有原生 `IsolationReport` 通过后才声明 `process_tree=enforced`，累计 `isolation_view.level` 不升级。
-- 不覆盖 MCP 长连接进程、Job 外宿主进程、允许 breakaway 的后代，也不承诺防御同 UID 宿主、内核攻击、EDR 或桌面会话差异。
+- 不覆盖 Job 外宿主进程、允许 breakaway 的后代，也不承诺防御同 UID 宿主、内核攻击、EDR 或桌面会话差异。本地 MCP stdio 只验证与受管进程关闭协议兼容，不扩成长连接可靠性承诺。
 - 目标后端、API 或平台不可用时抛 `PolicyUnsupported` 或保持 `unknown`，绝不回落 `local`。
 
 ### 10.2 创建与生命周期
@@ -251,6 +256,9 @@ Windows 原生 CI 至少覆盖：
 - detached 创建与多代派生后代不能逃出 Job；
 - 父进程崩溃或关闭最后句柄触发 kill-on-close；
 - breakaway 被拒绝，PID 复用不导致误杀，64 位 HANDLE 不被截断；
+- 通用与 detached 探针都通过精确 HANDLE + PID/FILETIME 核验、观察和清理，不按裸 PID 终止；
+- MCP stdio 关闭只走 `PreparedExecution`，不调用 `ManagedProcess` 不存在的 Popen 方法，并确认读线程join、等待者唤醒和 Run 终态收尾；
+- `CloseHandle` 首次失败时，controller、backend 与 MCP 生产关闭路径有界自动重试；持续失败保留句柄所有权并报 `unknown`；
 - 创建、绑定、恢复线程、终止和查询 API 的故障均 fail-closed；
 - 无 Job、无 kill-on-close、查询失败的负控必须保持 `unknown` 或拒绝，不能报绿。
 
@@ -259,5 +267,6 @@ Windows CI 是必要证据，不替代 Windows 实机上的文件系统、EDR、
 ### 10.4 提交拆分
 
 - 本契约单独以 `docs(contract):` 提交，说明原方案、新方案、原因与影响代码。
-- 实现 PR 再修改 `exec.py`、`execution_admission.py`、`exec_backends.py`、`isolation.py` 及对应测试，完成 Tier 1 红绿、负控、全量、独立复审和 required CI。
+- 实现 PR 修改 `exec.py`、`execution_admission.py`、`exec_backends.py`、新增
+  `exec_job_object.py` 及对应测试，完成 Tier 1 红绿、负控、全量、独立复审和 required CI。
 - 契约合入不等于能力已实现；只有实现 PR 的原生证据齐备后，才能更新支持矩阵并声明 Windows `process_tree=enforced`。

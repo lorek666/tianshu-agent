@@ -639,6 +639,46 @@ def test_held_output_pipe_after_leader_exit_is_unknown(tmp_path, monkeypatch):
     assert result.descendants_may_survive is True
 
 
+def test_second_pump_start_failure_joins_the_first_started_thread(tmp_path, monkeypatch):
+    out_read, out_write = os.pipe()
+    err_read, err_write = os.pipe()
+    os.close(out_write)
+    os.close(err_write)
+    proc = SimpleNamespace(
+        stdin=None,
+        stdout=os.fdopen(out_read, "rb", buffering=0),
+        stderr=os.fdopen(err_read, "rb", buffering=0),
+        wait=lambda timeout: pytest.fail("pump 初始化失败不得等待 leader"),
+    )
+    started = []
+    joined = []
+    finalized = []
+
+    def start(*_args):
+        if started:
+            raise OSError("second pump")
+        thread = object()
+        started.append(thread)
+        return thread
+
+    monkeypatch.setattr(execution, "_start_pump", start)
+    monkeypatch.setattr(
+        execution, "_join_pumps",
+        lambda threads, *_args, **_kwargs: joined.append(list(threads)) or True,
+    )
+    with pytest.raises(OSError, match="second pump"):
+        execution._run_managed_pipes(
+            proc,
+            policy=_policy(_cwd(tmp_path)),
+            blob_dir=None,
+            finalize_tree=lambda failed: finalized.append(failed),
+        )
+
+    assert joined == [started]
+    assert finalized == [True]
+    assert proc.stdout.closed and proc.stderr.closed
+
+
 # ---------------------------------------------------------------- Windows 专属
 #
 # 本机（macOS）不会执行下面这些用例。PR 里明确写了：它们在本机不可执行，

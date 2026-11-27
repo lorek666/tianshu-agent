@@ -12,6 +12,7 @@
 | `local-posix` | macOS x64 | `unknown` | `unknown` | `unknown` | `unknown` | 无实机，未验证 |
 | `local-posix` | Linux x64 | `unknown` | `unknown` | `unknown` | `unknown` | 无实机，未验证 |
 | `local-windows`（`LocalExecBackend`，Windows 分支） | Windows x64（CI runner） | `not_enforced` | `unknown`/`not_enforced` | `not_enforced` | `unknown` | 无实机；`windows-latest` 上文件/凭据探针实测可越界，网络探针可能因 runner 的 winsock 服务故障落 `unknown`（`WinError 10106`）——未知同样阻断；代码声明 `supports_process_group=False`/`supports_job_objects=False`，杀树不可确认 |
+| `windows_job_object`（显式候选） | Windows x64（CI runner） | `not_enforced` | `not_enforced` | `not_enforced` | `NOT_RUN` | 候选已实现；最终 Windows required CI 与设备证据取得前不声明 `process_tree=enforced`，不启用依赖四边界的能力 |
 | `local-windows` | Windows arm64 | `unknown` | `unknown` | `unknown` | `unknown` | 无实机，未验证 |
 | `app_container` 后端 | 任意 | — | — | — | — | **v1 未实现**（`docs/TECH-ARCH.md` §6 的 L3 未交付），不存在可测后端 |
 | `container` 后端 | 任意 | — | — | — | — | **v1 未实现**，不存在可测后端 |

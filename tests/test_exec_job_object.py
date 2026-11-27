@@ -193,11 +193,13 @@ def fake_windows(monkeypatch):
     monkeypatch.setattr(job, "_load_native_api", lambda: api)
     monkeypatch.setattr(job, "_attribute_probe", lambda current: True)
 
-    def adopt_pipe(handle: int, mode: str):
+    def adopt_pipe(handle: int, mode: str, *, transfer=None):
         # open_osfhandle 接管原始句柄；dup 后关闭 raw，模拟这一所有权转移。
         fd = os.dup(handle)
         os.close(handle)
         api.pipe_handles.discard(handle)
+        if transfer is not None:
+            transfer()
         return os.fdopen(fd, mode, buffering=0)
 
     monkeypatch.setattr(job, "_wrap_pipe", adopt_pipe)
@@ -278,6 +280,8 @@ def test_every_native_api_has_explicit_argtypes_and_restype():
                 "ResumeThread",
                 "IsProcessInJob",
                 "GetExitCodeProcess",
+                "GetProcessId",
+                "GetProcessTimes",
                 "WaitForSingleObject",
                 "CloseHandle",
             )
@@ -289,6 +293,8 @@ def test_every_native_api_has_explicit_argtypes_and_restype():
         assert function.restype is not None
     assert kernel32.CreateJobObjectW.restype is job._HANDLE
     assert kernel32.GetProcessHeap.restype is job._HANDLE
+    assert kernel32.GetProcessId.restype is job._DWORD
+    assert kernel32.GetProcessTimes.restype is job._BOOL
     assert kernel32.QueryInformationJobObject.argtypes[0] is job._HANDLE
     assert kernel32.QueryInformationJobObject.argtypes[2] is job._LPVOID
     assert kernel32.TerminateJobObject.restype is job._BOOL
@@ -363,6 +369,20 @@ def test_create_uses_atomic_suspended_unicode_process_and_native_pipes(fake_wind
     assert process.stdin.closed and process.stdout.closed and process.stderr.closed
     assert fake_windows.pipe_handles == set()
     assert {HIGH_JOB, HIGH_PROCESS, HIGH_THREAD} <= set(fake_windows.closed)
+
+
+def test_handle_returning_native_methods_keep_integer_handles():
+    kernel32 = SimpleNamespace(
+        CreateJobObjectW=lambda *_args: HIGH_JOB,
+        GetProcessHeap=lambda: 17,
+        HeapAlloc=lambda *_args: HIGH_ATTRIBUTES,
+    )
+    api = object.__new__(job._NativeAPI)
+    api.kernel32 = kernel32
+
+    assert api.create_job() == HIGH_JOB
+    assert api.heap_allocate(128) == HIGH_ATTRIBUTES
+    assert type(api.create_job()) is int
 
 
 @pytest.mark.parametrize(
@@ -442,6 +462,36 @@ def test_child_handle_close_failure_is_fail_closed(fake_windows, tmp_path):
     assert HIGH_JOB in fake_windows.closed
 
 
+def test_fdopen_failure_does_not_double_close_transferred_handle(
+    fake_windows, monkeypatch,
+):
+    raw_read, raw_write = os.pipe()
+    fake_windows.pipe_handles.update((raw_read, raw_write))
+    handles = job._Handles(fake_windows)
+    handles.add(raw_read)
+
+    def open_osfhandle(handle, flags):
+        fd = os.dup(handle)
+        os.close(handle)
+        fake_windows.pipe_handles.discard(handle)
+        return fd
+
+    monkeypatch.setitem(
+        sys.modules, "msvcrt", SimpleNamespace(open_osfhandle=open_osfhandle)
+    )
+    monkeypatch.setattr(
+        job.os, "fdopen", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("fdopen"))
+    )
+    try:
+        with pytest.raises(OSError, match="fdopen"):
+            job._adopt_stream(handles, raw_read, "rb")
+        assert raw_read not in fake_windows.closed
+        assert raw_read not in handles.values
+        assert fake_windows.pipe_handles == {raw_write}
+    finally:
+        os.close(raw_write)
+
+
 @pytest.mark.parametrize("argv", [["python"], [], "python", ["", "arg"], ["a\x00b"]])
 def test_explicit_application_path_is_required_before_create(fake_windows, tmp_path, argv):
     with pytest.raises(ValueError):
@@ -486,6 +536,7 @@ def test_query_and_terminate_failures_are_unknown(fake_windows, tmp_path, failur
     else:
         assert controller.query() == job.TREE_UNKNOWN
     assert controller.stop(0) == job.TREE_UNKNOWN
+    assert fake_windows.terminated == [HIGH_JOB]
     controller.close(0)
 
 
@@ -510,13 +561,80 @@ def test_controller_timeout_uses_injected_clock_not_sleep_guess(fake_windows):
     assert now[0] == pytest.approx(0.025)
 
 
-def test_close_attempts_all_handles_even_if_one_close_fails(fake_windows):
+def test_close_automatically_retries_transient_handle_failure(fake_windows):
+    original = fake_windows.close_handle
+    failed = False
+
+    def close_once(handle):
+        nonlocal failed
+        if handle == HIGH_PROCESS and not failed:
+            failed = True
+            fake_windows.closed.append(handle)
+            return False
+        return original(handle)
+
+    fake_windows.close_handle = close_once
+    controller = _controller(fake_windows)
+    assert controller.close(0) == job.TREE_UNKNOWN
+    assert controller._closed
+    assert controller._open_handles == set()
+    assert fake_windows.closed.count(HIGH_PROCESS) == 2
+    assert fake_windows.closed.count(HIGH_THREAD) == 1
+    assert fake_windows.closed.count(HIGH_JOB) == 1
+    assert controller.query() == job.TREE_CLOSED
+    assert controller.close() == job.TREE_CLOSED
+
+
+def test_close_keeps_permanently_failed_handle_for_bounded_retry(fake_windows):
+    original = fake_windows.close_handle
     fake_windows.close_failure.add(HIGH_PROCESS)
     controller = _controller(fake_windows)
     assert controller.close(0) == job.TREE_UNKNOWN
-    assert fake_windows.closed[-3:] == [HIGH_PROCESS, HIGH_THREAD, HIGH_JOB]
-    assert controller.query() == job.TREE_CLOSED
-    assert controller.close() == job.TREE_CLOSED
+    assert not controller._closed
+    assert controller._open_handles == {HIGH_PROCESS}
+    assert fake_windows.closed.count(HIGH_PROCESS) == job._HANDLE_CLOSE_ATTEMPTS
+    assert fake_windows.closed.count(HIGH_THREAD) == 1
+    assert fake_windows.closed.count(HIGH_JOB) == 1
+
+    fake_windows.close_failure.clear()
+    fake_windows.close_handle = original
+    assert controller.close(0) == job.TREE_UNKNOWN
+    assert controller._closed
+    assert controller._open_handles == set()
+    assert fake_windows.closed.count(HIGH_PROCESS) == job._HANDLE_CLOSE_ATTEMPTS + 1
+
+
+def test_managed_close_automatically_retries_controller_handle_failure(
+    fake_windows, tmp_path,
+):
+    original = fake_windows.close_handle
+    failed = False
+
+    def close_once(handle):
+        nonlocal failed
+        if handle == HIGH_PROCESS and not failed:
+            failed = True
+            fake_windows.closed.append(handle)
+            return False
+        return original(handle)
+
+    fake_windows.close_handle = close_once
+    process = _create(fake_windows, tmp_path)
+    assert process.close(0) == job.TREE_UNKNOWN
+    assert process._closed
+    assert process.close(0) == job.TREE_UNKNOWN
+    assert fake_windows.closed.count(HIGH_PROCESS) == 2
+
+
+def test_signaled_leader_may_have_exit_code_259(fake_windows, tmp_path):
+    fake_windows.exit_code_value = job.STILL_ACTIVE
+    process = _create(fake_windows, tmp_path)
+    try:
+        assert process.poll() == 259
+        assert process.wait(0) == 259
+        assert process.returncode == 259
+    finally:
+        process.close(0)
 
 
 def test_wait_timeout_does_not_terminate_job_or_fake_returncode(
@@ -572,6 +690,75 @@ def test_backend_spawn_collects_binary_pipes_and_closes_job(fake_windows, tmp_pa
     assert fake_windows.terminated == []
     assert fake_windows.pipe_handles == set()
     assert HIGH_JOB in fake_windows.closed
+
+
+def test_backend_spawn_automatically_retries_close_and_reports_unknown(
+    fake_windows, tmp_path,
+):
+    original = fake_windows.close_handle
+    failed = False
+
+    def close_once(handle):
+        nonlocal failed
+        if handle == HIGH_PROCESS and not failed:
+            failed = True
+            fake_windows.closed.append(handle)
+            return False
+        return original(handle)
+
+    fake_windows.close_handle = close_once
+    policy = ExecPolicy(
+        argv_allowlist=(sys.executable,), cwd_roots=(tmp_path,),
+        env_allowlist=(), timeout_ms=1000, max_output_bytes=4096,
+    )
+    result = job.WindowsJobObjectExecBackend().spawn(
+        [sys.executable, "-c", "pass"], cwd=tmp_path, env={}, policy=policy
+    )
+
+    assert result.exit_code == 7
+    assert result.descendants_may_survive is True
+    assert fake_windows.closed.count(HIGH_PROCESS) == 2
+    assert HIGH_JOB in fake_windows.closed
+
+
+def test_mcp_execution_close_retries_managed_handle_failure(fake_windows, tmp_path):
+    from tianshu.execution_admission import PreparedExecution
+    from tianshu.mcp import McpServerConfig, StdioServer
+
+    policy = ExecPolicy(
+        argv_allowlist=(sys.executable,), cwd_roots=(tmp_path,),
+        env_allowlist=(), timeout_ms=1000, max_output_bytes=4096,
+    )
+    execution = PreparedExecution(
+        job.WindowsJobObjectExecBackend(), kind="local_mcp", task_id="task",
+        run_id="run", argv=(sys.executable, "-c", "pass"), cwd=tmp_path,
+        env={}, policy=policy, workspace=tmp_path, data_root=tmp_path,
+    )
+    execution.__enter__()
+    proc = _create(fake_windows, tmp_path)
+    execution._proc = proc
+    original = fake_windows.close_handle
+    failed = False
+
+    def close_once(handle):
+        nonlocal failed
+        if handle == HIGH_PROCESS and not failed:
+            failed = True
+            fake_windows.closed.append(handle)
+            return False
+        return original(handle)
+
+    fake_windows.close_handle = close_once
+    server = StdioServer(McpServerConfig(
+        name="fake", command=(sys.executable, "-c", "pass"),
+    ))
+    server._execution = execution
+    server._proc = proc
+    server.close()
+
+    assert proc._closed
+    assert fake_windows.closed.count(HIGH_PROCESS) == 2
+    assert server._responses.get_nowait() == (None, {})
 
 
 def test_backend_timeout_cleans_tree_without_fake_leader_exit(fake_windows, tmp_path):
@@ -637,6 +824,277 @@ def test_subject_admission_uses_native_job_without_popen_fallback(
     assert HIGH_JOB in fake_windows.closed
 
 
+@pytest.mark.parametrize(
+    ("generic", "detached", "expected"),
+    [
+        ("unknown", "enforced", "enforced"),
+        ("not_enforced", "enforced", "not_enforced"),
+        ("enforced", "not_enforced", "not_enforced"),
+        ("enforced", "unknown", "unknown"),
+        ("not_enforced", "unknown", "not_enforced"),
+        ("unknown", "not_enforced", "not_enforced"),
+        ("enforced", "enforced", "enforced"),
+    ],
+)
+def test_detached_probe_cannot_launder_generic_not_enforced(
+    tmp_path, monkeypatch, generic, detached, expected,
+):
+    from tianshu import execution_admission
+    from tianshu.execution_admission import IsolationRefused
+    from tianshu.isolation import IsolationFinding, IsolationReport
+
+    execution = object.__new__(execution_admission.PreparedExecution)
+    execution.workspace = tmp_path
+    execution.data_root = tmp_path
+    execution.backend = object()
+    execution.capabilities = SimpleNamespace(name="fake")
+    execution.subject = SimpleNamespace(digest=lambda: "subject-digest")
+    execution.lifecycle_id = "lifecycle-id"
+    findings = tuple(
+        IsolationFinding(
+            boundary, generic if boundary == "process_tree" else "enforced",
+            f"generic-{boundary}",
+        )
+        for boundary in ("files_authority", "credentials", "network", "process_tree")
+    )
+    monkeypatch.setattr(
+        execution_admission, "probe_backend",
+        lambda *_args, **_kwargs: IsolationReport(
+            backend="fake", platform="test", findings=findings,
+            workspace=str(tmp_path), data_root=str(tmp_path),
+        ),
+    )
+    monkeypatch.setattr(
+        execution_admission, "_backend_identity", lambda _backend: "backend-id",
+    )
+    monkeypatch.setattr(
+        execution, "_probe_detached_descendant",
+        lambda: IsolationFinding("process_tree", detached, "detached-probe"),
+    )
+
+    if expected == "enforced":
+        admission = execution.admit(("process_tree",))
+        assert admission.boundaries["process_tree"] == "enforced"
+    else:
+        with pytest.raises(IsolationRefused) as caught:
+            execution.admit(("process_tree",))
+        assert caught.value.status == expected
+
+
+def test_subject_collection_failure_still_closes_job(fake_windows, tmp_path, monkeypatch):
+    from tianshu import execution_admission
+
+    policy = ExecPolicy(
+        argv_allowlist=(sys.executable,), cwd_roots=(tmp_path,),
+        env_allowlist=(), timeout_ms=1000, max_output_bytes=4096,
+    )
+    argv = (sys.executable, "-c", "pass")
+    with execution_admission.PreparedExecution(
+        job.WindowsJobObjectExecBackend(), kind="command", task_id="task",
+        run_id="run", argv=argv, cwd=tmp_path, env={}, policy=policy,
+        workspace=tmp_path, data_root=tmp_path,
+    ) as execution:
+        closed = []
+        proc = SimpleNamespace(
+            controller=SimpleNamespace(stop=lambda timeout: job.TREE_UNKNOWN),
+            close=lambda timeout: closed.append(timeout) or job.TREE_UNKNOWN,
+        )
+        monkeypatch.setattr(
+            execution_admission, "_run_managed_pipes",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("collect")),
+        )
+        with pytest.raises(OSError, match="collect"):
+            execution._collect_process(proc, policy=policy)
+    assert closed == [0]
+
+
+def test_probe_cleanup_does_not_terminate_mismatched_exact_handle(monkeypatch):
+    from tianshu.execution_admission import PreparedExecution
+
+    terminated = []
+    closed = []
+    api = SimpleNamespace(
+        process_identity=lambda handle: (11, 20),
+        wait=lambda *_args: pytest.fail("身份不符不得等待或终止该句柄"),
+        terminate_process=lambda *args: terminated.append(args) or True,
+        close_handle=lambda handle: closed.append(handle) or True,
+    )
+    monkeypatch.setattr(job, "_load_native_api", lambda: api)
+
+    confirmed, survivors = PreparedExecution._cleanup_windows_probe_records([
+        {"pid": 10, "birth": 20, "handle": 99},
+    ])
+
+    assert confirmed is False
+    assert survivors == []
+    assert terminated == []
+    assert closed == [99]
+
+
+@pytest.mark.parametrize(
+    ("tree_state", "may_survive", "identity_valid", "close_ok", "survivor", "expected"),
+    [
+        ("exited", False, True, True, False, "enforced"),
+        ("exited", True, True, True, False, "unknown"),
+        ("unknown", False, True, True, False, "unknown"),
+        ("exited", False, True, False, False, "unknown"),
+        ("exited", False, False, True, False, "unknown"),
+        ("exited", False, True, True, True, "not_enforced"),
+    ],
+)
+def test_windows_probe_requires_confirmed_tree_and_exact_handle_cleanup(
+    tmp_path, monkeypatch, tree_state, may_survive, identity_valid,
+    close_ok, survivor, expected,
+):
+    from tianshu import execution_admission
+    from tianshu.exec import ExecResult
+
+    execution = object.__new__(execution_admission.PreparedExecution)
+    execution.workspace = tmp_path
+    closed = []
+    proc = SimpleNamespace(close=lambda timeout: closed.append(timeout) or "exited")
+
+    def launch(argv, *, cwd, env):
+        Path(argv[-2]).write_text(json.dumps({"pid": 10, "birth": 20}))
+        return proc
+
+    facts = {"descendant_pid": 10, "descendant_handle": 99, "denied_winerror": 5}
+    result = ExecResult(
+        exit_code=0, signal=None, timed_out=False, stdout=json.dumps(facts),
+        stderr="", truncated=False, stdout_ref=None, stderr_ref=None,
+        duration_ms=0, descendants_may_survive=may_survive,
+    )
+    waits = iter([job.WAIT_TIMEOUT, job.WAIT_OBJECT_0] if survivor else [job.WAIT_OBJECT_0])
+
+    def identity(handle):
+        if not identity_valid:
+            raise job.JobObjectError("identity unavailable")
+        return 10, 20
+
+    api = SimpleNamespace(
+        process_identity=identity,
+        wait=lambda handle, timeout: next(waits),
+        terminate_process=lambda handle, code: True,
+        close_handle=lambda handle: close_ok,
+    )
+    monkeypatch.setattr(execution, "_launch_process", launch)
+    monkeypatch.setattr(
+        execution, "_collect_process", lambda *_args, **_kwargs: (result, tree_state)
+    )
+    monkeypatch.setattr(execution_admission.exec_job_object, "_load_native_api", lambda: api)
+    monkeypatch.setattr(
+        execution_admission.os, "kill",
+        lambda *_args, **_kwargs: pytest.fail("Windows 探针不得按 PID 清理"),
+    )
+
+    finding = execution._probe_windows_descendant()
+
+    assert finding.status == expected
+    assert closed == [0]
+
+
+@pytest.mark.parametrize(
+    ("wait_mode", "may_survive", "identity_valid", "close_ok", "expected"),
+    [
+        ("exited", False, True, True, "enforced"),
+        ("exited", True, True, True, "unknown"),
+        ("failed", False, True, True, "unknown"),
+        ("alive", False, True, True, "not_enforced"),
+        ("exited", False, False, True, "unknown"),
+        ("exited", False, True, False, "unknown"),
+    ],
+)
+def test_windows_generic_probe_uses_exact_handle_and_never_pid_kill(
+    tmp_path, monkeypatch, wait_mode, may_survive, identity_valid, close_ok, expected,
+):
+    from tianshu import isolation
+    from tianshu.exec import ExecResult
+
+    waits = []
+    terminated = []
+    closed = []
+    killed = []
+
+    class ProbeApi:
+        def GetProcessId(self, _handle):
+            return 10 if identity_valid else 11
+
+        def GetProcessTimes(self, _handle, created, _exited, _kernel, _user):
+            target = getattr(created, "_obj", created)
+            target.dwLowDateTime = 20
+            target.dwHighDateTime = 0
+            return 1
+
+        def WaitForSingleObject(self, _handle, _milliseconds):
+            waits.append(_handle)
+            if wait_mode == "failed":
+                return 0xFFFFFFFF
+            if wait_mode == "alive" and not terminated:
+                return job.WAIT_TIMEOUT
+            return job.WAIT_OBJECT_0
+
+        def TerminateProcess(self, handle, code):
+            terminated.append((handle, code))
+            return True
+
+        def CloseHandle(self, handle):
+            closed.append(handle)
+            return close_ok
+
+    api = ProbeApi()
+    monkeypatch.setattr(isolation, "_open_kernel32", lambda: api)
+    monkeypatch.setattr(isolation, "_configure_windows_probe_api", lambda _api: None)
+    monkeypatch.setattr(isolation, "PROBE_GRACE_MS", 5)
+    monkeypatch.setattr(isolation, "POLL_INTERVAL_S", 0)
+    monkeypatch.setattr(isolation.os, "kill", lambda *args: killed.append(args) or 0)
+    result = ExecResult(
+        exit_code=None, signal=None, timed_out=True, stdout="", stderr="",
+        truncated=False, stdout_ref=None, stderr_ref=None, duration_ms=1,
+        descendants_may_survive=may_survive,
+    )
+
+    def run_child(_backend, _script, args, **_kwargs):
+        Path(args[0]).write_bytes(json.dumps({"pid": 10, "birth": 20}).encode("utf-8"))
+        return result, {"GRANDCHILD_HANDLE": "99"}, "probe-timeout"
+
+    monkeypatch.setattr(isolation, "_run_child", run_child)
+    finding = isolation._probe_windows_process_tree(object(), tmp_path, 1000)
+
+    assert finding.status == expected
+    assert killed == []
+    assert closed and set(closed) == {99}
+    assert list(tmp_path.iterdir()) == []
+    if not identity_valid:
+        assert waits == []
+        assert terminated == []
+    if wait_mode == "alive":
+        assert terminated == [(99, 1)]
+
+
+def test_windows_generic_probe_missing_identity_is_unknown_without_pid_cleanup(
+    tmp_path, monkeypatch,
+):
+    from tianshu import isolation
+    from tianshu.exec import ExecResult
+
+    result = ExecResult(
+        exit_code=None, signal=None, timed_out=True, stdout="", stderr="",
+        truncated=False, stdout_ref=None, stderr_ref=None, duration_ms=1,
+        descendants_may_survive=False,
+    )
+    monkeypatch.setattr(
+        isolation, "_run_child",
+        lambda *_args, **_kwargs: (result, {}, "missing-record"),
+    )
+    monkeypatch.setattr(
+        isolation, "_open_kernel32",
+        lambda: pytest.fail("没有精确句柄时不得打开或清理进程"),
+    )
+    finding = isolation._probe_windows_process_tree(object(), tmp_path, 1000)
+    assert finding.status == "unknown"
+    assert list(tmp_path.iterdir()) == []
+
+
 # --------------------------------------------------------------- Windows 原生证据
 
 native_only = pytest.mark.skipif(os.name != "nt", reason="需要真实 Windows Job Object")
@@ -644,6 +1102,54 @@ native_only = pytest.mark.skipif(os.name != "nt", reason="需要真实 Windows J
 
 @native_only
 class TestWindowsNative:
+    @pytest.mark.parametrize(
+        ("backend_name", "expected"),
+        [("local", "not_enforced"), ("windows_job_object", "enforced")],
+    )
+    def test_generic_process_tree_probe_duplicates_and_cleans_exact_handle(
+        self, tmp_path, backend_name, expected,
+    ):
+        from tianshu import isolation
+        from tianshu.exec import LocalExecBackend
+
+        backend = (
+            LocalExecBackend() if backend_name == "local"
+            else job.WindowsJobObjectExecBackend()
+        )
+        finding = isolation._probe_windows_process_tree(backend, tmp_path, 1000)
+        assert finding.status == expected, finding
+        assert "精确HANDLE=" in finding.evidence
+        assert list(tmp_path.iterdir()) == []
+
+    def test_local_mcp_job_close_reaps_threads_and_wakes_waiters(self, tmp_path):
+        from tianshu.mcp import McpServerConfig, StdioServer
+
+        fixture = Path(__file__).parent / "fixtures" / "fake_mcp_server.py"
+        config = McpServerConfig(
+            name="native-job", command=(sys.executable, str(fixture)),
+        )
+        server = StdioServer(
+            config, default_cwd=tmp_path,
+            execution_scope={
+                "exec_backend": job.WindowsJobObjectExecBackend(),
+                "required_boundaries": ("process_tree",),
+                "workspace": str(tmp_path), "data_root": str(tmp_path),
+                "task_id": "native-task", "run_id": "native-run",
+            },
+        )
+        try:
+            server.start()
+            result = server.call_tool("echo", {"message": "job"})
+            assert result.text_parts == ("echo:job",)
+        finally:
+            server.close()
+
+        assert server._proc._closed
+        assert server._proc._close_state == job.TREE_EXITED
+        assert not server._reader.is_alive()
+        assert not server._stderr_reader.is_alive()
+        assert server._responses.get_nowait() == (None, {})
+
     def test_pipe_stdio_wait_pid_returncode_and_close(self, tmp_path):
         script = tmp_path / "stdio.py"
         script.write_text(
@@ -795,7 +1301,7 @@ class TestWindowsNative:
         records = []
         try:
             _wait_records([denied])
-            assert json.loads(denied.read_text(encoding="utf-8"))["winerror"] != 0
+            assert json.loads(denied.read_text(encoding="utf-8"))["winerror"] == 5
             records = _wait_records([child_record])
             assert process.controller.stop(10) == job.TREE_EXITED
             _assert_dead(records)
@@ -886,10 +1392,52 @@ class TestWindowsNative:
             outsider.terminate()
             outsider.wait(10)
 
+    def test_probe_cleanup_refuses_stale_birth_on_exact_handle(self, tmp_path):
+        from tianshu.execution_admission import PreparedExecution
+
+        ready = tmp_path / "outsider.ready"
+        outsider = subprocess.Popen(
+            [sys.executable, "-I", "-S", "-c",
+             f"import os,time;open({str(ready)!r},'w').write(str(os.getpid()));time.sleep(120)"],
+            cwd=tmp_path, env=os.environ.copy(), stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        duplicate = None
+        try:
+            identity = _wait_records([ready])[0]
+            original = _handle_identity(outsider._handle)
+            kernel32 = _identity_api()
+            kernel32.GetCurrentProcess.argtypes = []
+            kernel32.GetCurrentProcess.restype = job._HANDLE
+            kernel32.DuplicateHandle.argtypes = [
+                job._HANDLE, job._HANDLE, job._HANDLE,
+                ctypes.POINTER(wintypes.HANDLE), wintypes.DWORD,
+                wintypes.BOOL, wintypes.DWORD,
+            ]
+            kernel32.DuplicateHandle.restype = job._BOOL
+            duplicate = wintypes.HANDLE()
+            assert kernel32.DuplicateHandle(
+                kernel32.GetCurrentProcess(), outsider._handle,
+                kernel32.GetCurrentProcess(), ctypes.byref(duplicate), 0, False, 0,
+            )
+            confirmed, survivors = PreparedExecution._cleanup_windows_probe_records([
+                {"pid": identity["pid"], "birth": original["birth"] + 1,
+                 "handle": duplicate.value},
+            ])
+            duplicate.value = None
+            assert confirmed is False
+            assert survivors == []
+            _assert_alive(original)
+        finally:
+            if duplicate is not None and duplicate.value:
+                _identity_api().CloseHandle(duplicate)
+            outsider.terminate()
+            outsider.wait(10)
+
     @staticmethod
     def _tree_scripts(tmp_path: Path, *, detached: bool, generations: int):
         scripts = []
-        flags = "0x00000008|0x00000200" if detached else "0"
+        flags = "0x00000008" if detached else "0"
         for index in range(generations):
             script = tmp_path / f"tree{index}.py"
             record = tmp_path / f"tree{index}.json"

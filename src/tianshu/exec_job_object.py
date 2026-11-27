@@ -46,8 +46,9 @@ import os
 import platform
 import subprocess
 import time
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import BinaryIO, Literal
 
@@ -97,6 +98,8 @@ WAIT_TIMEOUT = 0x00000102
 WAIT_FAILED = 0xFFFFFFFF
 INFINITE = 0xFFFFFFFF
 _TREE_JOIN_TIMEOUT_S = 5.0
+_HANDLE_CLOSE_ATTEMPTS = 3
+_HANDLE_CLOSE_RETRY_S = 0.01
 
 TreeState = Literal["running", "exited", "unknown", "closed"]
 TREE_RUNNING: TreeState = "running"
@@ -257,6 +260,11 @@ def _declare_prototypes(kernel32: ctypes.CDLL) -> None:
         "ResumeThread": ([_HANDLE], _DWORD),
         "IsProcessInJob": ([_HANDLE, _HANDLE, ctypes.POINTER(_BOOL)], _BOOL),
         "GetExitCodeProcess": ([_HANDLE, ctypes.POINTER(_DWORD)], _BOOL),
+        "GetProcessId": ([_HANDLE], _DWORD),
+        "GetProcessTimes": (
+            [_HANDLE, _LPVOID, _LPVOID, _LPVOID, _LPVOID],
+            _BOOL,
+        ),
         "WaitForSingleObject": ([_HANDLE, _DWORD], _DWORD),
         "CloseHandle": ([_HANDLE], _BOOL),
     }
@@ -279,7 +287,7 @@ class _NativeAPI:
 
     def create_job(self) -> int:
         attrs = _SecurityAttributes(ctypes.sizeof(_SecurityAttributes), None, False)
-        return self.kernel32.CreateJobObjectW(ctypes.byref(attrs), None).value or 0
+        return self.kernel32.CreateJobObjectW(ctypes.byref(attrs), None) or 0
 
     def set_job_limits(self, job: int, flags: int) -> bool:
         class _JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
@@ -335,7 +343,7 @@ class _NativeAPI:
 
     def heap_allocate(self, size: int) -> int:
         heap = self.kernel32.GetProcessHeap()
-        return self.kernel32.HeapAlloc(heap, 0, size).value or 0
+        return self.kernel32.HeapAlloc(heap, 0, size) or 0
 
     def heap_free(self, memory: int) -> None:
         self.kernel32.HeapFree(self.kernel32.GetProcessHeap(), 0, memory)
@@ -409,6 +417,22 @@ class _NativeAPI:
         if not self.kernel32.GetExitCodeProcess(_HANDLE(process), ctypes.byref(code)):
             raise _error("GetExitCodeProcess")
         return int(code.value)
+
+    def process_identity(self, process: int) -> tuple[int, int]:
+        class _FileTime(ctypes.Structure):
+            _fields_ = [("low", _DWORD), ("high", _DWORD)]
+
+        pid = self.kernel32.GetProcessId(_HANDLE(process))
+        if not pid:
+            raise _error("GetProcessId")
+        created, exited, kernel, user = (_FileTime() for _ in range(4))
+        if not self.kernel32.GetProcessTimes(
+            _HANDLE(process),
+            ctypes.byref(created), ctypes.byref(exited),
+            ctypes.byref(kernel), ctypes.byref(user),
+        ):
+            raise _error("GetProcessTimes")
+        return int(pid), (int(created.high) << 32) | int(created.low)
 
     def wait(self, process: int, milliseconds: int) -> int:
         return int(self.kernel32.WaitForSingleObject(_HANDLE(process), milliseconds))
@@ -512,13 +536,17 @@ class _Handles:
         if self.api.close_handle(handle):
             self.values.discard(handle)
 
-    def close_all(self) -> None:
+    def close_all(self) -> bool:
+        closed = True
         for handle in tuple(self.values):
             try:
-                self.api.close_handle(handle)
+                if self.api.close_handle(handle):
+                    self.values.discard(handle)
+                else:
+                    closed = False
             except (JobObjectError, OSError):
-                pass
-            self.values.discard(handle)
+                closed = False
+        return closed
 
 
 def _environment_block(env: Mapping[str, str]) -> ctypes.Array[ctypes.c_wchar]:
@@ -534,11 +562,15 @@ def _environment_block(env: Mapping[str, str]) -> ctypes.Array[ctypes.c_wchar]:
     return ctypes.create_unicode_buffer("\x00".join(entries) + "\x00\x00")
 
 
-def _wrap_pipe(handle: int, mode: str) -> BinaryIO:
+def _wrap_pipe(
+    handle: int, mode: str, *, transfer: Callable[[], None] | None = None
+) -> BinaryIO:
     import msvcrt
 
     flags = os.O_BINARY | (os.O_RDONLY if mode == "rb" else os.O_WRONLY)
     fd = msvcrt.open_osfhandle(handle, flags)
+    if transfer is not None:
+        transfer()
     try:
         if mode == "rb":
             return os.fdopen(fd, "rb", buffering=0)
@@ -551,9 +583,9 @@ def _wrap_pipe(handle: int, mode: str) -> BinaryIO:
 
 
 def _adopt_stream(handles: _Handles, raw: int, mode: str) -> BinaryIO:
-    stream = _wrap_pipe(raw, mode)
-    handles.discard(raw)
-    return stream
+    return _wrap_pipe(
+        raw, mode, transfer=lambda: handles.discard(raw)
+    )
 
 
 def _validate_creation(argv: Sequence[str], cwd: os.PathLike[str] | str) -> tuple[str, str]:
@@ -592,6 +624,7 @@ class JobController:
         self._clock = clock
         self._sleep = sleep
         self._closed = False
+        self._open_handles = {job, process, thread}
         self._state: TreeState = TREE_RUNNING
 
     @property
@@ -606,6 +639,9 @@ class JobController:
     def query(self) -> TreeState:
         if self._closed:
             return TREE_CLOSED
+        if self._job not in self._open_handles:
+            self._state = TREE_UNKNOWN
+            return self._state
         try:
             active = self._api.query_job(self._job)
         except (JobObjectError, OSError):
@@ -634,7 +670,7 @@ class JobController:
         state = self.query()
         if state == TREE_EXITED:
             return TREE_EXITED
-        if state == TREE_UNKNOWN:
+        if state == TREE_CLOSED or self._job not in self._open_handles:
             return TREE_UNKNOWN
         try:
             if not self._api.terminate_job(self._job):
@@ -653,19 +689,36 @@ class JobController:
         if self._closed:
             return TREE_CLOSED
         state = self._state
-        if state == TREE_RUNNING:
+        if state in (TREE_RUNNING, TREE_UNKNOWN) and self._job in self._open_handles:
             state = self.stop(timeout)
-        elif state not in (TREE_EXITED, TREE_UNKNOWN):
+        elif state == TREE_EXITED:
+            pass
+        elif state != TREE_UNKNOWN:
             state = self.query()
+        close_failed = False
         for handle in (self._process, self._thread, self._job):
-            try:
-                closed = self._api.close_handle(handle)
-            except (JobObjectError, OSError):
-                closed = False
-            if not closed:
+            if handle not in self._open_handles:
+                continue
+            for attempt in range(_HANDLE_CLOSE_ATTEMPTS):
+                try:
+                    closed = self._api.close_handle(handle)
+                except (JobObjectError, OSError):
+                    closed = False
+                if closed:
+                    self._open_handles.discard(handle)
+                    break
+                close_failed = True
+                if attempt + 1 < _HANDLE_CLOSE_ATTEMPTS:
+                    self._sleep(_HANDLE_CLOSE_RETRY_S)
+            if handle in self._open_handles:
                 state = TREE_UNKNOWN
+        if self._open_handles:
+            self._state = TREE_UNKNOWN
+            return TREE_UNKNOWN
         self._closed = True
-        self._state = TREE_EXITED if state == TREE_EXITED else TREE_UNKNOWN
+        self._state = (
+            TREE_EXITED if state == TREE_EXITED and not close_failed else TREE_UNKNOWN
+        )
         return self._state
 
 
@@ -703,7 +756,13 @@ class ManagedProcess:
             return self._returncode
         code = self.controller._api.exit_code(self.controller._process)
         if code == STILL_ACTIVE:
-            return None
+            result = self.controller._api.wait(self.controller._process, 0)
+            if result == WAIT_OBJECT_0:
+                self._returncode = code
+                return code
+            if result == WAIT_TIMEOUT:
+                return None
+            raise JobObjectError(f"WaitForSingleObject 返回未知状态 {result:#x}")
         self._returncode = code
         return code
 
@@ -752,6 +811,8 @@ class ManagedProcess:
                 stream.close()
             except OSError:
                 state = TREE_UNKNOWN
+        if not self.controller._closed:
+            return TREE_UNKNOWN
         self._closed = True
         self._close_state = TREE_EXITED if state == TREE_EXITED else TREE_UNKNOWN
         return self._close_state
@@ -944,9 +1005,11 @@ class WindowsJobObjectExecBackend:
                 finalize_tree=lambda _timed_out: proc.controller.stop(),
                 close_stdin=True,
             )
-            return result
         finally:
-            proc.close()
+            close_state = proc.close()
+        if close_state != TREE_EXITED:
+            result = replace(result, descendants_may_survive=True)
+        return result
 
 
 __all__ = [
