@@ -846,9 +846,9 @@
 
 - **MCP content-ref 的保留边界（2026-11-24）**：canonical blob 保存的是客户端已观测且未被既有传输上限截断的结果，不恢复 server 未发送的字节；canonical result 与 structured 分别有有限存储上限，超限保持 unknown 且不自动重发，尚无分页读取工具。新持久输出不含 endpoint/spawn/env，受管本地调用仍通过后端准入，并在执行事件中绑定调用与生命周期。旧 inline 事件/cursor/Receipt 继续兼容，真实第三方 server 与用户设备未验。见[本轮记录](changelog/2026-11-24-mcp-result-content-ref.md)。
 
-- **旧材料空树复核不是物理快照（2026-11-20）**：`7b4d80b` 通过最终扁平真实列举弥补已下降目录中迟到材料被 stale stat 隐藏的缺口，但有限观察仍不能排除某目录最后一次观察后的同 uid 修改，也不是物理隔离。该修复不改变 Windows 受管恢复写入的 `durability_unavailable` 边界，不解决下述自定义路径 #204；本地全量/能力投影不替代新托管 Windows/Mac CI 或用户设备验收。
+- **旧材料空树复核不是物理快照（2026-11-20）**：`7b4d80b` 通过最终扁平真实列举弥补已下降目录中迟到材料被 stale stat 隐藏的缺口，但有限观察仍不能排除某目录最后一次观察后的同 uid 修改，也不是物理隔离。该修复不改变 Windows 受管恢复写入的 `durability_unavailable` 边界；本地全量/能力投影不替代新托管 Windows/Mac CI 或用户设备验收。
 
-- **非标准材料路径的保留名祖先误识别（2026-11-20，未修）**：标准材料域检测沿祖先识别 `artifacts`、`blobs`、`memory_blobs`。非标准数据库或异根 data_root 所用的私有 materials 布局若又位于这些保留名祖先下，可能被误认为另一个标准材料域，因所有者数据库不匹配而 fail-closed 拒写。默认 `events.db` / AgentOS 布局不受此已复现组合影响；这不是首次 Apple Silicon 限定预览的阻断项，但一般自定义 `--db` 兼容限制仍未修。将 pytest 临时根移出这些祖先只消除了本次测试布局碰撞，不是产品修复，也不构成任意数据库/材料路径均受支持的声明。跟踪 [#204](https://github.com/lorek666/tianshu-agent/issues/204)，见[整合门禁记录](changelog/2026-11-20-preview-release-integration.md)。
+- **#204 材料路径守卫修复与残留（2026-11-24）**：私有 materials 容器是命名边界，不再被保留名祖先误判为标准域；标准域 raw/canonical 必须同根同域，私有 target 不得逃逸 canonical 容器。快照、撤销 journal、事件/内容/记忆 blob 与 spill 都校验具体文件 target，先守卫后判断 `exists`，静态子目录链接和预置 leaf symlink 不得进入保留恢复根。验证命令、冻结补丁 SHA 与独立第二读者 PASS 见[修复记录](changelog/2026-11-24-material-write-guard.md)。PR #231 Windows shard0 跟进修正了目录种类 leaf symlink 指向现有文件的夹具，并让范围守卫独立检查显式 `readlink` 目标，不依赖可能先抛 `WinError 267` 的 `realpath`；随后托管 Windows 又证伪了该跟进：`readlink` 可返回 `\\?\` / `\\?\UNC\` 扩展长度路径，原范围键因此与普通路径不等价。现在仅对范围比较折叠这两种前缀，实际访问路径不改写；新增驱动盘/UNC 回归与确定性负控，旧复审结论已被新 code/test tree 取代。本机 mac-arm64 回归通过不等于 Windows 已验证。lease 检查后同 uid 换链仍是协作式 TOCTOU，未实现 fd-relative/openat 物理封闭；不得把 canonical containment 或本机绿写成物理隔离。
 
 - **开发阶段原生发行 smoke 的测试隔离（2026-11-20）**：`release_smoke.py` 虽创建独立临时数据根，
   生产 `maintenance._lock_root()` 仍绑定 OS 用户身份，`RestoreRegistry` 绑定系统 Home；
