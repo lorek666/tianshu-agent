@@ -22,6 +22,8 @@ import pytest
 from tianshu import exec_job_object as job
 from tianshu.execpolicy import ExecPolicy, PolicyUnsupported
 
+_REAL_WRAP_PIPE = job._wrap_pipe
+
 HIGH_JOB = 0x800001234567
 HIGH_PROCESS = 0x800002345678
 HIGH_THREAD = 0x800003456789
@@ -755,7 +757,7 @@ def test_fdopen_failure_does_not_double_close_transferred_handle(monkeypatch):
     monkeypatch.setattr(job.os, "fdopen", cannot_open)
     try:
         with pytest.raises(OSError, match="fdopen"):
-            job._adopt_stream(handles, raw_read, "rb")
+            _REAL_WRAP_PIPE(raw_read, "rb", transfer=lambda: handles.discard(raw_read))
         assert len(adopted) == 1
         with pytest.raises(OSError):
             os.fstat(adopted[0])
