@@ -544,6 +544,41 @@ def test_daemon_cleanup_reaps_known_child_before_observing_os_identity(
     assert observations[-1] == "birth"
 
 
+@pytest.mark.parametrize("allow_missing_lock", [False, True])
+def test_daemon_cleanup_requires_opt_in_for_missing_lock_termination(
+    monkeypatch, tmp_path: Path, allow_missing_lock: bool,
+) -> None:
+    from tianshu import execution_admission, leases
+
+    snapshot = json.dumps({"pid": 12345, "instance_id": "daemon-under-test"}).encode()
+    alive = True
+    terminated = []
+    monkeypatch.setattr(daemon, "request_shutdown", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        execution_admission, "process_birth_identity",
+        lambda pid: "same-birth" if alive else None,
+    )
+    monkeypatch.setattr(leases, "pid_alive", lambda pid: alive)
+
+    def terminate(pid, timeout):
+        nonlocal alive
+        terminated.append((pid, timeout))
+        alive = False
+
+    kwargs = {
+        "timeout": 0, "terminate": terminate, "snapshot": snapshot,
+        "process_identity": (12345, "same-birth"),
+        "allow_missing_lock": allow_missing_lock,
+    }
+    if allow_missing_lock:
+        shutdown_daemon_and_wait(tmp_path, **kwargs)
+        assert terminated == [(12345, 3)]
+    else:
+        with pytest.raises(AssertionError, match="原 Daemon OS 进程未退出"):
+            shutdown_daemon_and_wait(tmp_path, **kwargs)
+        assert terminated == []
+
+
 @pytest.mark.parametrize("alive", [True, False])
 def test_daemon_cleanup_distinguishes_unreadable_identity_from_missing_process(
     monkeypatch, tmp_path: Path, alive: bool,

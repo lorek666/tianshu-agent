@@ -466,3 +466,26 @@ SHA256 为 `82bcbb83570a10c24d9f2e62b4b3c7806c97c6d74bcc62958c3f5b729f6f9492`；
 `51820e400cf705d8fff48663f379bca642d1b2fda2b6154e9d6bcd7b827d8ba0`。lock、Ruff、
 diff 与变更文档链接检查也均退出 0。fresh hosted required CI 仍待完成；已停止的 v42
 全量运行不充当这套变更代码树的最终证据，macOS 复审也不冒充原生 Windows 验证。
+
+## v44 归档复审与失败收尾修复（2026-11-28）
+
+native 工作树在清理前已由另一会话 rebase 到 `b6200f9`，旧 `c1feb41` 归档不再代表
+当前状态。新 bundle、commit/tree 恢复读回与校验和已保存；工作树空闲后删除，内置盘
+实际释放 70,934,528 字节。独立读者从该提交的只读源码副本发现两项中危失败路径：
+
+- 附着 Daemon 拒绝 shutdown 时，清理把只接受 `Popen` 的 `_terminate` 当作
+  `(pid, timeout)` 回调，真实触发 `TypeError`，且旧代码没有最终 wait/kill/wait 兜底。
+- Daemon 先删锁时，helper 可能直接返回或跳过终止；锁被替换时还可能向新实例发请求。
+
+修复在启动时同时冻结锁快照与 `(pid, birth)`；附着进程使用原生解释器并断言锁 PID
+等于精确 `Popen.pid`。shutdown 仍绑定原 instance_id；持有精确 `Popen` 的测试显式 opt-in
+后，锁缺失但冻结 birth 仍匹配才进入有界终止，终止后重新等待原 OS 进程。
+新增真实子进程参数覆盖正常、拒绝 shutdown、锁缺失且拒绝 shutdown 四条路径。
+
+恢复旧回调签名后，拒绝 shutdown 用例实际因 `TypeError` 失败；恢复旧的“锁缺失拒绝
+终止”门禁后，锁缺失用例实际因 helper 未回收原 Daemon 而失败，且未被测试兜底掩盖。
+第二轮独立复审还发现测试吞掉 helper 失败并在 finally 自行回收，可造成假绿；现已删除
+吞错，直接断言 helper 调用了精确终止回调且原进程已经退出。紧急兜底只负责失败测试的
+资源清理，不改变 helper 失败的红色结论。恢复修复后四条参数回归与新增 helper 门禁
+均通过，`uv lock --check` 与全仓 Ruff 通过。最终全量、独立第二读者新树绑定与 hosted
+required CI 仍待完成，不沿用 `b6200f9` 的旧证据。
