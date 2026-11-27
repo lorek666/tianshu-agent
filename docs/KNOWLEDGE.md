@@ -793,6 +793,9 @@
   恢复后将 `model_attempts_known` 标为 `False`。已核验的主模型结果数与辅助摘要回执数之和可以提高
   下界，但不与保存游标直接相加。发送前记录可能来自尚未进入 adapter 的尝试。RPC 不持 SQLite 写锁，
   最后一次认领核验和远端接收之间仍有时序窗口。见[尝试隔离记录](changelog/2026-11-27-summary-attempt-isolation.md)。
+- **普通 Chat 游标缺失时停止续跑**。普通 Chat 已记录 `model.intent` 却无游标时，续跑拒绝从首轮输入重新开始。
+  对完整历史精确重建消息、预算、工具进度及保存点摘要仍未实现。迟到错误的资源收敛和
+  子任务停止语义仍待处理。适用入口和验证口径见[修复记录](changelog/2026-11-27-chat-cursor-resume.md)。
 
 - **SLO-first 与 macOS count2 已获 #225 hosted 证明，仍不承诺消除宿主抖动（2026-11-26）**：
   本地真子进程测试证明 SLO/soak 在所属分片首位执行、完整 collection 与分组权重不变，

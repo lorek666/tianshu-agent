@@ -58,6 +58,7 @@ from .conversation import (
 from .credentials import redact
 from .disk_admission import DiskAdmissionError
 from .errors import (
+    ChatResumeCursorMissing,
     CredentialUnsupported,
     RunFenced,
     TianshuError,
@@ -1021,6 +1022,14 @@ class ControlPlane:
                 f"run 已终结（{run.state}），不能 resume；需要重试请 start 新 run",
             )
         if run.state in RUN_PENDING_RESUME_STATES:
+            try:
+                with self._tasks.transaction():
+                    if self._tasks.load_cursor(run.run_id) is None:
+                        self._tasks.check_chat_resume_without_cursor(run.run_id)
+            except ChatResumeCursorMissing as exc:
+                raise ControlError(
+                    "conflict", str(exc), {"reason": "chat_resume_cursor_missing"},
+                ) from exc
             self._enqueue_resume(run.run_id)
         # `created` / `queued` / `running` / `cancelling`：作业已经在队里或正在跑，
         # 再塞一条 resume 只会跟正在跑的 owner 抢 claim。什么都不做。

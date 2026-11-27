@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import copy
 import json
+import queue
+import subprocess
+import sys
+import threading
 from contextlib import closing
 from dataclasses import replace
 from pathlib import Path
@@ -12,13 +16,16 @@ import pytest
 from support import approve_pending, engine_for, stack_for
 
 from tianshu.control import ControlError, ControlPlane
+from tianshu.daemon import _Daemon
 from tianshu.errors import TianshuError
 from tianshu.events import EventLog
 from tianshu.model import ModelResponse, ScriptedModel, ToolCall
 from tianshu.replay import replay
+from tianshu.restore_access import default_material_paths
 from tianshu.run_policy import PURE_ONLY
 from tianshu.tool_registry import ToolRegistry
 from tianshu.tools import SPECS
+from tianshu.worker import Worker
 
 
 class RecordingModel(ScriptedModel):
@@ -105,6 +112,139 @@ def test_missing_snapshot_blob_blocks_resume_even_with_saved_cursor(env):
         engine_for(stack, model).resume_run(rid)
     assert model.requests == []
     assert not replay(stack.log, rid).ok
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("entry", ["engine", "control", "daemon"])
+def test_chat_resume_without_cursor_does_not_send_or_claim_again(
+    env, legacy, entry, tmp_path, capsys,
+):
+    plane, stack, task = env
+    if legacy:
+        run_id = stack.tasks.start_run(
+            task.task_id, payload={"task": task.goal, "out": ""},
+        ).run_id
+        stack.claims.enqueue(run_id)
+    else:
+        run_id = plane.handle("run.start", {"task_id": task.task_id})["run"]["run_id"]
+
+    class PausingModel(RecordingModel):
+        def complete(self, messages, tools):
+            response = super().complete(messages, tools)
+            stack.tasks.request_pause(run_id)
+            return response
+
+    with Worker(stack, model=PausingModel(), heartbeat_interval_ms=None) as worker:
+        assert worker.run_once()
+        assert not worker.errors
+    original_job = stack.claims.job_for_run(run_id)
+    original_run = stack.tasks.get_run(run_id)
+    assert original_job.state == "waiting"
+    assert original_run.state == "paused"
+    assert stack.tasks.load_cursor(run_id) is not None
+    with stack.log.transaction():
+        stack.log.conn.execute("DELETE FROM run_cursors WHERE run_id = ?", (run_id,))
+    before = stack.log.read_run(run_id)
+    assert [event.type for event in before].count("model.intent") == 1
+    model = RecordingModel()
+    engine = engine_for(stack, model)
+    requests = queue.SimpleQueue()
+    desktop = ControlPlane(stack, model=model, resume_requests=requests)
+    guidance = "游标缺失.*核对.*取消并另开"
+    if entry == "engine":
+        with pytest.raises(TianshuError, match=guidance):
+            engine.resume_run(run_id)
+    elif entry == "control":
+        with pytest.raises(ControlError, match=guidance) as rejected:
+            desktop.handle("run.resume", {"run_id": run_id})
+        assert rejected.value.code == "conflict"
+        assert rejected.value.details.get("reason") == "chat_resume_cursor_missing"
+        assert requests.empty()
+    else:
+        daemon = _Daemon(tmp_path, model=model, limits=None, driver_interval_s=0,
+                         stop_event=threading.Event(), on_ready=None)
+        daemon.driver_stack, daemon.driver_log, daemon.plane = stack, stack.log, desktop
+        try:
+            daemon._resume_one(engine, run_id)
+        finally:
+            daemon._close_resume_channel()
+        assert "游标缺失" in capsys.readouterr().err
+
+    assert not model.requests
+    assert stack.log.read_run(run_id) == before
+    assert stack.claims.job_for_run(run_id) == original_job
+    assert stack.tasks.get_run(run_id) == original_run
+
+
+@pytest.mark.parametrize("point", ["model-result-before-commit", "after_intent"])
+def test_worker_holds_crashed_chat_without_cursor(tmp_path, point):
+    db_path = tmp_path / "db"
+    child = subprocess.run(
+        [sys.executable, "-c", """
+import os
+import sys
+from pathlib import Path
+
+from tianshu.control import ControlPlane
+from tianshu.events import EventLog
+from tianshu.loop import build_stack
+from tianshu.model import ModelResponse, ScriptedModel
+from tianshu.restore_access import default_material_paths
+from tianshu.worker import Worker
+
+db_path = Path(sys.argv[1])
+root = db_path.parent
+point = sys.argv[2]
+os.environ["TIANSHU_FAILPOINT"] = point
+if point == "after_intent":
+    from tianshu.cli import main
+    workspace = root / "workspace"
+    workspace.mkdir()
+    sys.exit(main(["run", "--workspace", str(workspace), "--task", "写报告",
+                   "--out", "r.md", "--model", "scripted", "--db", str(db_path)]))
+log = EventLog(db_path, blob_dir=default_material_paths(db_path, root)[1])
+stack = build_stack(log, data_root=root)
+task = stack.tasks.create_task("解释观点")
+model = ScriptedModel([ModelResponse("end_turn", content="第一次回答")])
+ControlPlane(stack, model=model).handle("run.start", {"task_id": task.task_id})
+Worker(stack, model=model, heartbeat_interval_ms=None).run_once()
+""", str(db_path), point],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert child.returncode == 77 and f"[failpoint] {point}" in child.stderr, child.stderr
+    with closing(EventLog(db_path, blob_dir=default_material_paths(db_path, tmp_path)[1])) as log:
+        stack = stack_for(log, data_root=tmp_path)
+        (run_id,) = log.conn.execute("SELECT run_id FROM runs").fetchone()
+        original_run = stack.tasks.get_run(run_id)
+        assert original_run.state == "running"
+        if point == "after_intent":
+            assert stack.tasks.load_cursor(run_id) is not None
+            with log.transaction():
+                log.conn.execute("DELETE FROM run_cursors WHERE run_id = ?", (run_id,))
+        assert stack.tasks.load_cursor(run_id) is None
+        effect_events = ("model.intent", "model.result", "tool.intent", "tool.result", "run.end")
+        before = log.read_run(run_id, event_types=effect_events)
+        if point == "after_intent":
+            assert before[-1].type == "tool.intent"
+            assert before[-1].payload["tool_id"] == "create_report"
+        else:
+            assert [event.type for event in before] == ["model.intent"]
+
+        model = RecordingModel()
+        with Worker(stack, model=model, heartbeat_interval_ms=None) as worker:
+            assert worker.run_once()
+            assert not worker.run_once()
+            assert any("游标缺失" in error for error in worker.errors)
+        assert model.requests == []
+        assert log.read_run(run_id, event_types=effect_events) == before
+        assert stack.claims.job_for_run(run_id).state == "waiting"
+        if point == "after_intent":
+            assert stack.tasks.get_run(run_id) == original_run
+        else:
+            assert stack.tasks.get_run(run_id).state == "reconciling"
+            plane = ControlPlane(stack, model=model)
+            cancelled = plane.handle("run.cancel", {"run_id": run_id})["run"]
+            assert cancelled["state"] == "cancelled"
 
 
 def test_research_route_cannot_dispatch_forged_write(env, tmp_path):

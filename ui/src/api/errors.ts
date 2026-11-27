@@ -129,6 +129,9 @@ function humanizeAdmissionError(
 /** 已知错误码 → 中文；未知错误码 → 带原始 message 的中文兜底（不白屏）。 */
 export function humanizeHostError(error: unknown): string {
   if (isHostRpcError(error)) {
+    if (error.code === "conflict" && error.details?.reason === "chat_resume_cursor_missing") {
+      return "这次对话缺少继续运行所需的记录。请核对原运行记录，再取消它并开启新运行。";
+    }
     const message = error.message.trim();
     const admission = humanizeAdmissionError(message, error.details, error.code);
     if (admission !== null) return admission;

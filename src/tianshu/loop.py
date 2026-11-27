@@ -562,9 +562,12 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
             stored = self._tasks.load_cursor(run_id)
             if stored is None:
                 stored = self._tasks.restore_responses_cursor(run_id)
-            if ((workflow is not None or goal_round) and stored is None
-                    and any(e.type == "model.intent" for e in events)):
-                raise TianshuError("工作流游标缺失，无法安全续跑；请核对原记录后取消并另开 Run")
+            if stored is None:
+                if (workflow is not None or goal_round) and any(
+                    e.type == "model.intent" for e in events
+                ):
+                    raise TianshuError("工作流游标缺失，无法安全续跑；请核对原记录后取消并另开 Run")
+                self._tasks.check_chat_resume_without_cursor(run_id, events=events)
             task = self._task(run.task_id)
             progress = _Progress.of(stored[0]) if stored is not None else None
             claim = self._claim_for_resume(run)

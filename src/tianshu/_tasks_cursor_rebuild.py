@@ -31,8 +31,8 @@ from ._tasks_types import (
     RunCursor,
     _now,
 )
-from .errors import RunFenced, TianshuError
-from .events import EventLog, canonical_bytes, sha256_hex
+from .errors import ChatResumeCursorMissing, RunFenced, TianshuError
+from .events import Event, EventLog, canonical_bytes, sha256_hex
 from .jobs import JobClaim, JobStore
 from .leases import LeaseStore
 from .workspace import parse_bindings
@@ -137,6 +137,27 @@ class _TaskCursorRebuildMixin:
             cursor.messages, log=self._log, blob_dir=self._blob_dir,
         )
         return cursor, meta
+
+    def check_chat_resume_without_cursor(
+        self, run_id: str, *, events: list[Event] | None = None,
+    ) -> None:
+        """普通 Chat 没有游标且已有模型调用时禁止按首轮输入重启。"""
+        from ._responses_rebuild import has_responses_progress
+
+        if events is None:
+            events = self._log.read_run(run_id)
+        if any(
+            event.type in ("run.workflow", "goal.round_started", "goal.v2_phase_started")
+            for event in events
+        ):
+            return
+        if (
+            any(event.type == "model.intent" for event in events)
+            and not has_responses_progress(events)
+        ):
+            raise ChatResumeCursorMissing(
+                "对话游标缺失，无法安全续跑。请核对原记录后取消并另开 Run"
+            )
 
     def commit_model_turn(
         self, run_id: str, turn: dict[str, Any], claim: JobClaim

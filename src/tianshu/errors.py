@@ -5,6 +5,10 @@ class TianshuError(Exception):
     """所有本库异常的基类。"""
 
 
+class ChatResumeCursorMissing(TianshuError):
+    """Chat 已有模型请求记录，缺失续跑游标时不能从头开始。"""
+
+
 class WorkspaceViolation(TianshuError):
     """路径越出 workspace。执行侧必须抛出，不允许静默降级。"""
 

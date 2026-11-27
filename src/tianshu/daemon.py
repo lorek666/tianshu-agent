@@ -1528,7 +1528,9 @@ class _Daemon:
                     # Waiting jobs may receive a new epoch here, before the loop can
                     # decode its cursor. Validate persisted provenance under the same lock.
                     saved = tasks.load_cursor(run_id)
-                    if saved is not None:
+                    if saved is None:
+                        tasks.check_chat_resume_without_cursor(run_id)
+                    else:
                         saved[0].has_exact_model_attempts()
                     claim = engine.current_claim(run_id)
                     if claim is None:
