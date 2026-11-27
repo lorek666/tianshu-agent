@@ -220,16 +220,14 @@ class RunResult:
     #: 费用行必须按尝试次数说话，否则"打了 3 次都没回"会被读成"没有模型调用"
     #: （issue #58）。
     model_attempts: int = 0
-    #: `model_attempts` 是否**完整可信**。`False` 只有一种来源：升级前写下的
-    #: 旧游标没有这个账本键（见 `_Progress.of`）。那时尝试次数只能以完成轮次为
-    #: 下限，**不能**当成精确值展示——"不知道"和"零次/三次"必须分开。
+    #: `model_attempts` 是否完整可信。旧游标可能没有计数，恢复也可能无法确定哪些
+    #: 摘要尝试已计入游标。`False` 时，`model_attempts` 仅为已知下界。
     model_attempts_known: bool = True
     tokens: int = 0
     unknown_usage_calls: int = 0
     # ---- F13 成本可见 ----
-    #: 本次 Run 做过几次**语义摘要调用**（PRD §7.1）。它计入 `model_attempts`
-    #: 与 `tokens`（都是一次真实模型调用），单独列出来是为了让"到底打了几个
-    #: 模型"能拆开看——摘要调用不是轮次，但它是钱。
+    #: 本次 Run 保存的语义摘要版本数，含未发送和预算拒绝。实际调用与已知用量
+    #: 按同一 Run 的 `model_attempts` 和 `tokens` 记账。
     summary_calls: int = 0
     #: 已知费用之和，单位**微美元**（1e-6 USD）。名字里带单位：金额与"多少 token"
     #: 是两种量，混在一个裸整数里迟早被读错。
@@ -613,6 +611,7 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         progress.model_attempts += sum(
             e.type == "model.intent" and e.seq > saved_seq for e in events
         )
+        self._recover_summary_attempt_count(run_id, progress, events)
         if (workflow is not None or goal_round) and stored is None:
             self._tasks.save_cursor(run_id, progress.to_cursor(), claim)
         # 能走到这里说明 claim 有效：先把心跳续上，再开始新的模型调用
@@ -737,9 +736,14 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
                 if not progress.pending:
                     if progress.model_turn is None:
                         self._apply_guidance(run_id, claim, progress)
-                    step, message = self._model_step(
-                        run_id, claim, progress, task, out_name
-                    )
+                    try:
+                        step, message = self._model_step(
+                            run_id, claim, progress, task, out_name
+                        )
+                    except JobLost as exc:
+                        return self._result(
+                            run_id, progress, state=self._state_of(run_id), error=str(exc),
+                        )
                     if workflow is not None and workflow.mode in ("plan", "compact"):
                         turn = progress.model_turn
                         invalid = response_error(workflow.mode, turn) if turn else None
@@ -1087,7 +1091,7 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         # 放在落盘之前：摘要重编译可能产生新的 spills，必须一起落盘。
         attempts_before_summary = progress.model_attempts
         if scope is None:
-            view = self._maybe_summarize(run_id, task, progress, view, budget)
+            view = self._maybe_summarize(run_id, claim, task, progress, view, budget)
         if progress.model_attempts != attempts_before_summary:
             # 摘要已经发生，下一普通调用却可能被预算拒发或在落盘时失败。
             # 终态从游标汇总，不能等下一次成功模型结果才保存摘要的用量。

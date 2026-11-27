@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -17,8 +18,12 @@ from .budget import (
     BudgetCancelled,
     BudgetLedger,
     BudgetRefused,
+    Reservation,
     estimate_need,
     upper_need,
+)
+from .budget import (
+    PENDING as BUDGET_PENDING,
 )
 from .capability import declared_output_tokens, retry_delay_ms
 from .context import (
@@ -34,14 +39,17 @@ from .context import (
 from .crashpoint import failpoint
 from .credentials import redact
 from .errors import BudgetConfigError, TianshuError
-from .events import EventLog
+from .events import Event, EventLog
+from .jobs import JobClaim, JobLost, JobStore
 from .model import Model, ModelError, ModelResponse, identity_of
 from .pricing import cost_record
 from .summaries import (
     MATERIAL_BYTES,
     MaterialBlock,
     SummaryError,
+    SummaryMaterial,
     SummaryMaterialError,
+    SummaryRecord,
     SummaryStore,
     build_material,
     prompt_for,
@@ -50,7 +58,7 @@ from .summaries import (
 from .summaries import (
     PENDING as SUMMARY_PENDING,
 )
-from .summary_telemetry import begin_call, finish_call
+from .summary_telemetry import begin_call, finish_call, read_calls
 from .tasks import Task, TaskStore
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -58,6 +66,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from .loop import Limits
 
 SUMMARY_MODE_MODEL = "model"
+_SummaryAttempt = tuple[SummaryRecord, Reservation, list[dict[str, Any]]]
 
 
 def summary_blocks(
@@ -168,6 +177,7 @@ class _LoopSummaryMixin:
         Callable[[str, str, int, dict[str, Any] | None, bool], None] | None
     )
     _budget: BudgetLedger | None
+    _claims: JobStore
     _summaries: SummaryStore | None
     _limits: Limits
     _sleep: Callable[[float], None]
@@ -320,6 +330,7 @@ class _LoopSummaryMixin:
     def _maybe_summarize(
         self,
         run_id: str,
+        claim: JobClaim,
         task: Task,
         progress: _Progress,
         view: ContextView,
@@ -327,12 +338,8 @@ class _LoopSummaryMixin:
     ) -> ContextView:
         """PRD §7.1：把"本来就要丢的历史"换成一份**已持久化**的模型摘要。
 
-        顺序写死（`docs/context-summaries.md` §4）：
-
-            材料 → 记录(pending) → 账本预占 → 模型调用 → 正文提交 → 再编译
-
-        任何一步不成立都**回落确定性裁剪**：摘要是优化，不是任务的必要条件。
-        默认 `summary_mode="off"`，这里直接返回——默认路径一行不变。
+        发送准备在一次写事务中完成，模型调用在提交后执行。
+        摘要失败回落确定性裁剪；失去作业归属则停止当前驱动。
         """
         if self._limits.summary_mode != SUMMARY_MODE_MODEL:
             return view
@@ -341,65 +348,61 @@ class _LoopSummaryMixin:
             return view
         if not view.dropped_seqs:
             return view
+        if self._log.in_transaction:
+            return view
         messages = progress.messages
         seqs = self._message_source_seqs(run_id, progress)
         dropped = set(view.dropped_seqs)
-        try:
-            # 已经落库、且覆盖的 seq 现在**全都**被牺牲了的摘要：可以拿来复用。
-            # 允许"子集复用"是必要的——调用上限一到，只用"材料完全一致"就会整段
-            # 回落确定性裁剪，最先丢的硬约束又没了。
-            reusable = [
-                (record, covered)
-                for record, covered in self._summaries.ready_with_sources(run_id)
-                if set(covered) <= dropped
-            ]
-            calls = self._summaries.count_for_run(run_id)
-        except TianshuError:
-            return view
-        if calls >= max(0, int(self._limits.summary_max_calls)):
-            # 调用上限到了：不再生成新摘要，但已有的摘要还能盖住"当时就丢掉的
-            # 那一段"，用它。
-            return self._reuse_or_fallback(view, reusable, messages, seqs, budget)
-
+        material = None
         try:
             blocks = summary_blocks(messages, seqs, view.dropped_seqs)
-            if not blocks:
-                return self._reuse_or_fallback(view, reusable, messages, seqs, budget)
-            material = build_material(
-                blocks,
-                scope=f"task:{task.task_id}",
-                task_id=task.task_id,
-                run_id=run_id,
-            )
-            latest = self._summaries.latest(material.material_id)
+            if blocks:
+                material = build_material(
+                    blocks, scope=f"task:{task.task_id}", task_id=task.task_id, run_id=run_id,
+                )
         except SummaryMaterialError:
-            return self._reuse_or_fallback(view, reusable, messages, seqs, budget)
+            pass
         except TianshuError:
             return view
 
-        if latest is not None and latest.ready:
-            # 材料完全一致：直接复用（0 次调用）。
-            return self._recompile_with_summary(
-                view, latest, tuple(material_seqs(material)), messages, seqs, budget
-            )
-        if latest is not None and latest.status == SUMMARY_PENDING:
-            # 崩溃遗留：这次调用发生过没有，只有账本知道；重试就等于偷偷再来
-            # 一次（PRD §7.1 第 4 条禁止的正是这个）。标成"结果未知"。
-            self._fail_summary(latest, "中断：上一次摘要调用结果未知（不重试）")
-            return self._reuse_or_fallback(view, reusable, messages, seqs, budget)
+        exact = None
+        attempt = None
+        try:
+            with self._log.transaction():
+                self._assert_summary_claim(run_id, claim)
+                reusable = [
+                    (record, covered)
+                    for record, covered in self._summaries.ready_with_sources(run_id)
+                    if set(covered) <= dropped
+                ]
+                if material is not None:
+                    latest = self._summaries.latest(material.material_id)
+                    if latest is not None and latest.status == SUMMARY_PENDING:
+                        self._summaries.fail(latest, "中断：上一次摘要调用结果未知（不重试）")
+                    elif self._summaries.count_for_run(run_id) < max(
+                        0, int(self._limits.summary_max_calls),
+                    ):
+                        if latest is None:
+                            attempt = self._prepare_summary(material)
+                        elif latest.ready:
+                            exact = latest
+        except JobLost:
+            raise
+        except (TianshuError, sqlite3.Error):
+            return view
 
-        calls = self._summaries.count_for_run(run_id)
-        if calls >= max(0, int(self._limits.summary_max_calls)):
-            # 调用上限到了：已有的摘要还能盖住"当时就丢掉的那一段"，用它。
-            return self._reuse_or_fallback(view, reusable, messages, seqs, budget)
-
-        record = self._generate_summary(run_id, task, progress, material)
-        if record is not None:
-            recompiled = self._recompile_with_summary(
-                view, record, tuple(material_seqs(material)), messages, seqs, budget
-            )
-            if recompiled.summaries:
-                return recompiled
+        if material is not None:
+            covered = tuple(material_seqs(material))
+            if exact is not None:
+                return self._recompile_with_summary(view, exact, covered, messages, seqs, budget)
+            if attempt is not None:
+                record = self._generate_summary(progress, attempt, claim)
+                if record is not None:
+                    recompiled = self._recompile_with_summary(
+                        view, record, covered, messages, seqs, budget,
+                    )
+                    if recompiled.summaries:
+                        return recompiled
         return self._reuse_or_fallback(view, reusable, messages, seqs, budget)
 
     def _reuse_or_fallback(
@@ -419,50 +422,79 @@ class _LoopSummaryMixin:
                 return recompiled
         return view
 
-    def _generate_summary(
-        self,
-        run_id: str,
-        task: Task,
-        progress: _Progress,
-        material: Any,
-    ) -> Any:
-        """走完一次摘要调用。失败返回 None（调用方回落），从不抛给 Run。"""
+    def _assert_summary_claim(self, run_id: str, claim: JobClaim) -> None:
+        assert self._log.in_transaction
+        self._claims.assert_claim(claim)
+        job = self._claims.get(claim.job_id)
+        if claim.run_id != run_id or job is None or job.run_id != run_id:
+            raise JobLost(f"摘要作业不属于 Run：{run_id}")
+        if not self._claims.is_live(job):
+            raise JobLost(f"摘要作业认领已过期：{claim.job_id}")
+
+    def _prepare_summary(self, material: SummaryMaterial) -> _SummaryAttempt | None:
+        """在摘要决策的写事务内记录版本、预占和发送前证据。"""
         assert self._summaries is not None and self._model is not None
-        attempt_id = f"summary#{material.material_id}#1"
+        assert self._budget is not None and self._log.in_transaction
+        record = self._summaries.begin(
+            material,
+            model=self._summary_model_id(),
+            attempt_id=f"summary#{material.material_id}#{uuid.uuid4().hex}",
+        )
         try:
-            record = self._summaries.begin(
-                material,
-                model=self._summary_model_id(),
-                attempt_id=attempt_id,
-                run_id=run_id,
-                task_id=task.task_id,
-            )
-        except TianshuError:
-            return None
-        try:
-            reservation = self._reserve_summary(material, attempt_id, run_id)
+            reservation = self._reserve_summary_locked(material, record.attempt_id, record.run_id)
         except (BudgetRefused, BudgetCancelled, BudgetConfigError) as exc:
             from .goal_v2 import record_admission_refused
-            record_admission_refused(self._log, run_id, exc, source="summary")
-            self._fail_summary(record, f"预算拒绝：{exc}")
-            return None
-        except TianshuError as exc:
-            self._fail_summary(record, f"预算配置错误：{exc}")
-            return None
 
+            record_admission_refused(self._log, record.run_id, exc, source="summary")
+            self._summaries.fail(record, f"预算拒绝：{exc}")
+            return None
+        assert reservation is not None
         messages = [{"role": "user", "content": prompt_for(material)}]
+        begin_call(
+            self._log, record, messages=messages, identity=identity_of(self._model),
+            policy=getattr(self._model, "cache_policy", None),
+        )
+        return record, reservation, messages
+
+    def _generate_summary(
+        self,
+        progress: _Progress,
+        attempt: _SummaryAttempt,
+        claim: JobClaim,
+    ) -> SummaryRecord | None:
+        """使用已提交的尝试进行一次模型调用。"""
+        assert self._summaries is not None and self._model is not None
+        assert not self._log.in_transaction
+        record, reservation, messages = attempt
+        # 准备提交后作业可能已过期或被接管，预算也可能已被另一进程取消。
+        # 在同一个写事务内核验；确认尚未进入 adapter 的取消尝试只释放原预占，
+        # 不伪造 provider 用量。核验后到远端接收之间仍有不可消除的时序窗口。
         try:
-            begin_call(
-                self._log, record, messages=messages, identity=identity_of(self._model),
-                policy=getattr(self._model, "cache_policy", None),
-            )
-        except (TianshuError, sqlite3.Error) as exc:
-            # 尚未发送，沿既有未发送释放路径只释放本次预占。
-            if self._budget is not None and reservation is not None:
-                self._budget.abandon_unsent(
-                    reservation.reservation_id, reason="摘要调用遥测写入失败（未发送）",
+            with self._log.transaction():
+                self._assert_summary_claim(record.run_id, claim)
+                current = self._summaries.read(record.summary_id)
+                if current is None or current.status != SUMMARY_PENDING:
+                    return None
+                current_reservation = self._budget.reservation_for(
+                    self._budget_account_id(record.run_id), record.attempt_id,
                 )
-            self._fail_summary(record, f"摘要调用遥测写入失败（未发送）：{exc}")
+                if (
+                    current_reservation is None
+                    or current_reservation.reservation_id != reservation.reservation_id
+                    or current_reservation.state != BUDGET_PENDING
+                ):
+                    return None
+                if self._budget.is_cancelled(self._budget_account_id(record.run_id)):
+                    if self._budget.abandon_unsent(
+                        reservation.reservation_id, reason="摘要发送前预算取消（确认未请求）",
+                    ):
+                        self._summaries.fail(record, "预算取消：发送前确认未请求，已释放预占")
+                    return None
+        except JobLost:
+            raise
+        except (TianshuError, sqlite3.Error):
+            # 发送前核验/结案写失败必须 fail closed：整笔事务回滚，保留原版本和
+            # 预占，继续确定性回落；摘要持久化故障不得升级为主 Run 失败。
             return None
         # 一次摘要调用就是一次真实模型调用：attempts 与 tokens 都要如实加，
         # 否则"这个 Run 到底打出去几次模型"会少算（PRD §5.6 第 4 条）。
@@ -497,6 +529,26 @@ class _LoopSummaryMixin:
         except SummaryError as exc:
             self._fail_summary(record, f"摘要正文不合格：{exc}")
             return None
+        except sqlite3.Error as exc:
+            self._fail_summary(record, f"摘要正文写入失败：{exc}")
+            return None
+
+    def _recover_summary_attempt_count(
+        self, run_id: str, progress: _Progress, events: list[Event],
+    ) -> None:
+        if self._summaries is None or not self._summaries.count_for_run(run_id):
+            return
+        # 摘要版本和遥测没有与游标可比较的位置。即使有回执，也无法判定
+        # 游标已含该尝试。旧版摘要和无回执的准备记录都可能留有证据缺口。
+        progress.model_attempts_known = False
+        try:
+            calls = read_calls(self._log, run_id=run_id)
+        except (TianshuError, sqlite3.Error):
+            return
+        confirmed = sum(event.type == "model.result" for event in events)
+        confirmed += sum(call["response"] is not None for call in calls)
+        # 两组证据互斥，但都可能已在旧游标中。只提高已知下界，不重复加账。
+        progress.model_attempts = max(progress.model_attempts, confirmed)
 
     def _reserve_summary(self, material: Any, attempt_id: str, run_id: str) -> Any:
         with self._log.transaction():
@@ -587,7 +639,7 @@ class _LoopSummaryMixin:
         assert self._summaries is not None
         try:
             self._summaries.fail(record, reason)
-        except TianshuError:
+        except (TianshuError, sqlite3.Error):
             return
 
     def _recompile_with_summary(

@@ -216,7 +216,9 @@ def test_complete_rejects_blank_and_oversized_text(store):
         store.complete(record, "x" * (SUMMARY_MAX_BYTES + 1))
     with pytest.raises(SummaryTooLong, match="NUL"):
         store.complete(record, "a\x00b")
-    # 三次都失败之后仍是 pending：可以继续用同一条记录结算（不产生新版本）。
+    with pytest.raises(SummaryTooLong, match="surrogate"):
+        store.complete(record, "合法前缀\ud800")
+    # 四次都失败之后仍是 pending：可以继续用同一条记录结算（不产生新版本）。
     assert store.read(record.summary_id).status == PENDING
 
 
@@ -293,7 +295,7 @@ def test_material_ledger_lists_sources_in_order(store):
 
 
 def test_count_for_run_counts_failed_and_ready(store):
-    """失败的尝试也是**一次真实调用**：按行数算，不按成功算。"""
+    """统计保存的版本数；失败版本也可能从未进入 adapter，不能冒充调用次数。"""
     m1 = build_material(_blocks(2), scope="task:t1")
     m2 = build_material(
         [MaterialBlock(seq=40, role="tool", content="另一批材料")], scope="task:t1"

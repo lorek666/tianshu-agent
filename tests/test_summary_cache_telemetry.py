@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import sqlite3
+from contextlib import closing
 from dataclasses import replace
 
 import pytest
@@ -101,6 +102,65 @@ def test_rejected_summary_body_retains_real_returned_usage(tmp_path, body):
     log.close()
 
 
+def test_non_utf8_summary_falls_back_after_preserving_call_and_settlement(tmp_path):
+    from httpserver import NetFixture
+
+    from tianshu.model import OpenAICompatibleModel
+    from tianshu.summaries import FAILED, SummaryStore
+
+    wire = (
+        r'{"choices":[{"finish_reason":"stop","message":{"content":"前缀\ud800"}}],'
+        r'"usage":{"prompt_tokens":23,"completion_tokens":7}}'
+    )
+    # 真实 OpenAICompatibleModel.complete 走本机 HTTP transport 和 JSON 解析；
+    # JSON 转义可产生孤立 surrogate，但正文不是可写入 UTF-8 的合法文本。
+    with NetFixture() as fixture:
+        fixture.route("/v1/chat/completions", body=wire, content_type="application/json")
+        adapter = OpenAICompatibleModel(
+            "offline-non-utf8", base_url=f"http://{fixture.base}/v1",
+            api_key="offline-fixture", cache_policy="prefix-v1",
+        )
+
+        class NonUtf8Summary(CachedSummaryModel):
+            def complete(self, messages, tools):
+                if tools:
+                    return super().complete(messages, tools)
+                self.calls += 1
+                self.requests.append(sum(len(m.get("content") or "") for m in messages))
+                self.summary_calls += 1
+                return adapter.complete(messages, tools)
+
+        model = NonUtf8Summary()
+        result, stack, log = _run(
+            tmp_path, model, summary_mode="model", limits_kwargs={"summary_max_calls": 1},
+        )
+    assert fixture.hit_count == 1 and fixture.paths() == ["/v1/chat/completions"]
+    assert result.outcome == "noop" and result.turns == ROUNDS + 1
+    assert model.summary_calls == 1
+    assert result.model_attempts == result.turns + 1
+    assert result.tokens == ROUNDS * 48 + 36 + 30
+    receipt, = calls(log)
+    assert receipt["response"]["usage"]["input_tokens"] == 23
+    assert receipt["response"]["usage"]["output_tokens"] == 7
+    record = SummaryStore(log, create=False).read(receipt["request"]["summary_id"])
+    assert record.status == FAILED and record.text is None
+    assert "UTF-8" in record.error
+    reservation = stack.budget.reservation_for(f"run:{result.run_id}", record.attempt_id)
+    assert reservation.state == "settled"
+    saved = log.conn.execute(
+        "SELECT usage_json FROM budget_reservations WHERE reservation_id=?",
+        (reservation.reservation_id,),
+    ).fetchone()
+    usage = json.loads(saved["usage_json"])
+    assert usage["requests"] == 1 and usage["tokens"] == 30 and usage["micros"] == 128
+    assert stack.budget.usage(f"run:{result.run_id}")["settled"]["requests"] == model.calls
+    assert not any(event.payload["context"].get("summaries") for event in log.read_run(
+        result.run_id, event_types=("model.intent",),
+    ))
+    assert replay(log, result.run_id).ok
+    log.close()
+
+
 def test_failed_summary_call_preserves_unknown_usage_without_retry(tmp_path):
     class FailingSummary(CachedSummaryModel):
         def complete(self, messages, tools):
@@ -118,8 +178,12 @@ def test_failed_summary_call_preserves_unknown_usage_without_retry(tmp_path):
     log.close()
 
 
-def test_sent_summary_hard_exit_leaves_unknown_record_and_resume_does_not_resend(tmp_path):
+@pytest.mark.parametrize("cap", [1, 3])
+def test_sent_summary_hard_exit_leaves_unknown_record_and_resume_does_not_resend(tmp_path, cap):
     from support import engine_for, stack_for
+
+    from tianshu.budget import PENDING
+    from tianshu.summaries import FAILED, SummaryStore
 
     ws = _ws(tmp_path)
     (tmp_path / "data").mkdir(exist_ok=True)
@@ -129,14 +193,26 @@ def test_sent_summary_hard_exit_leaves_unknown_record_and_resume_does_not_resend
     before = calls(log)
     assert len(before) == 1
     assert before[0]["response"] is None
+    request = before[0]["request"]
+    run_id, attempt_id = request["run_id"], request["attempt_id"]
+    account_id = f"run:{run_id}"
+    stack = stack_for(log, data_root=tmp_path / "data")
+    old_reservation = stack.budget.reservation_for(account_id, attempt_id)
+    assert old_reservation is not None and old_reservation.state == PENDING
     model = ConstraintModel(rounds=0)
     engine = engine_for(
-        stack_for(log, data_root=tmp_path / "data"), model,
-        limits=_limits(summary_mode="model"),
+        stack, model, limits=replace(_limits(summary_mode="model"), summary_max_calls=cap),
     )
-    engine.resume_run(before[0]["request"]["run_id"])
+    old_main_attempts = len(log.read_run(run_id, event_types=("model.intent",)))
+    result = engine.resume_run(run_id)
+    assert result.model_attempts_known is False
+    assert result.model_attempts == old_main_attempts + model.calls
     assert calls(log) == before
     assert model.summary_calls == 0
+    records = SummaryStore(log, create=False).versions(request["material_id"])
+    assert [record.status for record in records] == [FAILED]
+    assert records[0].attempt_id == attempt_id
+    assert stack.budget.reservation_for(account_id, attempt_id) == old_reservation
     log.close()
 
 
@@ -153,6 +229,46 @@ def test_summary_telemetry_rejects_deletion_overwrite_and_duplicates(tmp_path, t
     with pytest.raises(sqlite3.IntegrityError):
         log.conn.execute(f"INSERT OR REPLACE INTO {table} SELECT * FROM {table}")
     log.close()
+
+
+def test_read_calls_run_filter_preserves_unfiltered_reader(tmp_path):
+    from tianshu.pricing import CostRecord
+    from tianshu.summaries import MaterialBlock, SummaryStore, build_material
+    from tianshu.summary_telemetry import begin_call, finish_call, read_calls
+
+    with closing(EventLog(tmp_path / "events.db")) as log:
+        store = SummaryStore(log)
+        expected = {}
+        for run_id in ("run-a", "run-b"):
+            material = build_material(
+                [MaterialBlock(seq=1, role="tool", content=run_id)],
+                scope="task:t", run_id=run_id,
+            )
+            record = store.begin(material, model="offline", run_id=run_id)
+            messages = [{"role": "user", "content": run_id}]
+            begin_call(log, record, messages=messages, identity=None, policy=None)
+            if run_id == "run-a":
+                finish_call(
+                    log, record.summary_id,
+                    usage={"input_tokens": 1, "output_tokens": 2},
+                    cost=CostRecord(
+                        None, "", None,
+                        units={"input_tokens": 1, "output_tokens": 2},
+                    ),
+                )
+            expected[run_id] = record.summary_id
+
+        unfiltered = read_calls(log)
+        assert len(unfiltered) == 2
+        assert {call["request"]["summary_id"] for call in unfiltered} == set(expected.values())
+        for run_id, summary_id in expected.items():
+            selected = read_calls(log, run_id=run_id)
+            assert len(selected) == 1
+            assert selected[0]["request"]["run_id"] == run_id
+            assert selected[0]["request"]["summary_id"] == summary_id
+            assert (selected[0]["response"] is not None) == (run_id == "run-a")
+        assert read_calls(log, run_id="missing") == []
+        assert read_calls(log) == unfiltered, "旧的无过滤调用方仍读取并校验全库"
 
 
 def test_legacy_read_is_unknown_and_does_not_create_tables(tmp_path):
@@ -287,6 +403,11 @@ def test_call_storage_failure_does_not_send_or_consume_reserved_budget(tmp_path,
     assert result.outcome in ("succeeded", "noop")
     assert model.summary_calls == 0
     assert calls(log) == []
+    assert result.summary_calls == 0
+    assert log.conn.execute("SELECT COUNT(*) FROM summary_versions").fetchone()[0] == 0
+    assert log.conn.execute(
+        "SELECT COUNT(*) FROM budget_reservations WHERE call_id LIKE 'summary#%'",
+    ).fetchone()[0] == 0
     assert result.tokens == ROUNDS * 48 + 36
     counters = {row["dimension"]: row for row in log.conn.execute(
         "SELECT * FROM budget_counters WHERE account_id=?", (f"run:{result.run_id}",),
@@ -345,3 +466,93 @@ def test_backup_database_roundtrip_and_gc_preserve_auxiliary_facts(tmp_path, app
     after = EventLog(root / "events.db")
     assert calls(after) == recorded
     after.close()
+
+
+@pytest.mark.parametrize("blocked_statuses", [("ready",), ("ready", "failed")])
+def test_summary_body_write_error_falls_back_and_keeps_single_settlement(
+    tmp_path, blocked_statuses,
+):
+    from support import engine_for, stack_for
+
+    model = CachedSummaryModel()
+    ws = _ws(tmp_path)
+    with closing(EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs")) as log:
+        stack = stack_for(log, data_root=tmp_path)
+        for status in blocked_statuses:
+            log.conn.execute(
+                f"CREATE TRIGGER reject_{status} BEFORE UPDATE ON summary_versions "
+                f"WHEN NEW.status = '{status}' BEGIN SELECT RAISE(ABORT, 'summary write'); END"
+            )
+        engine = engine_for(
+            stack, model, limits=replace(_limits(summary_mode="model"), summary_max_calls=1),
+        )
+        task = stack.tasks.create_task("摘要正文落盘失败后继续任务", [str(ws)])
+        result = engine.start(task.task_id)
+        assert result.outcome == "noop" and result.turns == ROUNDS + 1
+        assert result.model_attempts_known and result.model_attempts == ROUNDS + 2
+        assert result.tokens == ROUNDS * 48 + 36 + 140
+        entry, = calls(log)
+        record = stack.summaries.read(entry["request"]["summary_id"])
+        expected_status = "failed" if len(blocked_statuses) == 1 else "pending"
+        assert record.status == expected_status
+        assert model.summary_calls == 1
+        account = f"run:{result.run_id}"
+        reservation = stack.budget.reservation_for(account, record.attempt_id)
+        assert reservation is not None
+        row = next(row for row in stack.budget.reconcile(account)
+                   if row["reservation_id"] == reservation.reservation_id)
+        assert row["usage"] == {"requests": 1, "tokens": 140}
+        assert stack.budget.usage(account)["settled"]["requests"] == model.calls
+        assert entry["response"]["usage"]["input_tokens"] == 120
+        assert not any(event.payload["context"].get("summaries") for event in log.read_run(
+            result.run_id, event_types=("model.intent",),
+        ))
+        assert replay(log, result.run_id).ok
+
+
+def test_recovery_reuses_a_confirmed_summary_without_recounting_after_pause(tmp_path):
+    from support import engine_for, stack_for
+
+    ws = _ws(tmp_path)
+    root = tmp_path / "data"
+    root.mkdir()
+    proc = _spawn_crash(tmp_path, ws, ROUNDS, after_ready=True)
+    assert proc.returncode == 77 and "summary-test-after-ready" in proc.stderr
+    limits = replace(_limits(summary_mode="model"), summary_max_calls=1)
+    with closing(EventLog(root / "events.db", blob_dir=root / "blobs")) as log:
+        stack = stack_for(log, data_root=root)
+        receipt, = calls(log)
+        request = receipt["request"]
+        run_id = request["run_id"]
+        assert receipt["response"]["usage"] == {"input_tokens": 5, "output_tokens": 2}
+        prior_main_calls = len(log.read_run(run_id, event_types=("model.result",)))
+        saved = stack.tasks.load_cursor(run_id)[0]
+        assert saved.budget_ledger["model_attempts"] == prior_main_calls
+        reservation = stack.budget.reservation_for(f"run:{run_id}", request["attempt_id"])
+        row = next(row for row in stack.budget.reconcile(f"run:{run_id}")
+                   if row["reservation_id"] == reservation.reservation_id)
+        assert row["usage"] == {"requests": 1, "tokens": 7}
+
+        class PauseAfterModel(ConstraintModel):
+            def complete(self, messages, tools):
+                response = super().complete(messages, tools)
+                stack.tasks.request_pause(run_id)
+                return response
+
+        model = PauseAfterModel(rounds=0)
+        paused = engine_for(stack, model, limits=limits).resume_run(run_id)
+        assert paused.state == "paused" and model.round_calls == 1 and model.summary_calls == 0
+        assert paused.model_attempts == prior_main_calls + 2
+        assert paused.model_attempts_known is False
+        assert calls(log) == [receipt]
+
+    with closing(EventLog(root / "events.db", blob_dir=root / "blobs")) as log:
+        stack = stack_for(log, data_root=root)
+        model = ConstraintModel(rounds=0)
+        finished = engine_for(stack, model, limits=limits).resume_run(run_id)
+        assert finished.outcome == "noop" and model.calls == 0
+        assert finished.model_attempts == paused.model_attempts
+        assert finished.model_attempts_known is False
+        assert calls(log) == [receipt]
+        assert stack.budget.reservation_for(f"run:{run_id}", request["attempt_id"]) == reservation
+        assert replay(log, run_id).ok
