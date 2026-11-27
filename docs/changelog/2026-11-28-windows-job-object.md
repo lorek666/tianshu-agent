@@ -21,6 +21,17 @@ Issue [#224](https://github.com/lorek666/tianshu-agent/issues/224) 的 Windows �
 - 管道初始化失败也进入清树与流关闭路径。读线程被强制停止时不得冒充自然 EOF；无法在收尾上限内停止时抛错，拒绝并发 `finish()`/`feed()`。
 - PTY master fd 在外层 `finally` 关闭，覆盖创建、读取和收尾异常。
 
+## 前审冻结树被拒绝与根因修复
+
+对 pending tree `8635c166b3054087cf9dd4ea5b6355bfc82e7537` 的独立复审结论为“部分修，建议阻断合入”；当时已启动的全量随即停止，不作为通过证据。复审发现四项问题，本轮逐项修复并新增负控：
+
+1. **通用 Windows 探针仍可能按复用 PID 清理**：根进程现在通过 `DuplicateHandle` 把孙进程精确 HANDLE 交给父进程，文件记录 PID + 原始 FILETIME；父进程核验身份后用 `WaitForSingleObject` 观察、精确 `TerminateProcess` 并关闭句柄。身份不符、句柄不可核验或清理未确认均为 `unknown`，不再调用 Windows bare-PID `os.kill`。`PROBE_VERSION` 升至 `v4`，旧探针缓存失效。
+2. **Admission 探针结论合成不严**：detached `enforced` 只能把通用 `unknown` 升级为 `enforced`，不得覆盖通用 `not_enforced`；detached 的负向或未知结果继续按保守优先级阻断。
+3. **MCP 关闭协议与 `ManagedProcess` 不兼容**：execution 分支只调用 `PreparedExecution.__exit__()` 并关闭 stdin，不再执行 `poll()/terminate()/kill()/wait()`；普通 `Popen` 分支保持原协议。两条路径都 join 读线程并唤醒等待者。
+4. **失败句柄重试没有进入生产路径**：`JobController.close()` 对每个未关闭 HANDLE 有界重试；持续失败保留 `_open_handles` 和 controller 可重试状态。backend `finally` 与 MCP 关闭都经过同一自动重试路径，close 非 `exited` 时结果标记 `descendants_may_survive=true`。
+
+本轮新增真实子进程参数回归、精确 HANDLE 身份/清理故障注入、Admission 七组合矩阵、MCP 等待者唤醒和 backend/MCP 首次关闭失败负控。Windows 原生用例另覆盖 local 与 Job 后端的通用精确句柄探针，以及真实 MCP stdio + Job 的关闭、线程 join 与响应唤醒；本机 macOS 只执行同形控制流，不冒充原生证据。
+
 ## 验证证据
 
 定向命令：
@@ -55,14 +66,18 @@ uv run --frozen pytest -q \
 14. 第二个 pump 尚未 append 就启动：首个已启动线程未被 join。
 15. 收集异常时跳过 `proc.close()`：Job 关闭断言变红。
 16. 把 signaled leader 的合法退出码 259 当作仍在运行：`poll()` 错误返回 `None`。
+17. detached 结论无条件覆盖通用进程树结论：通用 `not_enforced` 被洗成 `enforced`，准入测试未抛错。
+18. MCP execution 关闭分支重新调用 `poll()`：`ManagedProcess` 形状负控直接触发禁止 Popen 清理。
+19. 关闭生产路径自动重试：backend 首次失败后只关闭一次，MCP 路径的 controller 保持未关闭。
+20. 身份不符后重新按裸 PID 清理：精确 HANDLE 负控实际记录到 PID kill 调用。
 
-最终代码复审另修正了原生整数句柄、259 退出码消歧、句柄关闭重试、管道所有权转移、双读线程收尾、query 失败仍终止与收集异常必关 Job；探针清理进一步取消“先采样 PID、再按 PID 终止”的竞态。恢复后的定向套件与本机静态门禁通过。
+前一轮最终代码复审另修正了原生整数句柄、259 退出码消歧、句柄关闭重试、管道所有权转移、双读线程收尾、query 失败仍终止与收集异常必关 Job；探针清理进一步取消“先采样 PID、再按 PID 终止”的竞态。本轮四项新修复的变异均实际 RED，恢复后 GREEN；定向套件与本机静态门禁另列实时结果。
 
 本机裸全量、最终独立第二读者结论与 Windows required CI 结果将在取得后回填；不得用本机 fake 测试、macOS 跳过或历史 CI 代替 Windows 真子进程证据。
 
 ## 未决边界
 
-- Windows required CI 尚须覆盖真实 stdio、wait/returncode、多代与 detached 后代、leader 先退、breakaway 拒绝、父 Job handle 关闭及 Admission 探针。
+- Windows required CI 尚须覆盖真实 stdio、wait/returncode、多代与 detached 后代、leader 先退、breakaway 拒绝、父 Job handle 关闭、Admission 探针、通用/detached 精确 HANDLE 清理、MCP + Job 关闭与首次 `CloseHandle` 失败自动重试。
 - Windows 10/11、ARM64、文件系统、EDR、桌面会话与 SKU 差异仍无用户设备证据。
 - Job Object 不防御同 UID 宿主、内核攻击或 Job 外进程，不提供文件/网络/凭据隔离。
 - Issue #224 保持开放，完整四边界与各架构实机验收未完成。
