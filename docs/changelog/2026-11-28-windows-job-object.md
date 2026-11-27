@@ -15,6 +15,14 @@ Issue [#224](https://github.com/lorek666/tianshu-agent/issues/224) 的 Windows �
 - Admission 使用同一原生创建路径，不回落 `Popen`；Windows 探针覆盖普通 `DETACHED_PROCESS` 后代与 breakaway 创建拒绝，通过 `DuplicateHandle` 取得精确句柄，并按 PID + 原始 `FILETIME` 出生身份核验、等待与清理。
 - 已知后端首次注册与替换都绑定名字、隔离级别及完整能力承诺。`isolation` 保持 `none`，`supports_job_objects=True` 不作为隔离证据。
 
+## 执行侧后续修复
+
+- 显式 Job 命令要通过通用与 detached/breakaway 两个探针才会请求审批。审批记录保存实际后端及执行对象摘要；消费和启动前各核一次。换后端、同路径脚本内容变化或缺摘要均拒绝，其他后端沿用既有审批规则。
+- 业务命令等待期间观察 Run 控制、认领与工作区租约。取消、已有的 Run fence 或认领失效都触发清树。公开目标修订仍与执行共享守卫；原生用例在 Job 运行时从独立子进程驱动真实的 `run.fenced` 转移，不把改目标已绕过守卫当作验收。
+- 终态由 Job 查询和精确 leader 句柄的 FILETIME 共同绑定。归并核对 Run、Task、subject、PID 和出生身份。未知终态及工作区阻断同事务记录，工具结果明示 `descendants_may_survive`。人工解除普通目录阻断并不能证明旧 Job 已清空，仍禁止自动重启该 Job；无有效终态证据时不根据 PID 重放。
+- 未知终态的 `recovery.blocked` 同时登记用户级权威根，换用另一 `--db` 仍拒绝同工作区写入；权威根写入失败会在结果中明确报告跨数据根阻断未生效。Goal V2 与执行恢复共用 Run、Task、subject、PID 和出生身份核对，身份不符的 `execution.ended` 不会推进阶段。
+- Win32 包装保留 `HeapFree` 的失败结果，并按 `VOID` 声明属性列表删除函数；当 `STILL_ACTIVE` 与 leader signal 发生竞态时重新读取退出码。关闭失败保留原句柄以便有限重试。
+
 ## 共享执行收尾修复
 
 - POSIX 超时清理在等待 leader 后继续用原 PGID 观察进程组；发过信号但组仍存在或无法观察时为 `unknown`，不再把 `killpg` 成功当作整树退出。
