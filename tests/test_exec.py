@@ -23,6 +23,7 @@ import hashlib
 import os
 import signal
 import socket
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -518,6 +519,38 @@ def test_posix_signal_death_is_reported_as_signal(tmp_path):
     assert result.exit_code is None
     assert result.signal == signal.SIGTERM
     assert result.timed_out is False, "被信号杀死不是超时"
+
+
+@pytest.mark.parametrize(
+    ("tree_state", "may_survive"),
+    [("exited", False), ("unknown", True)],
+)
+def test_managed_pipes_report_unknown_tree_after_normal_leader_exit(
+    tmp_path, tree_state, may_survive
+):
+    cwd = _cwd(tmp_path)
+    proc = subprocess.Popen(
+        [PY, "-c", "import sys; print('out'); print('err', file=sys.stderr)"],
+        cwd=cwd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    observed = []
+    result, state = execution._run_managed_pipes(
+        proc,
+        policy=_policy(cwd),
+        blob_dir=None,
+        finalize_tree=lambda timed_out: observed.append(timed_out) or tree_state,
+    )
+
+    assert observed == [False]
+    assert state == tree_state
+    assert result.exit_code == 0
+    assert result.timed_out is False
+    assert result.stdout == "out\n"
+    assert result.stderr == "err\n"
+    assert result.descendants_may_survive is may_survive
 
 
 # ---------------------------------------------------------------- Windows 专属

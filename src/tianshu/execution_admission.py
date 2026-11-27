@@ -16,8 +16,6 @@ import signal
 import subprocess
 import sys
 import tempfile
-import threading
-import time
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, replace
@@ -31,11 +29,7 @@ from .exec import (
     BOUNDARY_UNKNOWN,
     ExecResult,
     LocalExecBackend,
-    _build_result,
-    _join_pumps,
-    _pump_file,
-    _start_pump,
-    _StreamCollector,
+    _run_managed_pipes,
     platform_label,
     scrub_sandbox_env,
 )
@@ -519,32 +513,14 @@ class PreparedExecution:
             return "unknown"
         return self._process_tree_state(proc)
 
-    def _collect_process(self, proc, *, policy, blob_dir=None) -> tuple[ExecResult, str]:
-        started = time.monotonic()
-        assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
-        proc.stdin.close()
-        os.set_blocking(proc.stdout.fileno(), False)
-        os.set_blocking(proc.stderr.fileno(), False)
-        out = _StreamCollector(policy.max_output_bytes, blob_dir, "stdout")
-        err = _StreamCollector(policy.max_output_bytes, blob_dir, "stderr")
-        stop_reading = threading.Event()
-        threads = [
-            _start_pump(_pump_file, proc.stdout, out, stop_reading),
-            _start_pump(_pump_file, proc.stderr, err, stop_reading),
-        ]
-        timed_out = False
-        try:
-            proc.wait(timeout=policy.timeout_ms / 1000)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-        finally:
-            state = self._stop_process(proc)
-            _join_pumps(threads, stop_reading)
-        result = _build_result(
-            proc, out, err, timed_out=timed_out, tree_killed=state == "exited",
-            duration_ms=int((time.monotonic() - started) * 1000), stderr_merged=False,
+    def _collect_process(self, proc, *, policy, blob_dir=None) -> tuple[ExecResult, str | None]:
+        return _run_managed_pipes(
+            proc,
+            policy=policy,
+            blob_dir=blob_dir,
+            finalize_tree=lambda _timed_out: self._stop_process(proc),
+            close_stdin=True,
         )
-        return result, state
 
     def admit(self, required_boundaries=ISOLATION_BOUNDARIES) -> IsolationAdmissionV1:
         required = tuple(required_boundaries)

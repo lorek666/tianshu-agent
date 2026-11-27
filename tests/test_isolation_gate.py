@@ -243,6 +243,7 @@ def test_partial_boundary_view_is_not_just_trusted(tmp_path):
     assert view["enforced_boundaries"] == ["process_tree"]
     assert view["boundaries"]["files_authority"] == "not_enforced"
     assert view["unverified"] is False
+    assert view["contradicted"] is False
 
 
 def test_unverified_view_keeps_unknown_boundaries(tmp_path):

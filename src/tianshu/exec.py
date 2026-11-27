@@ -258,9 +258,9 @@ class ExecResult:
     不可分离——此时 `stderr` 恒空、内容都在 `stdout` 里，本字段为 True；
     管道模式恒为 False，`stderr` 可独立读取。
 
-    `descendants_may_survive`：本次执行是否**无法确认**子树已经终止。只在
-    超时/终止时有意义——Windows 只 kill 直接子进程时必为 True；POSIX 用
-    进程组杀掉时为 False。正常退出时不对子树做任何声明，恒为 False。
+    `descendants_may_survive`：本次执行是否**无法确认**子树已经终止。超时/
+    终止时无法确认清树必为 True；受管 Job 后端即使 leader 正常退出，只要 Job
+    查询失败或仍非零也为 True。未提供整树观察的本地正常退出保持历史语义 False。
     """
 
     exit_code: int | None
@@ -380,7 +380,6 @@ def _spawn_pipes(
     blob_dir: Path | None,
     preexec_fn: Callable[[], None] | None = None,
 ) -> ExecResult:
-    started = time.monotonic()
     popen_kwargs: dict[str, Any] = {
         "cwd": str(Path(cwd).resolve()),
         "env": dict(env),
@@ -393,13 +392,44 @@ def _spawn_pipes(
     if preexec_fn is not None:
         popen_kwargs["preexec_fn"] = preexec_fn
     proc = subprocess.Popen(list(argv), **popen_kwargs)
+    result, _state = _run_managed_pipes(
+        proc,
+        policy=policy,
+        blob_dir=blob_dir,
+        finalize_tree=lambda timed_out: _finalize_local_tree(proc, timed_out),
+    )
+    return result
+
+
+def _finalize_local_tree(
+    proc: subprocess.Popen, timed_out: bool
+) -> str | None:
+    if not timed_out:
+        return None
+    tree_killed = _kill_tree(proc)
+    try:
+        proc.wait(timeout=_JOIN_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        pass
+    return "exited" if tree_killed else "unknown"
+
+
+def _run_managed_pipes(
+    proc: Any,
+    *,
+    policy: ExecPolicy,
+    blob_dir: Path | None,
+    finalize_tree: Callable[[bool], str | None],
+    close_stdin: bool = False,
+) -> tuple[ExecResult, str | None]:
+    """共享双流收集；后端决定 leader 退出后如何确认并清理整树。"""
+    started = time.monotonic()
     assert proc.stdout is not None and proc.stderr is not None
-    # Python 3.12 的 os.set_blocking 也支持 Windows 管道。读端必须可停止：
-    # 孙进程可能仍握着写端；跨线程 close 正在 read 的 BufferedReader 会等待
-    # 它的内部锁，反而让有界收尾永久阻塞。
+    if close_stdin:
+        assert proc.stdin is not None
+        proc.stdin.close()
     os.set_blocking(proc.stdout.fileno(), False)
     os.set_blocking(proc.stderr.fileno(), False)
-
     out = _StreamCollector(policy.max_output_bytes, blob_dir, "stdout")
     err = _StreamCollector(policy.max_output_bytes, blob_dir, "stderr")
     stop_reading = threading.Event()
@@ -407,18 +437,27 @@ def _spawn_pipes(
         _start_pump(_pump_file, proc.stdout, out, stop_reading),
         _start_pump(_pump_file, proc.stderr, err, stop_reading),
     ]
-
-    timed_out, tree_killed = _wait_with_timeout(proc, policy.timeout_ms)
-    _join_pumps(threads, stop_reading)
-    return _build_result(
+    timed_out = False
+    try:
+        proc.wait(timeout=policy.timeout_ms / 1000)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+    finally:
+        try:
+            state = finalize_tree(timed_out)
+        finally:
+            _join_pumps(threads, stop_reading)
+    result = _build_result(
         proc,
         out,
         err,
         timed_out=timed_out,
-        tree_killed=tree_killed,
+        tree_killed=state == "exited",
         duration_ms=_elapsed_ms(started),
         stderr_merged=False,
+        tree_state=state,
     )
+    return result, state
 
 
 # --------------------------------------------------------------- PTY 实现
@@ -596,6 +635,7 @@ def _build_result(
     tree_killed: bool,
     duration_ms: int,
     stderr_merged: bool,
+    tree_state: str | None = None,
 ) -> ExecResult:
     stdout, out_truncated, stdout_ref = out.finish()
     if stderr_merged or err is None:
@@ -629,7 +669,10 @@ def _build_result(
         stderr_ref=stderr_ref,
         duration_ms=duration_ms,
         stderr_merged=stderr_merged,
-        descendants_may_survive=timed_out and not tree_killed,
+        descendants_may_survive=(
+            tree_state != "exited" if tree_state is not None
+            else timed_out and not tree_killed
+        ),
     )
 
 
