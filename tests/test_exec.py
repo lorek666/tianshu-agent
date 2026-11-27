@@ -554,23 +554,51 @@ def test_managed_pipes_report_unknown_tree_after_normal_leader_exit(
     assert result.descendants_may_survive is may_survive
 
 
-@pytest.mark.parametrize(("group_exists", "expected"), [(True, "unknown"), (False, "exited")])
-def test_local_timeout_requires_process_group_disappearance(
-    monkeypatch, group_exists, expected
+@pytest.mark.parametrize(
+    ("group_observations", "expected"),
+    [
+        ([ProcessLookupError()], "exited"),
+        ([None, ProcessLookupError()], "exited"),
+        ([None, None, None, None], "unknown"),
+        ([OSError("probe failed")], "unknown"),
+    ],
+)
+def test_local_timeout_observes_process_group_until_deadline(
+    monkeypatch, group_observations, expected
 ):
     proc = SimpleNamespace(pid=4242, wait=lambda timeout: 0)
+    clock = SimpleNamespace(now=0.0)
+    waits = []
+    observations = iter(group_observations)
+    monkeypatch.setattr(execution, "_JOIN_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(execution.time, "monotonic", lambda: clock.now)
     monkeypatch.setattr(execution, "_kill_tree", lambda current: True)
     monkeypatch.setattr(execution.os, "getpgid", lambda pid: 4242)
 
+    class FakeEvent:
+        def wait(self, timeout):
+            waits.append(timeout)
+            clock.now += timeout
+
+    monkeypatch.setattr(execution.threading, "Event", FakeEvent)
+
     def probe_group(pgid, signal_number):
         assert (pgid, signal_number) == (4242, 0)
-        if group_exists:
-            return None
-        raise ProcessLookupError
+        outcome = next(observations)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
 
     monkeypatch.setattr(execution.os, "killpg", probe_group)
 
     assert execution._finalize_local_tree(proc, True) == expected
+    assert list(observations) == []
+    if expected == "exited" and len(group_observations) == 2:
+        assert waits == [0.02]
+    elif expected == "unknown" and len(group_observations) == 4:
+        assert waits == pytest.approx([0.02, 0.02, 0.01])
+    else:
+        assert waits == []
 
 
 def test_managed_pipe_initialization_failure_stops_tree_and_closes_streams(

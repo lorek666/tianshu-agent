@@ -420,13 +420,18 @@ def _finalize_local_tree(
     except subprocess.TimeoutExpired:
         return "unknown"
     if pgid is not None:
-        try:
-            os.killpg(pgid, 0)
-        except ProcessLookupError:
-            return "exited"
-        except OSError:
-            return "unknown"
-        return "unknown"
+        deadline = time.monotonic() + _JOIN_TIMEOUT_S
+        while True:
+            try:
+                os.killpg(pgid, 0)
+            except ProcessLookupError:
+                return "exited"
+            except OSError:
+                return "unknown"
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return "unknown"
+            threading.Event().wait(min(0.02, remaining))
     return "exited" if tree_killed else "unknown"
 
 
