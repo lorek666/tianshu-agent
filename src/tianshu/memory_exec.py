@@ -948,7 +948,7 @@ class MemoryExecutor:
                 from .restore_access import ensure_material_write_allowed
 
                 with ensure_material_write_allowed(
-                    path.parent, owner_log=self._projection.log
+                    path, owner_log=self._projection.log
                 ):
                     try:
                         deleted_bytes = path.stat().st_size
