@@ -29,7 +29,7 @@
 - `summary_model_calls` / `summary_model_usage`：追加式调用身份与最终缓存 usage；
 - 预算账本的 `budget_reservations` / `budget_counters`：这次调用预占与结算了多少；
 - `model.intent.payload.context.summaries`：这一轮**实际引用**了哪几个版本；
-- `RunResult.summary_calls`：这个 Run 一共做了几次摘要调用（resume 不丢）。
+- `RunResult.summary_calls`：这个 Run 保存的摘要版本数（resume 不丢）。
 
 ## 不说的话
 
@@ -616,7 +616,13 @@ class SummaryStore:
             raise SummaryEmpty("摘要正文是空白：判失败，回落确定性裁剪")
         if "\x00" in text:
             raise SummaryTooLong("摘要正文含 NUL 字节：拒绝入库")
-        size = len(text.encode("utf-8"))
+        try:
+            raw = text.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise SummaryTooLong(
+                "摘要正文含孤立 Unicode surrogate：不是合法 UTF-8 文本，拒绝而不是替换"
+            ) from exc
+        size = len(raw)
         if size > SUMMARY_MAX_BYTES:
             raise SummaryTooLong(
                 f"摘要正文 {size}B 超过上限 {SUMMARY_MAX_BYTES}B：拒绝而不是截断"
@@ -832,10 +838,10 @@ class SummaryStore:
         }
 
     def count_for_run(self, run_id: str) -> int:
-        """这个 Run 做过几次摘要调用（`RunResult.summary_calls` 的来源）。
+        """为摘要版本上限和 `RunResult.summary_calls` 统计所有已保存版本。
 
-        按 **pending + ready + failed** 全算：一条失败的尝试也是一次真实调用
-        （预占过、可能计费过）。"没调用过"与"调了但失败"是两件事。
+        `pending`、`ready` 和 `failed` 都占一个版本名额。预算拒绝或发送准备
+        中断也可能留下版本，因此版本数不能证明有同样多的调用已发送。
         """
         if not run_id or not self.has_schema():
             return 0

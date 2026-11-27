@@ -377,6 +377,8 @@ def test_upper_mode_summary_reservation_refuses_locally(tmp_path, monkeypatch):
         ),
     )
     task = stack.tasks.create_task("长任务", [str(ws)])
+    run = stack.tasks.start_run(task.task_id)
+    _, claim = stack.claims.enqueue_and_claim(run.run_id)
     messages, seqs = _history_messages()
     budget = ContextBudget(max_bytes=BUDGET_BYTES)
     view = compile_context(messages, seqs, budget)
@@ -386,7 +388,7 @@ def test_upper_mode_summary_reservation_refuses_locally(tmp_path, monkeypatch):
     )
 
     out = engine._maybe_summarize(
-        "run:test-upper", task, SimpleNamespace(messages=messages), view, budget
+        run.run_id, claim, task, SimpleNamespace(messages=messages), view, budget,
     )
     assert out.summaries == (), "拿不到上界就不许摘"
     store = _store(log)
@@ -401,7 +403,7 @@ def test_upper_mode_summary_reservation_refuses_locally(tmp_path, monkeypatch):
         [MaterialBlock(seq=seqs[2], role="tool", content="材料")], scope="task:t"
     )
     with pytest.raises(BudgetConfigError, match="输出上界"):
-        engine._reserve_summary(material, "attempt#1", "run:test-upper")
+        engine._reserve_summary(material, "attempt#1", run.run_id)
     log.close()
 
 
@@ -627,16 +629,37 @@ engine = AgentLoop(
     budget=stack.budget, contents=stack.contents, summaries=stack.summaries,
     memory=stack.memory,
 )
+if {after_ready!r}:
+    from tianshu.crashpoint import failpoint
+    complete = stack.summaries.complete
+
+    def complete_then_crash(*args, **kwargs):
+        record = complete(*args, **kwargs)
+        failpoint("summary-test-after-ready")
+        return record
+
+    stack.summaries.complete = complete_then_crash
 task = stack.tasks.create_task("长任务", [{ws!r}])
 engine.start(task.task_id, out_name="")
 """
 
 
-def _spawn_crash(tmp_path: Path, ws: Path, rounds: int) -> subprocess.CompletedProcess:
-    env = dict(os.environ)
-    env["TIANSHU_FAILPOINT"] = "summary-after-call"
-    env["PYTHONDONTWRITEBYTECODE"] = "1"
+def _spawn_crash(
+    tmp_path: Path, ws: Path, rounds: int, *, after_ready=False,
+) -> subprocess.CompletedProcess:
     src = str(Path(__file__).resolve().parents[1] / "src")
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": os.environ.get("HOME", ""),
+        "LANG": "en_US.UTF-8",
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "TIANSHU_CREDENTIAL_BACKEND": "env",
+        "TIANSHU_FAILPOINT": "summary-test-after-ready" if after_ready else "summary-after-call",
+        "TIANSHU_AUTHORITY_ROOT": os.environ["TIANSHU_AUTHORITY_ROOT"],
+        "TIANSHU_DATA_ROOT": str(tmp_path / "data"),
+        "TIANSHU_TEST_LOCK_ROOT": os.environ["TIANSHU_TEST_LOCK_ROOT"],
+        "PYTEST_TIANSHU_REGISTRY_HOME": os.environ["PYTEST_TIANSHU_REGISTRY_HOME"],
+    }
     code = _CHILD.format(
         src=src,
         db=str(tmp_path / "data" / "events.db"),
@@ -644,9 +667,10 @@ def _spawn_crash(tmp_path: Path, ws: Path, rounds: int) -> subprocess.CompletedP
         rounds=rounds,
         budget=BUDGET_BYTES,
         constraint=CONSTRAINT,
+        after_ready=after_ready,
     )
     return subprocess.run(
-        [sys.executable, "-c", code],
+        [sys.executable, "-P", "-c", code],
         env=env,
         capture_output=True,
         text=True,

@@ -117,7 +117,7 @@ CREATE TABLE summary_versions (
 ### 2.3 生成路径：授权、预算、先持久化再引用
 
 摘要调用是**模型调用**，所以它必须和主调用一样经过能力准入与共享预算账本，
-并且**先落库、后引用**。顺序写死（任何一步失败都回落确定性裁剪，不抛给用户）：
+并且**先落库、后引用**。材料、预算、模型或正文失败时回落确定性裁剪；失去作业归属则停止当前驱动：
 
 ```
 确定性编译 ──> 有 dropped_seqs？── 否 ──> 正常发请求
@@ -125,15 +125,17 @@ CREATE TABLE summary_versions (
                    ▼
             build_material()  （有界，纯函数）
                    ▼
-            store.latest(material_id)
+            写事务内核验作业归属、最新版本和版本上限
               ├─ ready    ──> 直接复用（0 次调用）
               ├─ pending  ──> 崩溃遗留：标 failed「中断，结果未知」，不重试
-              ├─ failed   ──> 本 Run 内不再重试（一次材料最多一次调用）
-              └─ 无       ──> ① store.begin(pending) 先提交
-                             ② 账本 reserve(requests=1, tokens=…)
-                             ③ model.complete(摘要提示词, tools=[])
-                             ④ store.complete(ready) 提交正文
-                             ⑤ 账本按 usage 结算（未知不记零）
+              ├─ failed   ──> 同材料不再生成；复用已有摘要或确定性回落
+              └─ 无       ──> 同一事务提交 pending + 独立账本预占 + 发送前遥测
+                   ▼
+            提交后最终写事务核验归属、版本/预占状态和预算取消
+                   ▼
+            model.complete(摘要提示词, tools=[])
+                   ▼
+            吸收 usage、账本结算（未知不记零）、写最终遥测和 ready 正文
                    ▼
             compile_context(..., summaries=(slice,))  ← 引用的是**已提交**的行
                    ▼
@@ -152,11 +154,12 @@ CREATE TABLE summary_versions (
 可审计的记录行（`model` / `prompt_version` / `attempt_id` / usage）。这条要在
 PR body 里写明，不能只写"已授权"三个字。
 
-**计数**：摘要调用计入 `_Progress.model_attempts`（"到底打出去几次模型"），
-其 usage 计入 `tokens` / `cost_total_micros` / `unknown_usage_calls` /
-`unknown_cost_calls`（与主调用同口径）；另给 `RunResult.summary_calls`
-（从摘要表按 `run_id` 数，**resume 之后不丢**）。这样"偷偷多调一次"在既有台账上
-就能被看见。
+**计数**：正常运行时摘要进入模型调用便计入 `_Progress.model_attempts`，其 usage
+计入 `tokens` / `cost_total_micros` / `unknown_usage_calls` / `unknown_cost_calls`
+（与主调用同口径）。`RunResult.summary_calls` 是摘要表按 `run_id` 统计的**保存版本数**
+（含预算拒绝等从未进入 adapter 的版本，**resume 之后不丢**），不是真实调用次数。
+涉及摘要版本的恢复 Run 报告 `model_attempts_known=False`，次数只作为已知下界；
+真实调用与用量以模型事件和摘要遥测分别核对。
 
 **预算口径**：`estimate` 模式用 `estimate_need(input_chars=len(prompt))`（估算，
 不冒充上界）；`upper` 模式用 `upper_need(input_bytes=len(prompt.encode()),
@@ -212,14 +215,14 @@ output_bound=declared_output_tokens(model))`——拿不到声明的输出上界
 | 情形 | 行为 |
 |---|---|
 | 模型报错 / 空正文 / 正文超 `SUMMARY_MAX_BYTES` | `store.fail(有界原因)`，账本按未知结算，**回落确定性裁剪**；本 Run 内该材料不再重试 |
-| 预算拒绝 / 已取消 / 上界被打穿 | 同上（不调用） |
-| `pending` 行（调用中途崩溃） | 恢复时标 `failed`「中断：结果未知」，**不再调用**——重试等于偷偷加一次调用 |
+| 预算拒绝 / 已取消 / 上界被打穿 | 写 `failed` 和适用的拒绝事件，不调用、不伪造结算，回落确定性裁剪 |
+| `pending` 行（调用中途崩溃） | 再次遇到同材料时标 `failed`「中断：结果未知」，**不再调用**——重试等于偷偷加一次调用 |
 | 正文写库后、`model.intent` 之前崩溃 | 重启后 `latest(material_id)` 命中 `ready` ⇒ 直接复用（0 次调用） |
 | 换摘要模型 | 旧版本永久保留；历史 `model.intent` 按 `summary_id` 指向旧行 ⇒ 回放结果不变 |
 | 显式刷新 | `store.begin()` 追加 `version+1`；旧 run 仍引用旧版本（API 有，CLI 未接） |
 
-`Limits.summary_max_calls`（默认 3）是本 Run 的调用上限：长任务里丢弃集合会随轮次
-变大 ⇒ 材料变 ⇒ 新调用；有上限才不会"每轮一次"。超限回落确定性裁剪。
+`Limits.summary_max_calls`（默认 3）是本 Run 的摘要版本上限：长任务里丢弃集合会随轮次
+变大 ⇒ 材料变 ⇒ 新版本；未发送和预算拒绝也占名额。超限后复用已有摘要或回落确定性裁剪。
 
 ### 2.7 信任边界（§7.1 第 2 条）
 
@@ -276,7 +279,7 @@ output_bound=declared_output_tokens(model))`——拿不到声明的输出上界
 | 账本拒绝 ⇒ 不调用、写 failed 行、回落确定性、Run 继续 | ③ 跳过预占直接调用 → 红 |
 | 先 `begin(pending)` 再调用（顺序）：崩溃夹具在调用后、`complete` 前退出 ⇒ 重启不重试 | ④ 先调用后建行 → 红 |
 | 崩溃遗留 `pending` ⇒ 标 failed、不再调用 | ⑤ 重试 pending → 红 |
-| 摘要调用计入 `model_attempts` / `tokens` / `summary_calls` | ⑥ 不计数 → 红 |
+| 摘要调用计入 `model_attempts` / `tokens`；保存版本计入 `summary_calls` | ⑥ 不计数 → 红 |
 | upper 模式拿不到输出上界 ⇒ 不摘要（不抛错、主调用照旧） | ⑦ 抛 `BudgetConfigError` 弄死 Run → 红 |
 | 换模型再 replay ⇒ 结果不变；追加 v2 后旧 run 仍引用 v1 | ⑧ 回放改用"当前最新版本" → 红 |
 | 长任务：关键约束被摘要遗漏 ⇒ 探测器报缺（失败） | ⑨ 探测器恒真 → 红 |
@@ -290,7 +293,7 @@ output_bound=declared_output_tokens(model))`——拿不到声明的输出上界
    那一份"，不来自"禁止模型"。这条改动会在 PR body 里给旧/新口径对照。
 2. **`model.intent.payload.context` 增加可选键 `summaries`**：封闭 schema 里加
    可选字段（与既有 `memories` 同形），缺省不写 ⇒ 旧日志、旧夹具、老 digest 不变。
-3. **`RunResult` 增加 `summary_calls`**：默认 0；序列化/展示层按可选字段处理。
+3. **`RunResult` 增加 `summary_calls`**：默认 0，语义为本 Run 保存的摘要版本数而非调用次数；序列化/展示层按可选字段处理。
 4. **不新增事件类型**：`EVENT_TYPES` 仍 41 个。审计面 = 摘要表行 + 账本行 +
    `model.intent` 的引用 + run 计数；四处各有单一职责，不重复存正文。
 

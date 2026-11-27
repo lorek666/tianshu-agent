@@ -514,6 +514,27 @@ def test_negative_provider_usage_cannot_refund_run_budget(
 # ---------------------------------------------------------------- 9 接线：控制面取消
 
 
+def test_cancel_blocks_descendants_through_the_account_chain(tmp_path):
+    log, ledger = _ledger(tmp_path)
+    try:
+        ledger.create_account("root")
+        ledger.create_account("child", parent_id="root")
+        ledger.create_account("sibling")
+        assert ledger.cancel("root") == 2
+        assert ledger.is_cancelled("root") and ledger.is_cancelled("child")
+        assert not ledger.is_cancelled("sibling")
+
+        # 取消后新建的后代自身仍是 cancelled=0；祖先事实必须继续阻断它。
+        ledger.create_account("late-child", parent_id="root")
+        assert ledger.account("late-child")["cancelled"] is False
+        assert ledger.is_cancelled("late-child")
+        with pytest.raises(BudgetCancelled):
+            ledger.reserve("late-child", attempt_id="blocked", need={"tokens": 1})
+        ledger.reserve("sibling", attempt_id="allowed", need={"tokens": 1})
+    finally:
+        log.close()
+
+
 def test_control_plane_cancel_propagates_to_the_ledger(tmp_path):
     log = EventLog(tmp_path / "events.db")
     stack = stack_for(log, data_root=tmp_path)

@@ -195,8 +195,11 @@ def finish_call(
         )
 
 
-def read_calls(log: EventLog) -> list[dict]:
-    """只读旧库时不建表；校验版本/摘要身份/调用哈希后才交给报告。"""
+def read_calls(log: EventLog, *, run_id: str | None = None) -> list[dict]:
+    """只读旧库时不建表；校验版本/摘要身份/调用哈希后才交给报告。
+
+    `run_id=None` 保留全库读取契约；指定时只读取该 Run 的请求与回执。
+    """
     tables = {row[0] for row in log.conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
         "('summary_model_calls','summary_model_usage')",
@@ -204,11 +207,15 @@ def read_calls(log: EventLog) -> list[dict]:
     if not tables:
         return []
     _require(tables == {"summary_model_calls", "summary_model_usage"})
+    scope = " WHERE summary_id IN (SELECT summary_id FROM summary_versions WHERE run_id = ?)"
+    scope, params = (scope, (run_id,)) if run_id is not None else ("", ())
     responses = {row["summary_id"]: row for row in log.conn.execute(
-        "SELECT * FROM summary_model_usage",
+        "SELECT * FROM summary_model_usage" + scope, params,
     )}
     calls = []
-    for row in log.conn.execute("SELECT * FROM summary_model_calls ORDER BY summary_id"):
+    rows = log.conn.execute("SELECT * FROM summary_model_calls" + scope + " ORDER BY summary_id",
+                            params)
+    for row in rows:
         request = _decode(row)
         saved = log.conn.execute(
             "SELECT * FROM summary_versions WHERE summary_id=?", (row["summary_id"],),

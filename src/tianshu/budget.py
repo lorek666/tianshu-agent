@@ -773,8 +773,9 @@ class BudgetLedger:
         return len(ids)
 
     def is_cancelled(self, account_id: str) -> bool:
-        account = self.account(account_id)
-        return bool(account and account["cancelled"])
+        if self.account(account_id) is None:
+            return False
+        return any(self.account(level)["cancelled"] for level in self._chain(account_id))
 
     # ------------------------------------------------------------ 报告
 
