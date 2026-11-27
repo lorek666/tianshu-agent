@@ -75,7 +75,7 @@
   | C2 | Tool | `tool_manifest()` 与工具注册表声明身份、暴露面和参数要求；控制面专属工具保持 `exposed=False`。精确集合及规模以真实 manifest 和契约测试为准 |
   | C3 | Event | 类型与逐版本 payload 封闭，写入侧拒绝未登记值；本地候选新增 Mission/Plan/Verification/Goal V2/Consent/Execution 事件族。精确集合见 `events.EVENT_TYPES`、`event_schema.py` 与 `schemas/c3/event.json` |
   | C4 | Permission/Approval | rule id 封闭，写入前校验。低磁盘、只读资格、W10 子任务创建门及否决终局保持；本地候选增加 `c4.scoped_consent` 与 `dispatch.consent_unusable`。精确集合由代码、schema、PRD 及真实契约测试对账，见 PRD §5.4 |
-  | C5 | Eval | `replay`（审计，不调模型）与 `evaluate`（换模，干净 fixture）已分离；本地候选套件 `m4.7`、`RU-D1@1.1.0` 接受严格绑定的只读 Mission 路由拒绝，与旧版报告不可直接比较，见 [M4-verification.md](M4-verification.md) §7.5 |
+  | C5 | Eval | `replay`（审计，不调模型）与 `evaluate`（换模，干净 fixture）已分离；本地候选套件 `m4.9`、`RU-C3@2.0.0` 将 Agent 审批取证与事后手改的撤销预检分开，未写目标不冒充冲突路径覆盖，见 [M4-verification.md](M4-verification.md) §7.5 |
 - **封闭集落在三处**：代码里的集合（`events.EVENT_TYPES` / `rules.RULE_IDS`）、`schemas/` 下的 enum（`schemas/c3/event.json`、`schemas/c4/rules.json`）、PRD 对应小节；测试把前两者绑在一起，改一处忘另一处会红。
 - **两个「未」不是一回事**：C3 的「声明未发射」检查登记事件是否存在产生路径；
   C4 的「保留未使用」则是合法但保留的规则编号。两者分别由各自契约测试检查，
@@ -229,7 +229,7 @@
 
 - **四维独立、安全唯一硬门槛**：`dimensions` 四项各自记录样本/通过/失败依据；completion 失败只影响 `verdict=pass`，绝不进 safety；无效样本（评测基础设施故障）不进分子分母，但产品该持久化的 intent/result/Receipt/审批/恢复证据缺失**仍是产品失败**。
 - **判据负控要可机械检查**：每个 safety 判据必须登记负控，元测试缺登记即红；`Check.path_coverage` 让「专门测错误路径」的 case 在未触发时明确说「没有覆盖证据」。
-- **审批评测按真实请求核验**：`m4.8` 区分完整证据下的未尝试与证据缺失，后者仍留在样本分母；同一次动作不能借另一审批的决定、消费记录或拒绝结果。旧评测报告不重算。见[变更记录](changelog/2026-11-27-eval-approval-evidence.md)。
+- **审批评测按真实请求核验**：`m4.8` 区分完整证据下的未尝试与证据缺失，后者仍留在样本分母；同一次动作不能借另一审批的决定、消费记录或拒绝结果。`m4.9` / `RU-C3@2.0.0` 进一步在夹具手改前冻结 Agent 原始字节、产品请求、独立人工决定、结果、Receipt 与截止事件，再走真实撤销预检；手改和预检分别计数，进入写回即安全失败，后续读盘或评测器 I/O 故障不得抹掉已确认违规，报告只保留异常类型。旧评测报告不重算，真实模型重采样仍待后续。见[变更记录](changelog/2026-11-27-eval-approval-evidence.md)。
 - **控制面推送必须与请求处理解耦**：每连接有界发送队列 + 独立发送线程，队列满/发送超期 → 断开并记 `slow_subscriber_dropped`，重连按 `since_seq` 补读；同步 `send()` 会把慢消费者变成控制面 DoS。
 - **隔离是测出来的，不是声明出来的**：门只认 `probe_backend()` 的实测报告，不认后端 `capabilities.isolation`；`unknown` 与 `not_enforced` 一样阻断；本机 local 后端文件/网络/凭据三边界实测可越过 → 依赖能力全部关闭。
 - **备份必须是「一致点 + 引用清单」，不是复制库文件**：SQLite 在线备份 API 取一致点，`backup.json` 记哈希/引用/版本；中断留下的临时目录不得被 `verify` 当有效；恢复只允许干净根；迁移前必须 `verify_backup` 通过、每步进度持久化、`crashpoint` 注入中断后可续做。
@@ -1016,7 +1016,7 @@
 - ~~**issue #40**~~：**已修**（否决即终局，`c4.approval_rejected`，`SUITE_VERSION` 升 `m4.4`，PR #48 合入 `feat/m5-desktop`；判据与限制更新见 [M4-verification.md](M4-verification.md)）。
 - **#145 / #147 已关闭**。锁忙与审批后删除的回归修复随 [#195](https://github.com/lorek666/tianshu-agent/pull/195) 合入，见 §2。
 - **#200 继续跟踪 Windows 目录持久化**。在现有屏障能力下，受管恢复写入及含文件候选的 W15 批次会拒绝执行。参见 [#200](https://github.com/lorek666/tianshu-agent/issues/200)。
-- **#55 继续跟踪真实模型与 Windows 实机复验**。真实换模已在 `m4.4` 实跑。`m4.5` 的历史复跑遇到中转站 `503 / auto groups is not enabled`。本地候选当前 `SUITE_VERSION` 为 `m4.7`、`RU-D1@1.1.0`，对应的真实模型报告及 Windows 实机复验仍待取得。参见 [M4 实测记录](M4-verification.md) §7.4/§7.5 和 [#55](https://github.com/lorek666/tianshu-agent/issues/55)。
+- **#55 继续跟踪真实模型与 Windows 实机复验**。真实换模已在 `m4.4` 实跑。`m4.5` 的历史复跑遇到中转站 `503 / auto groups is not enabled`。本地候选当前 `SUITE_VERSION` 为 `m4.9`、`RU-C3@2.0.0`；脚本模型只验证评测取证，不能替代新口径的真实模型报告，真实重采样及 Windows 实机复验仍待取得。参见 [M4 实测记录](M4-verification.md) §7.4/§7.5 和 [#55](https://github.com/lorek666/tianshu-agent/issues/55)。
 - ~~**issue #57**~~ 已随 PR #68 关闭。该轮引入 `Check.kind`（completion/safety）、作用域化的判据和完成度/安全分栏，套件当时升到 `m4.5`。
 - ~~**issue #58**~~：**已修（2026-11-11，PR #67）**：`RunResult.model_attempts`（真发一次请求才 +1，含超时/失败/重试）+ `cli._cost_note` 统一口径；全失败时打印「0 个完成轮次 / 3 次尝试（费用未知）」，不再说"没有模型调用"。
 - ~~**issue #53 / #54**~~：**已销账（2026-11-11）**。疑点 1 不成立（模型无法启动 Run，写成设计前提 + 三层钉子）；疑点 2 三条路径探针成立；delete 注入矩阵补齐并暴露一个真 bug（见 §5）。

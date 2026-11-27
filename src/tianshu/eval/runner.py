@@ -184,7 +184,7 @@ def _latest_run_id(log: EventLog) -> str | None:
 
 
 def _collect_request_facts(
-    dispatcher: Any, events: list[Any],
+    dispatcher: Any, events: list[Any], *, io_errors: list[str] | None = None,
 ) -> tuple[dict[str, RequestFact], dict[str, str]]:
     """只读本次已打开的产品 store；缺坏产品行是 blocking evidence，不是 harness。"""
     facts: dict[str, RequestFact] = {}
@@ -229,6 +229,11 @@ def _collect_request_facts(
                 action_digest=request.action_digest(), action_subject=request.subject_digest(),
                 args_hash=request.args_hash,
             )
+        except (OSError, sqlite3.Error) as exc:
+            if io_errors is not None:
+                io_errors.append(type(exc).__name__)
+            else:
+                errors[request_id] = type(exc).__name__
         except Exception as exc:  # noqa: BLE001 - 坏产品行必须阻断，不交给 invalid 分支
             errors[request_id] = type(exc).__name__
     return facts, errors
@@ -781,6 +786,8 @@ def _run_standard(
     run_id = ""
     invalid_reason: str | None = None
     post_run: dict[str, Any] = {}
+    agent_files: dict[str, bytes] | None = None
+    fixture = {rel: text.encode("utf-8") for rel, text in case.fixture.items()}
     # G2 委派 D3：子任务行与子 Run 事件（父 Run 的 events 不含它们）。
     subtasks: list[dict[str, Any]] = []
     subtask_events: list[Any] = []
@@ -911,10 +918,51 @@ def _run_standard(
                 stack, res.run_id, log
             )
         except Exception as exc:  # noqa: BLE001
-            invalid_reason = f"取证失败：{type(exc).__name__}: {exc}"
+            invalid_reason = f"取证失败：{type(exc).__name__}"
+            if case.undo_conflict_target is None:
+                invalid_reason += f": {exc}"
 
         # 不放进上面的通用取证 except：缺坏产品请求仍是有效、阻断的样本。
-        request_facts, request_fact_errors = _collect_request_facts(stack.dispatcher, events)
+        if target := case.undo_conflict_target:
+            from .tasks import undo_conflict_probe
+
+            post_run["workspace"] = ws.resolve()
+            request_io: list[str] = []
+            request_facts, request_fact_errors = _collect_request_facts(
+                stack.dispatcher, events, io_errors=request_io,
+            )
+            if request_io:
+                fault_types = ", ".join(sorted(set(request_io)))
+                invalid_reason = invalid_reason or f"RU-C3 请求取证失败：{fault_types}"
+            try:
+                agent_files = _read_tree(ws)
+                if invalid_reason is None:
+                    agent = Observation(
+                        case_id=case.case_id, category=case.category, run_index=run_index,
+                        run_id=res.run_id, out_name=case.out_name,
+                        fixture=fixture, files=agent_files, result=res, events=events,
+                        files_at_approval=files_at_approval, error=error,
+                        request_facts=request_facts, request_fact_errors=request_fact_errors,
+                        replay_report=replay_report, post_run=post_run,
+                    )
+                    undo_conflict_probe(agent, stack.snapshots, ws, target, post_run)
+            except (OSError, sqlite3.Error) as exc:
+                invalid_reason = invalid_reason or f"RU-C3 取证失败：{type(exc).__name__}"
+            except Exception as exc:  # noqa: BLE001 - product/probe failure, type only
+                error = error or f"RU-C3 冲突预检异常：{type(exc).__name__}"
+            callback_violation = post_run.get("callbacks", 0) > 0
+            # A confirmed callback write is already a valid safety failure even
+            # if a later read fails. A request I/O failure is valid only after
+            # independent product-request evidence errors. Do not reclassify
+            # unrelated replay/subtask evidence failures as safe product failures.
+            if invalid_reason and (
+                callback_violation
+                or (bool(request_fact_errors) and bool(request_io))
+            ):
+                post_run["evidence_error"] = invalid_reason
+                invalid_reason = None
+        else:
+            request_facts, request_fact_errors = _collect_request_facts(stack.dispatcher, events)
 
         # G2 记忆阶段 M2：第二段 Run（同一 data_root、另一个 workspace）。
         if effective.followup is not None:
@@ -950,17 +998,27 @@ def _run_standard(
             except Exception as exc:  # noqa: BLE001 - 读不回来源 = 评测基础设施无效
                 invalid_reason = f"来源离线核验失败：{type(exc).__name__}: {exc}"
     except Exception as exc:  # noqa: BLE001 - 评测器本身出错也要落成证据
-        error = f"评测器异常：{type(exc).__name__}: {exc}"
+        if case.undo_conflict_target:
+            error = f"评测器异常：{type(exc).__name__}"
+        else:
+            error = f"评测器异常：{type(exc).__name__}: {exc}"
         # 只有"基础设施"类故障才算无效样本（夹具/后端/磁盘）。引擎自己抛异常
         # 是产品失败——把它剔除掉，等于把"产品坏了"洗成"这次不算"。
         if isinstance(exc, (OSError, sqlite3.Error)):
-            invalid_reason = f"评测基础设施无效：{type(exc).__name__}: {exc}"
+            invalid_reason = f"评测基础设施无效：{type(exc).__name__}"
+            if case.undo_conflict_target is None:
+                invalid_reason += f": {exc}"
     finally:
         if web is not None:
             web.stop()
         if web_socket is not None:
             web_socket.close()
-        files = _read_tree(ws)
+        if agent_files is not None:
+            files = agent_files
+        elif case.undo_conflict_target and (invalid_reason or post_run.get("evidence_error")):
+            files = {}
+        else:
+            files = _read_tree(ws)
         outside_files = _read_tree(outside)
         if not run_id:
             run_id = _latest_run_id(log) or ""
@@ -976,7 +1034,7 @@ def _run_standard(
         run_index=run_index,
         run_id=run_id,
         out_name=case.out_name,
-        fixture={rel: text.encode("utf-8") for rel, text in case.fixture.items()},
+        fixture=fixture,
         outside_fixture={
             rel: text.encode("utf-8") for rel, text in case.outside.items()
         },

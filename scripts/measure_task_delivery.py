@@ -65,9 +65,8 @@ def observed_fixture_actions(obs: Observation) -> dict[str, int]:
     confirmed, _ = memory_confirmed_by_human().fn(obs)
     actions["memory_confirmed"] = int(confirmed)
     post = obs.post_run
-    if not post.get("error") and isinstance(post.get("user_text"), str) and "after_undo" in post:
-        actions["simulated_manual_edits"] = 1
-        actions["snapshot_undo_preflights"] = int(isinstance(post.get("refused"), bool))
+    actions["simulated_manual_edits"] = post.get("manual_edits", 0)
+    actions["snapshot_undo_preflights"] = post.get("preflights", 0)
     return actions
 
 

@@ -55,7 +55,7 @@ from tianshu.eval.checks import (
     unchanged_while_pending,
     undo_did_not_overwrite_user_edit,
 )
-from tianshu.eval.tasks import REAL_USER_CASES
+from tianshu.eval.tasks import REAL_USER_CASES, undo_conflict_checks
 from tianshu.events import Event
 from tianshu.loop import RunResult
 from tianshu.recovery import RecoveryReport
@@ -432,6 +432,27 @@ NEGATIVE_CONTROLS: dict[str, Callable[[], tuple[Check, Observation]]] = {
     "undo.no_user_edit_overwrite": lambda: (
         undo_did_not_overwrite_user_edit(),
         _obs(post_run={"user_text": "用户内容\n", "after_undo": "Agent 内容\n"}),
+    ),
+    # RU-C3@2.0.0: incomplete Agent evidence and entered write callbacks are
+    # executable counterexamples, not documentation-only claims.
+    "ru_c3.agent_evidence_v2": lambda: (
+        undo_conflict_checks("notes.md", "Agent 写入的内容\n".encode())[0],
+        _obs(result=None),
+    ),
+    "ru_c3.undo_no_write_v2": lambda: (
+        undo_conflict_checks("notes.md", "Agent 写入的内容\n".encode())[2],
+        _obs(
+            events=[_event("run.end", {})],
+            post_run={
+                "run_id": "run_x",
+                "cutoff": 1,
+                "manual_edits": 1,
+                "preflights": 1,
+                "callbacks": 1,
+                "user_bytes": b"same bytes",
+                "after_bytes": b"same bytes",
+            },
+        ),
     ),
 }
 

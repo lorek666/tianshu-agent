@@ -240,6 +240,50 @@ def fixture_digest(case: Case) -> str:
     # 只在**非默认**时加键：默认值（0 / {}）不写进 payload，既有 27 条 case 的
     # digest 逐字节不变（不因新字段给不相关的 case 换分母，也不需要为此 bump
     # SUITE_VERSION）。
+    if case.undo_conflict_target:
+        from .. import snapshot as snapshot_mod
+        from . import checks as checks_mod
+        from . import tasks as tasks_mod
+
+        # Nested v2 check functions delegate to these helpers. Hashing only their
+        # source would miss changes to approval attribution, byte freezing or the
+        # real preflight, so bind the complete two-phase implementation.
+        payload["undo_conflict"] = [
+            case.undo_conflict_target,
+            {
+                **{
+                    name: _source_sha256(getattr(tasks_mod, name))
+                    for name in (
+                        "_c3_digest",
+                        "_c3_after_state",
+                        "_c3_approvals",
+                        "_c3_agent_evidence",
+                        "_C3UnexpectedWrite",
+                        "undo_conflict_probe",
+                        "undo_conflict_checks",
+                    )
+                },
+                # These names are imported into tasks.py and called directly by
+                # the v2 evidence gate. Bind the actual aliases as well as their
+                # defining module so replacing either layer changes identity.
+                "checks_module": _source_sha256(checks_mod),
+                "check_dependencies": {
+                    name: _source_sha256(getattr(tasks_mod, name))
+                    for name in (
+                        "approval_write_gated",
+                        "approval_no_double_consume",
+                        "_complete_run_evidence",
+                        "_approval_records",
+                        "_request_fact",
+                    )
+                },
+                # The probe must keep using the real product preflight. The
+                # module digest covers transitive undo helpers; the method digest
+                # also catches runtime replacement of SnapshotStore.undo itself.
+                "snapshot_module": _source_sha256(snapshot_mod),
+                "snapshot_undo": _source_sha256(snapshot_mod.SnapshotStore.undo),
+            },
+        ]
     if case.max_subtasks:
         payload["max_subtasks"] = case.max_subtasks
     if case.subtask_scripts:
@@ -319,8 +363,18 @@ def _attribute(obs: Observation, failed: list[Any]) -> list[str]:
     return layers
 
 
+def _private_detail(result: Any) -> str:
+    """RU-C3 exports decisions, never replay problems or exception text."""
+    if result.check_id == "replay.ok":
+        return "回放通过" if result.passed else "回放失败（问题详情已脱敏）"
+    if result.check_id == "harness.no_error":
+        return "评测器无异常" if result.passed else "评测器异常（详情已脱敏）"
+    return result.detail
+
+
 def _run_entry(
-    obs: Observation, results: list[Any], *, scope: str, real_model: bool = False
+    obs: Observation, results: list[Any], *, scope: str, real_model: bool = False,
+    private: bool = False,
 ) -> dict[str, Any]:
     failed = [r for r in results if not r.passed and not r.metric]
     metrics = {r.check_id: r.passed for r in results if r.metric}
@@ -359,10 +413,17 @@ def _run_entry(
         "crashed": obs.crashed,
         "n_applied": None if obs.result is None else obs.result.n_applied,
         "n_unknown": None if obs.result is None else obs.result.n_unknown,
-        "error": obs.error,
+        "error": (
+            ("RU-C3 评测器异常（详情已脱敏）" if (obs.error or obs.post_run.get("evidence_error"))
+             else None)
+            if private else (obs.error or obs.post_run.get("evidence_error"))
+        ),
         # PRD §10.2：无效样本（基础设施故障）不参加分子/分母；与"产品失败"分开记。
         "invalid": obs.invalid_reason is not None,
-        "invalid_reason": obs.invalid_reason,
+        "invalid_reason": (
+            "RU-C3 取证失败（详情已脱敏）" if private and obs.invalid_reason
+            else obs.invalid_reason
+        ),
         # PRD §10.5：「未具备能力」的诚实登记样本，不是跳过。
         "unavailable": obs.unavailable,
         "checks": [
@@ -373,7 +434,7 @@ def _run_entry(
                 "safety": r.safety,
                 "metric": r.metric,
                 "path_coverage": r.path_coverage,
-                "detail": r.detail,
+                "detail": _private_detail(r) if private else r.detail,
             }
             for r in results
         ],
@@ -384,7 +445,7 @@ def _run_entry(
                 "kind": r.kind,
                 "safety": r.safety,
                 "path_coverage": r.path_coverage,
-                "detail": r.detail,
+                "detail": _private_detail(r) if private else r.detail,
             }
             for r in failed
         ],
@@ -593,9 +654,10 @@ def build_report(
             # 但证据在同一个 Observation 上（`obs.followup`），所以在这里一起评。
             # 漏掉它们，报告就会"看不见第二段"——那正是这段要证明的东西。
             followup_checks = () if case.followup is None else case.followup.checks
-            results = evaluate_checks(obs, (*case.checks, *followup_checks))
+            private = case.undo_conflict_target is not None
+            results = evaluate_checks(obs, (*case.checks, *followup_checks), private=private)
             entry = _run_entry(
-                obs, results, scope=case.scope, real_model=real_model
+                obs, results, scope=case.scope, real_model=real_model, private=private,
             )
             run_entries.append(entry)
             total_runs += 1
@@ -608,7 +670,10 @@ def build_report(
                         "case_id": case.case_id,
                         "run_index": obs.run_index,
                         "run_id": obs.run_id,
-                        "reason": obs.invalid_reason,
+                        "reason": (
+                            "RU-C3 取证失败（详情已脱敏）"
+                            if case.undo_conflict_target else obs.invalid_reason
+                        ),
                     }
                 )
                 continue
@@ -627,7 +692,7 @@ def build_report(
                         "run_index": obs.run_index,
                         "run_id": obs.run_id,
                         "check_id": violation.check_id,
-                        "detail": violation.detail,
+                        "detail": _private_detail(violation) if private else violation.detail,
                     }
                 )
             for layer in entry["attribution"]:
