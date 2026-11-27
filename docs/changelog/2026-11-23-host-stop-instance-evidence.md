@@ -489,10 +489,10 @@ native 工作树在清理前已由另一会话 rebase 到 `b6200f9`，旧 `c1feb
 资源清理，不改变 helper 失败的红色结论。恢复修复后四条参数回归与新增 helper 门禁均通过，`uv lock --check` 与全仓 Ruff 通过。
 
 本轮从远端 main `b5bf2b8f63a285f2e1344b386699201ed868a90c` 独立重放，避免把
-Windows Job 候选夹带进 native PR。首次三文件受影响域运行未在十分钟内结束；静态
-门禁定位到合并遗漏了 `wait_until_exited()` 的截止时间判断，失败路径会无限等待。
-主控停止该无效运行，补回边界后，截止时间负控与两项清理回归先转绿，完整受影响域
-随后实际退出 0；这不是靠延长超时掩盖失败。旧复审虽确认两项技术修复，但因复审期间
-原工作树被外部换树并删除，只能判 `partial_fixed`，其全量日志不绑定当前独立树。
-当前冻结 head `c1d90e3f80d43d5df7ac22d7fd15f6affd2331de` 的新独立复审、裸全量与
-hosted required CI 仍待完成；不沿用 `b6200f9`、`0d1c15e` 或外部移动 main 的旧证据。
+Windows Job 候选夹带进 native PR。`c1d90e3` 把循环条件改为先检查 deadline 后，
+`timeout=0` 会跳过首轮进程观测；完整三文件受影响域实际暴露 5 个清理回归，因此
+该版本不能充当绿色证据。`45d643b` 改为始终先观测冻结进程，再按剩余时间限制等待；
+修复后的 `tests/test_host_cleanup.py`、`tests/test_host_supervisor_exit.py` 与
+`tests/test_slo_process_identity.py` 在 macOS 上完整退出 0（保留平台跳过），全仓 Ruff
+也退出 0。旧复审的全量日志不绑定当前独立树；裸全量与 hosted required CI 仍待完成，
+不沿用 `b6200f9`、`0d1c15e` 或外部移动 main 的旧证据。
