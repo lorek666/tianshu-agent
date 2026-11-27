@@ -1135,13 +1135,16 @@ class TaskStore(_SubtaskStoreMixin, _TaskCursorRebuildMixin):
             effect_state = run.effect_state or "none_applied"
             job = self._claims.job_for_run(run_id) if self._claims is not None else None
             parked = job is not None and job.state == JOB_WAITING
-            if run.state in safe or parked:
+            if run.state in safe:
                 effect_state = self._cancel_effect_state(
                     run_id, run, self._log.read_run(run_id),
                 )
-                if parked and run.state not in safe:
-                    # 作业已挂起，没有驱动者会确认请求；在同一事务内核对作业和副作用。
-                    safe = (*safe, run.state)
+            elif parked and self.load_cursor(run_id) is None:
+                effect_state = self._cancel_effect_state(
+                    run_id, run, self._log.read_run(run_id),
+                )
+                # 缺游标的作业已挂起，没有驱动者会确认请求；在同一事务内核对作业和副作用。
+                safe = (*safe, run.state)
             immediate = run.state in safe
             marks = ",".join("?" * len(safe))
             tx.append(
