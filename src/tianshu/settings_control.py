@@ -5,8 +5,7 @@
 2. 严守凭据与授权红线：
    - **密钥绝不落 `model_config.json`、不进事件日志、不在 RPC 响应或错误消息中回显**
      （连前后缀都不回显，只返回布尔 `configured`）；
-   - **不静默降级**：平台不支持 Keychain 或当前为只读 `env` 后端时，写入/删除明确返回
-     `unsupported`，绝不退回明文文件；
+   - **只读环境变量**：写入/删除明确返回 `unsupported`，绝不退回明文密钥文件；
    - **测试完全隔离**：`RuntimeModelSlot` 接受注入 `stores`，单测不碰宿主机钥匙串。
 """
 
@@ -29,8 +28,7 @@ from .credentials import (
     ENV_VARS,
     CredentialRef,
     CredentialStore,
-    EnvCredentialStore,
-    KeychainCredentialStore,
+    default_store,
     redact,
     register_secret,
 )
@@ -62,7 +60,7 @@ from .openai_responses import OpenAIResponsesModel
 from .scheduler import ScheduleInactive, ScheduleMissing, Scheduler
 
 VALID_MODES = ("scripted", "openai", "anthropic", "openai-responses")
-VALID_BACKENDS = ("keychain", "env")
+VALID_BACKENDS = ("env",)
 KNOWN_PROVIDERS = ("openai", "anthropic")
 ALLOWED_MODEL_CONFIG_KEYS = frozenset(
     {"mode", "model_name", "base_url", "credential_backend", "allow_image_attachments",
@@ -73,10 +71,14 @@ MODEL_PROFILES_FILE = "model_profiles.json"
 
 
 def _default_backend_name() -> str:
-    env_choice = (os.environ.get("TIANSHU_CREDENTIAL_BACKEND") or "").strip().lower()
-    if env_choice in VALID_BACKENDS:
-        return env_choice
-    return "keychain" if sys.platform == "darwin" else "env"
+    return default_store().capabilities.name
+
+
+def _editable_config(raw: Mapping[str, Any]) -> Mapping[str, Any]:
+    """仅迁移可编辑设置；历史 Run 路由绝不经过这里，也不在加载时写盘。"""
+    if raw.get("credential_backend") == "keychain":
+        return {**raw, "credential_backend": "env"}
+    return raw
 
 
 def _is_official_host(base_url: str, official_host: str) -> bool:
@@ -167,7 +169,7 @@ def _validate_base_url(raw: str) -> str:
         if parsed.password:
             register_secret(parsed.password)
         raise ValueError(
-            "base_url 不得包含用户名或密码（凭据请走系统钥匙串或环境变量）"
+            "base_url 不得包含用户名或密码（凭据请通过环境变量提供）"
         )
     if parsed.scheme not in ("http", "https") or not parsed.netloc:
         raise ValueError("base_url 必须是合法的 http 或 https URL（不含密钥）")
@@ -198,7 +200,7 @@ class ModelConfig:
             sorted_names = ", ".join(sorted(str(k) for k in unknown_keys))
             raise ValueError(
                 f"model.configure 拒绝未知或敏感字段（{redact(sorted_names)}）；"
-                "密钥请通过 credential.set 或环境变量提供"
+                "密钥请通过环境变量提供"
             )
         mode = str(raw.get("mode") or "scripted").strip().lower()
         if mode not in VALID_MODES:
@@ -220,9 +222,15 @@ class ModelConfig:
         base_url = _validate_base_url(raw_base_url or "")
         if mode == "openai-responses" and base_url:
             base_url = responses_endpoint(base_url).removesuffix("/responses")
-        backend = str(
-            raw.get("credential_backend") or _default_backend_name()
-        ).strip().lower()
+        raw_backend = (
+            raw["credential_backend"]
+            if "credential_backend" in raw else _default_backend_name()
+        )
+        if not isinstance(raw_backend, str):
+            raise ValueError("凭据后端必须是字符串（仅支持 env）")
+        backend = raw_backend.strip().lower()
+        if backend == "keychain":
+            raise ValueError("Keychain 凭据后端已停用，请使用环境变量配置启动新 Run")
         if backend not in VALID_BACKENDS:
             raise ValueError(f"未知凭据后端（可选：{list(VALID_BACKENDS)}）")
         allow_images = raw.get("allow_image_attachments", False)
@@ -287,8 +295,7 @@ class RuntimeModelSlot:
             dict(stores)
             if stores is not None
             else {
-                "env": EnvCredentialStore(),
-                "keychain": KeychainCredentialStore(),
+                "env": default_store(),
             }
         )
         self._config: ModelConfig | None = self._load_saved_config()
@@ -346,7 +353,9 @@ class RuntimeModelSlot:
                     or len(raw["profiles"]) > MODEL_PROFILE_LIMIT):
                 raise ValueError
             return {
-                model_profile_name(name): ModelConfig.of(validate_profile_config(cfg))
+                model_profile_name(name): ModelConfig.of(
+                    _editable_config(validate_profile_config(cfg)),
+                )
                 for name, cfg in raw["profiles"].items()
             }
         except (ValueError, RecursionError):
@@ -432,10 +441,12 @@ class RuntimeModelSlot:
         raw = json.loads(path.read_bytes().decode("utf-8"))
         if not isinstance(raw, dict):
             raise TianshuError(f"模型配置文件损坏（非 JSON 对象）：{path}")
-        return ModelConfig.of(raw)
+        return ModelConfig.of(_editable_config(raw))
 
     def store_for(self, backend: str) -> CredentialStore:
-        store = self._stores.get(backend)
+        if backend == "keychain":
+            raise CredentialUnsupported("Keychain 凭据后端已停用，请使用环境变量")
+        store = self._stores.get(backend) if backend in VALID_BACKENDS else None
         if store is None:
             raise CredentialUnsupported(
                 f"未知凭据后端（可选：{sorted(self._stores)}）"
@@ -653,7 +664,7 @@ class RuntimeModelSlot:
 
 
 def credential_views(slot: RuntimeModelSlot) -> list[dict[str, Any]]:
-    """返回各 provider 在 keychain 与 env 下的就绪状态；绝不回显任何密钥内容。"""
+    """返回各 provider 的环境变量就绪状态；绝不回显任何密钥内容。"""
     cfg = slot.current_config()
     items: list[dict[str, Any]] = []
     for backend in VALID_BACKENDS:
@@ -720,7 +731,9 @@ def _validate_credential_target(
     capability_class = str(params.get("capability_class") or "llm").strip().lower()
     if capability_class != "llm":
         raise error_cls("bad_params", "capability_class 当前仅支持 'llm'")
-    backend = str(params.get("backend") or "keychain").strip().lower()
+    backend = str(params.get("backend") or "env").strip().lower()
+    if backend == "keychain":
+        raise error_cls("unsupported", "Keychain 凭据后端已停用，请使用环境变量")
     if backend not in VALID_BACKENDS:
         raise error_cls("bad_params", f"未知凭据后端（可选：{list(VALID_BACKENDS)}）")
     return CredentialRef(provider, capability_class), backend

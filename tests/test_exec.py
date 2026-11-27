@@ -300,6 +300,8 @@ def test_env_whitelist_hides_unlisted_variables(tmp_path):
         env={
             "TIANSHU_TEST": "yes",
             "SECRET_SAUCE": "leak",
+            "TIANSHU_API_KEY": "fake-openai-provider-key",
+            "ANTHROPIC_API_KEY": "fake-anthropic-provider-key",
             "PATH": "/usr/bin:/bin",
         },
     )
@@ -307,6 +309,8 @@ def test_env_whitelist_hides_unlisted_variables(tmp_path):
     keys = set(result.stdout.strip().split(","))
     assert "TIANSHU_TEST" in keys
     assert "SECRET_SAUCE" not in keys, "未列出的变量被带进了子进程"
+    assert "TIANSHU_API_KEY" not in keys, "生产模型 key 不得进入普通子进程"
+    assert "ANTHROPIC_API_KEY" not in keys, "生产模型 key 不得进入普通子进程"
     assert "PATH" not in keys, "env_allowlist 里没有 PATH"
 
 

@@ -140,7 +140,7 @@ class RunFinishPersistenceError(TianshuError):
 
 
 class CredentialUnsupported(TianshuError):
-    """这个凭据后端/平台**做不到**这件事（例如 v1 的 OS Keychain）。
+    """这个凭据后端/平台**做不到**这件事（例如已停用的 Keychain）。
 
     与"没有配置凭据"**刻意不是一回事**：没配置是 `get() -> None` 的正常
     结果，可以靠设置环境变量解决；unsupported 是"这条路根本不存在"，

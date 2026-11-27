@@ -26,37 +26,21 @@ describe("SettingsApi & SettingsDialog", () => {
               mode: (params["mode"] as string) ?? "openai",
               model_name: (params["model_name"] as string) ?? "gpt-4o-mini",
               base_url: "",
-              credential_backend: "keychain",
+              credential_backend: "env",
               summary: "openai · gpt-4o-mini",
             },
             credentials: [
               {
                 provider: "openai",
                 capability_class: "llm",
-                backend: "keychain",
+                backend: "env",
                 active_backend: true,
                 implemented: true,
-                secure_storage: true,
-                writable: true,
+                secure_storage: false,
+                writable: false,
                 configured: true,
-                env_var: null,
+                env_var: "TIANSHU_API_KEY",
                 error: null,
-              },
-            ],
-          } as T;
-        }
-        if (method === "credential.set") {
-          return {
-            credentials: [
-              {
-                provider: "openai",
-                capability_class: "llm",
-                backend: "keychain",
-                active_backend: true,
-                implemented: true,
-                secure_storage: true,
-                writable: true,
-                configured: true,
               },
             ],
           } as T;
@@ -111,10 +95,6 @@ describe("SettingsApi & SettingsDialog", () => {
     expect(settings.model.mode).toBe("openai");
     expect(settings.credentials[0]?.configured).toBe(true);
 
-    const credAfter = await api.setCredential("openai", "sk-secret-never-echo", "keychain");
-    expect(JSON.stringify(credAfter)).not.toContain("sk-secret-never-echo");
-    expect(credAfter[0]?.configured).toBe(true);
-
     const schedules = await api.listSchedules();
     expect(schedules).toHaveLength(1);
     expect(schedules[0]?.goal).toBe("每日检查");
@@ -126,7 +106,7 @@ describe("SettingsApi & SettingsDialog", () => {
 
     const mcp = await api.getMcpOverview();
     expect(mcp.configured).toBe(false);
-    expect(calls.length).toBe(5);
+    expect(calls.length).toBe(4);
   });
 
   it("binds a watched directory read-only and preserves the real trigger shape", async () => {

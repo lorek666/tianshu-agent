@@ -85,7 +85,7 @@ loop、投影重建与 replay 共用 assistant 消息构造，replay 不联网�
 ## 5. 配置与验收
 
 设置 mode 和所有在线 CLI provider 新增 `openai-responses`；显式指定 Model ID；
-凭据域仍是 `openai`，复用 Keychain/env，不新建 credential provider。
+凭据域仍是 `openai`，复用 `TIANSHU_API_KEY` 环境变量（见[凭据约定](credential-env-contract.md)），不新建 credential provider。
 官方价格只对既有可信 host/模型匹配生效，网关或缓存计价不能准确判断时保持未知。
 
 自动压缩默认关闭。显式设置 `compact_threshold`（令牌数，整数 1024–2000000）时，

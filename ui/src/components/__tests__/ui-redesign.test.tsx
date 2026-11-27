@@ -111,7 +111,7 @@ class RedesignFakeHost implements HostClient {
     mode: "scripted",
     model_name: "",
     base_url: "",
-    credential_backend: "keychain",
+    credential_backend: "env",
     summary: "演示脚本模型（离线）",
     allow_image_attachments: false,
     compact_threshold: undefined as number | undefined,
@@ -131,7 +131,7 @@ class RedesignFakeHost implements HostClient {
         mode: nextMode,
         model_name: nextName,
         base_url: String(params.base_url ?? ""),
-        credential_backend: String(params.credential_backend ?? "keychain"),
+        credential_backend: String(params.credential_backend ?? "env"),
         summary: nextMode === "scripted" ? "演示脚本模型（离线）" : `${nextMode} · ${nextName}`,
         allow_image_attachments: params.allow_image_attachments === true,
         compact_threshold: typeof params.compact_threshold === "number"
@@ -779,7 +779,7 @@ describe("极简双区新界面、工作区上下文、诚实权限菜单与设�
       mode: "openai",
       model_name: "gpt-4o",
       base_url: "",
-      credential_backend: "keychain",
+      credential_backend: "env",
     });
     expect(
       container?.querySelector('[data-testid="followup-model-btn"]')?.textContent,

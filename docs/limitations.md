@@ -13,7 +13,7 @@
 这份清单是刻意写在前面而不是埋在文末的——本仓库的规矩是**文档不许说假话**（见 [CONTRIBUTING.md](../CONTRIBUTING.md)「文档改动怎么提交」）：
 
 - **`Workspace` 只约束内置文件工具的路径。** 默认 `local` 命令后端的隔离级别为 `none`。启用 macOS Seatbelt 或 Linux Landlock 后，子进程的约束以实际选中的后端与审批前的实测报告为准。
-- **macOS 之外密钥不进系统钥匙串。** Keychain 后端已按 W1 落地（`keychain_macos.py` SecItem 直调，仅 darwin 加载，`TIANSHU_CREDENTIAL_BACKEND=keychain`；CI 与本机真实通过，独立复审见 #151）；其余平台无后端、请求时如实抛 `CredentialUnsupported`；凭据接缝 + 全链路脱敏照旧交付。
+- **凭据仅使用环境变量。** Keychain 已按维护者要求停用；JSON 文本只保存非敏感设置。环境变量不是 OS 安全存储，Finder 不保证继承 shell 环境，修改后需重启 App / Host / Daemon。旧系统凭据不会自动搬移或删除，历史路由不改写。见[凭据与启动说明](cli.md#凭据与文本配置)。
 - **Windows 没有用户设备实测。** Windows 已是四项 required checks 之一；基准 `ccff93e79cfeb93e47e5a35012fd92fae366e941` 的 [main CI](https://github.com/lorek666/tianshu-agent/actions/runs/43298476414) 四项通过。该次 runner 为 Windows Server 2025；不能把 `windows-latest` 永久等同于某一系统版本，也不代表 Windows 10/11、ARM64 或安装体验。历史认证问题已定位为密钥文本模式写入并修复；本轮另定位了输出管道收尾阻塞，修复与实际耗时见 [系统 debug 记录](DEBUG-IO-2026-11-13.md)。平台跳过原因以该次 CI 的 `-rs` 日志为准。
 - **旧材料空树复核不是原子快照。** `7b4d80b` 增加最终逐目录真实内容复核，堵住已下降目录内迟到材料被延迟 stat 隐藏的缺口；保留身份/子项闭包及错误 fail-closed，观察成本有界。它仍不能排除某目录最后一次观察后的同 uid 修改，不是物理隔离。自定义材料路径的 #204 修复与残留边界见下一条；历史 CI 与本地验收范围见[修复证据](changelog/2026-11-20-integration-ci-repair.md)。
 - **材料路径守卫覆盖 #204 的已复现缺口。** 私有 `.<db>.materials` / `.memory.materials` 不再被祖先中的 `artifacts`、`blobs`、`memory_blobs` 误判为标准域；标准域要求 raw/canonical 同根同域，私有 target 不得逃逸 canonical 容器。快照、撤销 journal、事件/内容/记忆 blob 与各 spill 路径均校验具体文件 target，既有文件或 leaf symlink 不再跳过守卫。检查发生在 lease 获取时；同 uid 随后替换目录链接的 TOCTOU 仍是已披露的协作式边界，需 fd-relative/openat 才能物理封闭。默认 `events.db` / AgentOS 与自定义 `--db` 的上述组合均已覆盖，但不因此宣称任意同 uid 文件竞争可防。跟踪 [#204](https://github.com/lorek666/tianshu-agent/issues/204)，验证见[材料守卫修复](changelog/2026-11-24-material-write-guard.md)。

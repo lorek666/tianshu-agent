@@ -389,6 +389,8 @@ def test_truncated_output_is_persisted_as_blob(env):
 def test_env_whitelist_hides_unlisted_variables(env, monkeypatch):
     monkeypatch.setenv("TIANSHU_TEST", "yes")
     monkeypatch.setenv("SECRET_SAUCE", "leak")
+    monkeypatch.setenv("TIANSHU_API_KEY", "fake-openai-provider-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-anthropic-provider-key")
     policy = _policy(env.ws, env_allowlist=("PATH", "TIANSHU_TEST"))
     _, _, result, _ = _run_command(
         env,
@@ -399,6 +401,8 @@ def test_env_whitelist_hides_unlisted_variables(env, monkeypatch):
     keys = set(result.output["stdout"].strip().split(","))
     assert "TIANSHU_TEST" in keys
     assert "SECRET_SAUCE" not in keys
+    assert "TIANSHU_API_KEY" not in keys, "生产模型 key 不得进入执行工具子进程"
+    assert "ANTHROPIC_API_KEY" not in keys, "生产模型 key 不得进入执行工具子进程"
 
 
 # ---------------------------------------------------------------- 拒绝路径

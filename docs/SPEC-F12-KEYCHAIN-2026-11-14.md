@@ -1,5 +1,8 @@
 # SPEC · F12 macOS Keychain 凭据后端（W1）
 
+> 历史规格：此后维护者于 2026-11-22 要求停用 Keychain，原生实现已移除。
+> 当前行为以[文本配置与环境变量凭据](credential-env-contract.md)为准，以下保留历史决策与探针证据。
+
 > 日期：2026-11-14 · 分支：`feat/credentials-keychain` · 基线：`main@c2cf1c7`
 > 路线图：[ROADMAP-COMPLETE-AGENT-2026-11-14](ROADMAP-COMPLETE-AGENT-2026-11-14.md) W1
 > 性质：**产品能力交付（非契约变更）**——C1–C5 不动；`credentials.py` 的三态

@@ -53,7 +53,7 @@ Agent 主循环已随 [#225](https://github.com/lorek666/tianshu-agent/pull/225)
 - **Windows 验证来自 CI runner。** 命名管道 ACL、杀软、长路径与用户设备安装体验仍待验收。
 - **MCP 与联网研究使用本机夹具验收。** W9 已补充连接期 DNS 校验和响应分页。真实第三方 MCP、公开站点研究和搜索 API 仍是待办。
 - **真实模型驱动 UI 待验收。** `m4.4` 有两家模型的 CLI 实测。本地候选当前 `m4.7` 判据下的真实模型报告待补，与旧版不可直接比较。见 [评测范围](docs/limitations.md#4-m4-评测的未验证项)。
-- **macOS 之外密钥不进系统钥匙串。** 其余平台请求时如实抛 `CredentialUnsupported`，不静默降级。
+- **API Key 只从启动环境变量读取。** 非敏感模型设置保存为 JSON 文本；应用不提供密钥输入或写入。环境变量不是 OS 安全存储，修改后需重启 App / Host / Daemon。
 
 ## 快速开始
 
@@ -80,6 +80,18 @@ uv run tianshu replay --run-id run_xxxx
 ```bash
 uv run python scripts/demo_m5.py --data-root /tmp/m5-demo --auto
 ```
+
+模型名、端点和能力开关保存在数据根的 `model_config.json` / `model_profiles.json`。
+API Key 使用环境变量：OpenAI 兼容 Chat / Responses 为 `TIANSHU_API_KEY`，Anthropic 为
+`ANTHROPIC_API_KEY`。先在终端设置，再从同一终端启动 Host：
+
+```bash
+export TIANSHU_API_KEY='替换为你的 key'
+uv run --frozen tianshu host run
+```
+
+从 Finder 启动不保证继承 shell 环境；安装包从已配置终端直接启动的方法见
+[凭据与启动说明](docs/cli.md#凭据与文本配置)。不自动加载 `.env`，也不创建明文密钥文件。
 
 接真实模型、桌面三进程、UI 构建、退出码与数据目录维护，见 **[docs/cli.md](docs/cli.md)**。
 OpenAI Responses 使用独立的 `--provider openai-responses`，需显式填写 `--model-name`；

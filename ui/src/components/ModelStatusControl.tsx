@@ -31,7 +31,7 @@ const MODE_OPTIONS = [
  * 发送按钮正左侧的模型快速切换入口。
  *
  * 对接控制面真实 `settings.get` / `model.configure` RPC：支持不重启守护进程
- * 热切换模型协议与 Model ID，并提供系统钥匙串凭据与完整端点设置直达入口；
+ * 热切换模型协议与 Model ID，并提供环境变量状态与完整端点设置直达入口；
  * 绝不保存或回显任何 API Key 明文。
  */
 export function ModelStatusControl({
@@ -109,7 +109,7 @@ export function ModelStatusControl({
         mode: draftMode,
         model_name: draftMode === "scripted" ? "" : trimmedName,
         base_url: model?.base_url ?? "",
-        credential_backend: model?.credential_backend ?? "keychain",
+        credential_backend: "env",
         ...(draftMode === "openai-responses" && model?.mode === draftMode &&
           model.model_name === trimmedName && model.allow_image_attachments === true
           ? { allow_image_attachments: true }

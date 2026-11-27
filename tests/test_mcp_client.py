@@ -265,20 +265,29 @@ def test_child_env_only_carries_path_and_declared_keys():
     config = McpServerConfig(
         name="fake", command=(sys.executable, str(FIXTURE)), env={"DECLARED": "1"}
     )
-    environ = {"PATH": "/usr/bin", "HOME": "/home/x", "TIANSHU_SECRET": "s3cr3t"}
+    environ = {
+        "PATH": "/usr/bin", "HOME": "/home/x", "TIANSHU_SECRET": "s3cr3t",
+        "TIANSHU_API_KEY": "fake-openai-provider-key",
+        "ANTHROPIC_API_KEY": "fake-anthropic-provider-key",
+    }
     instance = StdioServer(config, environ=environ)
     child = instance.child_env()
     assert child["DECLARED"] == "1"
     assert child["PATH"] == "/usr/bin"
     assert "HOME" not in child
     assert "TIANSHU_SECRET" not in child
+    assert "TIANSHU_API_KEY" not in child
+    assert "ANTHROPIC_API_KEY" not in child
 
 
-def test_secret_env_is_not_visible_to_the_server(tmp_path):
+@pytest.mark.parametrize("variable", [
+    "TIANSHU_SECRET", "TIANSHU_API_KEY", "ANTHROPIC_API_KEY",
+])
+def test_secret_env_is_not_visible_to_the_server(tmp_path, variable):
     call_log = tmp_path / "calls.jsonl"
     instance = StdioServer(
-        _config("fake", "--env-probe", "TIANSHU_SECRET", "--call-log", str(call_log)),
-        environ={"PATH": "/usr/bin", "TIANSHU_SECRET": "s3cr3t"},
+        _config("fake", "--env-probe", variable, "--call-log", str(call_log)),
+        environ={"PATH": "/usr/bin", variable: "fake-secret-not-for-child"},
     )
     instance.start()
     assert instance.server_info["env_probe"] == "<unset>"

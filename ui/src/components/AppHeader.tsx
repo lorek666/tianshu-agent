@@ -13,7 +13,7 @@ export interface AppHeaderProps {
   onRefresh: () => void;
   /** 打开记忆面板（G2 记忆阶段 M1）：人查看/确认/忘记 Agent 记住了什么。 */
   onOpenMemory: () => void;
-  /** 打开设置与运行管理面板（模型与钥匙串凭据、定时任务、账户预算、MCP 状态）。 */
+  /** 打开设置与运行管理面板（模型与环境变量凭据状态、定时任务、账户预算、MCP 状态）。 */
   onOpenSettings?: () => void;
 }
 
@@ -96,7 +96,7 @@ export function AppHeader({
             type="button"
             className="btn btn-ghost btn-sm"
             onClick={onOpenSettings}
-            title="配置模型与系统钥匙串 API Key、管理定时任务、查看预算与 MCP"
+            title="配置模型与查看环境变量状态、管理定时任务、查看预算与 MCP"
           >
             设置
           </button>

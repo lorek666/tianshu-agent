@@ -11,9 +11,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
-import uuid
 from pathlib import Path
 
 import pytest
@@ -21,12 +18,9 @@ import pytest
 from tianshu import event_schema
 from tianshu.credentials import (
     ENV_VARS,
-    KEYCHAIN_CAPABILITIES,
-    KEYCHAIN_CAPABILITIES_MACOS,
     MASK,
     CredentialRef,
     EnvCredentialStore,
-    KeychainCredentialStore,
     Secret,
     UnsupportedCredentialStore,
     default_store,
@@ -120,233 +114,6 @@ def test_env_store_declares_it_is_not_secure_storage():
     assert caps.secure_storage is False, "环境变量不是安全存储，别在能力里撒谎"
 
 
-# ------------------------------------------------- Keychain（macOS 实现 / 平台 stub）
-
-IS_MACOS = sys.platform == "darwin"
-
-
-def _restrict_keychain_service(operation, test_service: str):
-    def guarded(service: str, *args, **kwargs):
-        if service != test_service:
-            pytest.fail("Keychain tests must use their isolated service")
-        return operation(service, *args, **kwargs)
-
-    return guarded
-
-
-@pytest.fixture(autouse=True)
-def kc_service():
-    """真实 SecItem 只访问当前用例的服务；不读写生产凭据。"""
-    if not IS_MACOS:
-        yield None
-        return
-    from tianshu import credentials, keychain_macos
-
-    service = f"tianshu-agent-selftest-{uuid.uuid4().hex}"
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(credentials, "_KEYCHAIN_SERVICE", service)
-        for name in ("get_item", "set_item", "delete_item"):
-            operation = getattr(keychain_macos, name)
-            patch.setattr(keychain_macos, name, _restrict_keychain_service(operation, service))
-        yield service
-
-
-def _skip_if_locked(exc: CredentialUnsupported) -> None:
-    """login keychain 锁定/需要交互时如实跳过（kSecUseAuthenticationUIFail 立即失败）。"""
-    if "-25308" in str(exc):
-        pytest.skip("login keychain 已锁定/需要交互解锁：无法在本环境取证")
-    raise exc
-
-
-@pytest.fixture()
-def kc_store():
-    if not IS_MACOS:
-        pytest.skip("Keychain 后端仅 macOS 实现")
-    return KeychainCredentialStore()
-
-
-@pytest.fixture()
-def kc_refs():
-    """本会话写入过的域清单；teardown 强制清理并复核，清理失败要红。"""
-    created: list[CredentialRef] = []
-    yield created
-    if created:
-        store = KeychainCredentialStore()
-        for ref in created:
-            store.delete(ref)
-            assert store.get(ref) is None, f"测试残留未清理：{ref}"
-
-
-def _kc_ref() -> CredentialRef:
-    """唯一域：provider 里带 uuid 前缀，与生产命名空间和并行测试互不相撞。"""
-    return CredentialRef(f"selftest-{uuid.uuid4().hex[:12]}", "llm")
-
-
-def test_keychain_caps_by_platform():
-    """能力声明按平台如实：macOS 全 True，其他平台维持未实现 stub。"""
-    caps = KeychainCredentialStore().capabilities
-    if IS_MACOS:
-        assert caps == KEYCHAIN_CAPABILITIES_MACOS
-        assert caps.implemented is True
-        assert caps.supports_write is True
-        assert caps.secure_storage is True
-    else:
-        assert caps == KEYCHAIN_CAPABILITIES
-        assert caps.implemented is False
-        assert caps.secure_storage is True
-
-
-@pytest.mark.parametrize("method", ["get", "set", "delete"])
-def test_keychain_raises_unsupported_everywhere_on_unimplemented_platforms(method):
-    """非 macOS 平台保持诚实 stub：一请求就报 unsupported，绝不静默回退。"""
-    if IS_MACOS:
-        pytest.skip("macOS 已实现真后端，本条只钉住未实现平台")
-    store = KeychainCredentialStore()
-    ref = CredentialRef("openai", "llm")
-    with pytest.raises(CredentialUnsupported) as excinfo:
-        if method == "get":
-            store.get(ref)
-        elif method == "set":
-            store.set(ref, FAKE_KEY)
-        else:
-            store.delete(ref)
-    assert "未实现" in str(excinfo.value)
-
-
-def test_keychain_roundtrip_and_redact(kc_store, kc_refs):
-    """set → get 拿到真值（repr 打码），且明文已登记进脱敏表。"""
-    ref = _kc_ref()
-    kc_refs.append(ref)
-    kc_store.set(ref, FAKE_KEY)
-    got = kc_store.get(ref)
-    assert got is not None
-    assert isinstance(got, Secret)
-    assert got == FAKE_KEY
-    assert repr(got) == f"Secret({MASK})"
-    assert redact(f"leak: {FAKE_KEY}") == "leak: ***"
-
-
-def test_keychain_absent_is_none(kc_store):
-    """未写入的域 get → `None`：不是空串、不是异常（三态语义的"未配置"）。"""
-    assert kc_store.get(_kc_ref()) is None
-
-
-def test_keychain_overwrite_uses_update(kc_store, kc_refs):
-    """同域 set 两次：读回第二次的值（duplicate → SecItemUpdate 路径）。"""
-    ref = _kc_ref()
-    kc_refs.append(ref)
-    try:
-        kc_store.set(ref, "sk-first-0000000000000001")
-    except CredentialUnsupported as exc:
-        _skip_if_locked(exc)
-    kc_store.set(ref, "sk-second-000000000000002")
-    assert kc_store.get(ref) == "sk-second-000000000000002"
-
-
-def test_keychain_delete_is_idempotent(kc_store, kc_refs):
-    """delete 后 get → None；删除不存在的域也成功（终态「不存在」已达成）。"""
-    ref = _kc_ref()
-    kc_refs.append(ref)
-    kc_store.set(ref, FAKE_KEY)
-    kc_store.delete(ref)
-    assert kc_store.get(ref) is None
-    kc_store.delete(ref)  # 幂等：再删一次不抛
-
-
-def test_keychain_domain_isolation(kc_store, kc_refs):
-    """分域是实质的：openai 与 anthropic 互不可见。"""
-    openai_ref = CredentialRef(f"selftest-{uuid.uuid4().hex[:12]}", "llm")
-    anthropic_ref = CredentialRef(f"selftest-{uuid.uuid4().hex[:12]}", "llm")
-    kc_refs.extend([openai_ref, anthropic_ref])
-    kc_store.set(openai_ref, "sk-openai-000000000000001")
-    assert kc_store.get(anthropic_ref) is None
-    kc_store.set(anthropic_ref, "sk-anthropic-00000000001")
-    assert kc_store.get(openai_ref) == "sk-openai-000000000000001"
-    assert kc_store.get(anthropic_ref) == "sk-anthropic-00000000001"
-
-
-@pytest.mark.parametrize(
-    ("operation", "extra"), [("get_item", ()), ("set_item", (b"test",)), ("delete_item", ())],
-)
-def test_keychain_guard_rejects_foreign_service_before_os_access(
-    kc_store, monkeypatch, operation, extra,
-):
-    from tianshu import keychain_macos
-
-    def unexpected_os_access():
-        pytest.fail("A non-test service reached the OS Keychain backend")
-
-    monkeypatch.setattr(keychain_macos, "_bindings", unexpected_os_access)
-    with pytest.raises(pytest.fail.Exception, match="must use their isolated service"):
-        getattr(keychain_macos, operation)("tianshu-agent-selftest-foreign", "test/llm", *extra)
-
-
-def test_keychain_items_landed_in_expected_namespace(kc_store, kc_refs, kc_service):
-    """外部观察者核对条目位于用例分配的 service，不访问其他槽位。"""
-    ref = _kc_ref()
-    kc_refs.append(ref)
-    kc_store.set(ref, FAKE_KEY)
-    probe = subprocess.run(
-        ["security", "find-generic-password", "-s", kc_service, "-a", str(ref)],
-        capture_output=True, text=True, check=False,
-    )
-    assert probe.returncode == 0, (
-        f"条目没落在预期的命名空间里（rc={probe.returncode}）：{probe.stderr}"
-    )
-    assert FAKE_KEY not in probe.stdout and FAKE_KEY not in probe.stderr
-
-
-def test_keychain_macos_no_silent_env_fallback(monkeypatch):
-    """macOS 上最关键的一条：keychain 里没条目 = 未配置 → 缺 key 报错。
-
-    环境变量里摆着 FAKE_KEY 也**不许**被偷偷读走：构造必须以「缺少 API key」
-    的 auth 错误失败，而不是带着 env 的 key 成功构造。
-    """
-    if not IS_MACOS:
-        pytest.skip("真后端行为只在 macOS 取证")
-    # 确保当前用例的测试服务里该域未配置。
-    KeychainCredentialStore().delete(CredentialRef("openai", "llm"))
-    monkeypatch.setenv("TIANSHU_API_KEY", FAKE_KEY)
-    monkeypatch.setenv("TIANSHU_CREDENTIAL_BACKEND", "keychain")
-    with pytest.raises(ModelError) as excinfo:
-        OpenAICompatibleModel("gpt-4o-mini")
-    assert "缺少 API key" in str(excinfo.value)
-    assert FAKE_KEY not in str(excinfo.value)
-
-
-def test_keychain_locked_fails_fast_without_prompting(kc_store):
-    """锁定钥匙串必须立即失败（kSecUseAuthenticationUIFail），不挂进程。
-
-    无法在测试里锁住 login keychain，所以这条钉两件能钉住的：
-    1. 防交互常量真实绑定成功（fail-closed 前提——常量缺了 keychain_macos
-       按设计拒绝启动，这里钉住「它确实在」）；
-    2. 未锁定时的行为是读得到（set→delete 冒烟）。
-    """
-    from tianshu import keychain_macos as km
-
-    b = km._bindings()
-    assert b.kSecUseAuthenticationUIFail is not None
-    assert b.kSecUseAuthenticationUI and b.kSecUseAuthenticationUI.value
-    ref = _kc_ref()
-    kc_store.set(ref, FAKE_KEY)
-    kc_store.delete(ref)
-
-
-def test_keychain_does_not_silently_fall_back_to_env(monkeypatch):
-    """选了 keychain 就**不许**偷偷用环境变量（平台条件化的契约测试）。"""
-    monkeypatch.setenv("TIANSHU_API_KEY", FAKE_KEY)
-    monkeypatch.setenv("TIANSHU_CREDENTIAL_BACKEND", "keychain")
-    if IS_MACOS:
-        # 同上：删除落在隔离命名空间，生产槽不受影响。
-        KeychainCredentialStore().delete(CredentialRef("openai", "llm"))
-        with pytest.raises(ModelError) as excinfo:
-            OpenAICompatibleModel("gpt-4o-mini")
-        assert "缺少 API key" in str(excinfo.value)
-    else:
-        with pytest.raises(CredentialUnsupported):
-            OpenAICompatibleModel("gpt-4o-mini")
-
-
 def test_unsupported_store_carries_its_reason():
     store = UnsupportedCredentialStore("wincred", "这条路径没有实现")
     with pytest.raises(CredentialUnsupported) as excinfo:
@@ -363,9 +130,10 @@ def test_default_store_is_env(monkeypatch):
     assert isinstance(default_store(), EnvCredentialStore)
 
 
-def test_default_store_honours_keychain(monkeypatch):
+def test_default_store_refuses_retired_keychain(monkeypatch):
     monkeypatch.setenv("TIANSHU_CREDENTIAL_BACKEND", "keychain")
-    assert isinstance(default_store(), KeychainCredentialStore)
+    with pytest.raises(CredentialUnsupported, match="停用"):
+        default_store()
 
 
 def test_default_store_rejects_unknown_backend(monkeypatch):
@@ -579,26 +347,12 @@ def test_cli_error_output_is_redacted(monkeypatch, capsys, tmp_path):
 
 
 def test_cli_reads_key_through_the_store_not_os_environ(monkeypatch):
-    """adapter 经凭据接缝取 key：换后端时绝不静默改读 `os.environ.get`。
-
-    macOS（真后端、keychain 无条目）→ 构造以「缺少 API key」失败；
-    其他平台（stub）→ 构造以 `CredentialUnsupported` 失败。
-    如果哪天有人图省事改回 `os.environ.get`，env 里的 FAKE_KEY 会让构造
-    静默成功，这个测试就会红。
-    """
-    if IS_MACOS:
-        # 只在本用例的隔离服务里确保该域未配置。
-        KeychainCredentialStore().delete(CredentialRef("openai", "llm"))
+    """显式选择退役后端时，即便 env 有 key 也不能悄悄改读。"""
     monkeypatch.setenv("TIANSHU_API_KEY", FAKE_KEY)
     monkeypatch.setenv("TIANSHU_CREDENTIAL_BACKEND", "keychain")
     captured = _CapturingTransport()
-    if IS_MACOS:
-        with pytest.raises(ModelError) as excinfo:
-            OpenAICompatibleModel("gpt-4o-mini", transport=captured)
-        assert "缺少 API key" in str(excinfo.value)
-    else:
-        with pytest.raises(CredentialUnsupported):
-            OpenAICompatibleModel("gpt-4o-mini", transport=captured)
+    with pytest.raises(CredentialUnsupported, match="停用"):
+        OpenAICompatibleModel("gpt-4o-mini", transport=captured)
 
 
 # ---------------------------------------------------------------- 与环境变量表的一致性

@@ -158,7 +158,7 @@ uv run tianshu run --workspace /tmp/ws --task "..." \
   --out summary.md --model openai-compatible --provider anthropic \
   --model-name claude-sonnet-4-5
 
-# 3) OpenAI Responses：复用 TIANSHU_API_KEY / openai Keychain 凭据域
+# 3) OpenAI Responses：复用 TIANSHU_API_KEY / openai 凭据域
 # 下面会请求真实服务并可能计费；model ID 按服务实际提供的值填写。
 uv run --frozen tianshu run --workspace /tmp/ws --task "阅读目录并生成摘要" \
   --out summary.md --model openai-compatible --provider openai-responses \
@@ -179,7 +179,32 @@ base URL 填到 `/v1` 一层，adapter 添加 `/responses`；URL 不允许凭据
 网关价格或缓存计价无法核实时，成本显示未知。官方与网关真实付费 smoke 均为 `NOT_RUN`，
 本机回环 HTTP/SSE 与离线夹具不证明任意网关兼容。详见 [续接契约](openai-responses-contract.md)。
 
-> 密钥从环境变量或（macOS 下启用 `TIANSHU_CREDENTIAL_BACKEND=keychain` 时）系统钥匙串读取，桌面端「设置 → 模型与密钥」通过 `credential.set` 写入钥匙串时密钥值**永不落 SQLite / JSON 配置、永不进事件日志、永不在 RPC 响应回显**。用过的中转 key 请自行作废轮换。
+### 凭据与文本配置
+
+非敏感设置保存到 `<data_root>/model_config.json` 和 `model_profiles.json`（JSON 文本），
+可在「设置 → 模型与密钥」修改。API Key 只读实际启动进程的环境变量：OpenAI 兼容
+Chat / Responses 用 `TIANSHU_API_KEY`，Anthropic 用 `ANTHROPIC_API_KEY`。
+界面只展示变量名与配置状态；不接收密钥，不自动加载 `.env`，原 `credential.set/delete`
+请求明确返回 `unsupported`。密钥不得写入 SQLite、配置或事件，RPC 响应不回显，日志与错误脱敏。
+用过的中转 key 请自行作废轮换。
+
+先停止旧 App / Host / Daemon，再从已经设置变量的终端启动；外部 `export` 不会改变正在运行的
+进程环境。开发时可用上面的 `uv run --frozen tianshu host run`。macOS 已安装的 App 可直接运行：
+
+```bash
+export TIANSHU_API_KEY='替换为你的 key'
+# 如使用 Anthropic：export ANTHROPIC_API_KEY='替换为你的 key'
+"$HOME/Applications/Tianshu Agent.app/Contents/MacOS/tianshu-desktop"
+```
+
+路径按实际安装位置调整。Finder 启动不保证继承 `.zshrc` 或当前终端变量；设置面板的状态
+反映 Daemon 实际能读到的值，不承诺自动同步 shell 配置。环境变量不是系统安全存储。
+
+旧可编辑 JSON 中的 `credential_backend="keychain"` 加载时转为 `env`，不会读取系统钥匙串，
+也不会立即改写文件，下次保存才落盘。旧系统密钥不会自动搬移或删除。显式设置
+`TIANSHU_CREDENTIAL_BACKEND=keychain` 会报停用；移除该选择后用环境变量启动新 Run。
+历史 Run 的 Keychain 路由保留用于审计，继续执行时明确拒绝，不能悄悄换凭据来源。
+完整约定见[文本配置与环境变量凭据](credential-env-contract.md)。
 
 ## 桌面三进程（M5）
 

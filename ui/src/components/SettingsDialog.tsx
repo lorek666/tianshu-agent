@@ -141,7 +141,7 @@ export function SettingsDialog({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
-  // Model & Credentials state (real backend RPCs; secret input cleared immediately on save)
+  // Non-sensitive model configuration and read-only credential status
   const [allowImages, setAllowImages] = useState(false);
   const [compactThreshold, setCompactThreshold] = useState("");
   const [profileName, setProfileName] = useState("");
@@ -149,10 +149,7 @@ export function SettingsDialog({
   const [mode, setMode] = useState("scripted");
   const [modelName, setModelName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
-  const [credBackend, setCredBackend] = useState("keychain");
   const [credentials, setCredentials] = useState<CredentialStatusView[]>([]);
-  const [keyProvider, setKeyProvider] = useState<"openai" | "anthropic">("openai");
-  const [keySecret, setKeySecret] = useState("");
 
   // Schedule state
   const [schedules, setSchedules] = useState<ScheduleView[]>([]);
@@ -206,7 +203,6 @@ export function SettingsDialog({
           setMode(s.model.mode);
           setModelName(s.model.model_name);
           setBaseUrl(s.model.base_url);
-          setCredBackend(s.model.credential_backend);
           setCredentials(s.credentials);
           setAllowImages(s.model.allow_image_attachments === true);
           setCompactThreshold(s.model.compact_threshold?.toString() ?? "");
@@ -244,7 +240,6 @@ export function SettingsDialog({
 
   useEffect(() => {
     if (!open) {
-      setKeySecret("");
       setError(null);
       setNotice(null);
       return;
@@ -269,7 +264,7 @@ export function SettingsDialog({
     mode,
     model_name: mode === "scripted" ? "" : modelName.trim(),
     base_url: baseUrl.trim(),
-    credential_backend: credBackend,
+    credential_backend: "env",
     ...(mode === "openai-responses" && allowImages ? { allow_image_attachments: true } : {}),
     ...(mode === "openai-responses" && compactThreshold.trim() !== ""
       ? { compact_threshold: Number(compactThreshold) } : {}),
@@ -312,49 +307,11 @@ export function SettingsDialog({
       setMode(updated.model.mode);
       setModelName(updated.model.model_name);
       setBaseUrl(updated.model.base_url);
-      setCredBackend(updated.model.credential_backend);
       setCredentials(updated.credentials);
       setAllowImages(updated.model.allow_image_attachments === true);
       setCompactThreshold(updated.model.compact_threshold?.toString() ?? "");
       setNotice(`已保存并切换当前模型：${updated.model.summary}`);
       onSettingsSaved?.(updated.model.summary, updated);
-    } catch (caught) {
-      setError(humanizeHostError(caught));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleSaveKey = async (): Promise<void> => {
-    if (api === null) return;
-    if (keySecret.trim() === "") {
-      setError("请输入要存入系统钥匙串的 API Key。");
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    setNotice(null);
-    try {
-      const next = await api.setCredential(keyProvider, keySecret.trim(), "keychain");
-      setKeySecret("");
-      setCredentials(next);
-      setNotice(`已将 ${keyProvider} 密钥安全写入系统钥匙串（界面不回显明文）。`);
-    } catch (caught) {
-      setError(humanizeHostError(caught));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const handleDeleteKey = async (provider: string): Promise<void> => {
-    if (api === null) return;
-    setBusy(true);
-    setError(null);
-    setNotice(null);
-    try {
-      const next = await api.deleteCredential(provider, "keychain");
-      setCredentials(next);
-      setNotice(`已从系统钥匙串移除 ${provider} 密钥。`);
     } catch (caught) {
       setError(humanizeHostError(caught));
     } finally {
@@ -467,9 +424,7 @@ export function SettingsDialog({
     }
   };
 
-  const keychainItems = credentials.filter((c) => c.backend === "keychain");
   const envItems = credentials.filter((c) => c.backend === "env");
-  const keychainWritable = keychainItems.some((c) => c.writable);
 
   const selectTab = (next: SettingsTab): void => {
     setError(null);
@@ -618,7 +573,7 @@ export function SettingsDialog({
               <div className="settings-head">
                 <div>
                   <h2>模型与密钥</h2>
-                  <p>热切换本机守护进程模型协议与 Model ID，并将 API Key 安全写入系统钥匙串</p>
+                  <p>模型设置保存为本地 JSON 文本，API Key 从启动环境变量读取</p>
                 </div>
                 {closeButton}
               </div>
@@ -705,19 +660,6 @@ export function SettingsDialog({
                           </>
                         ) : null}
 
-                        <label className="field">
-                          <span className="field-label">凭据读取来源</span>
-                          <select
-                            className="input"
-                            aria-label="凭据读取来源"
-                            value={credBackend}
-                            onChange={(e) => setCredBackend(e.target.value)}
-                            disabled={busy}
-                          >
-                            <option value="keychain">系统钥匙串（macOS Keychain，推荐安全存储）</option>
-                            <option value="env">进程环境变量（开发调试用）</option>
-                          </select>
-                        </label>
                       </>
                     ) : null}
 
@@ -749,81 +691,22 @@ export function SettingsDialog({
                     </section>
                   ) : null}
 
-                  <section className="setting-card" aria-label="系统钥匙串凭据管理">
-                    <div className="setting-title">系统钥匙串（Keychain）API Key</div>
+                  <section className="setting-card" aria-label="环境变量凭据状态">
+                    <div className="setting-title">环境变量 API Key</div>
                     <p className="field-hint">
-                      密钥只写入操作系统钥匙串，永不写入配置文件或事件日志，保存后界面绝不回显明文。
+                      OpenAI 兼容 Chat / Responses 使用 TIANSHU_API_KEY，Anthropic 使用 ANTHROPIC_API_KEY。
+                      请在启动 App / Host / Daemon 前设置，修改后重新启动。
+                      从 Finder 启动不保证继承终端环境，请从已配置的终端直接启动应用。
                     </p>
                     <div className="setting-cred-list">
-                      {keychainItems.map((item) => (
-                        <div key={`${item.backend}-${item.provider}`} className="setting-cred-row">
-                          <span>
-                            <strong>{item.provider}</strong>：
-                            {item.implemented
-                              ? item.configured
-                                ? "已配置（安全存储）"
-                                : "未配置"
-                              : `当前平台不支持（${item.error ?? "未实现"}）`}
+                      {envItems.map((item) => (
+                        <div key={item.provider} className="setting-cred-row">
+                          <span><strong>{item.provider}</strong>（{item.env_var}）：
+                            {item.error ?? (item.configured ? "已配置" : "未设置")}
                           </span>
-                          {item.writable && item.configured ? (
-                            <button
-                              type="button"
-                              className="chip-btn"
-                              onClick={() => void handleDeleteKey(item.provider)}
-                              disabled={busy}
-                            >
-                              清除 {item.provider} 密钥
-                            </button>
-                          ) : null}
                         </div>
                       ))}
                     </div>
-
-                    {keychainWritable ? (
-                      <div className="setting-inline-form">
-                        <select
-                          className="input setting-provider-select"
-                          aria-label="密钥厂商"
-                          value={keyProvider}
-                          onChange={(e) =>
-                            setKeyProvider(e.target.value as "openai" | "anthropic")
-                          }
-                          disabled={busy}
-                        >
-                          <option value="openai">openai</option>
-                          <option value="anthropic">anthropic</option>
-                        </select>
-                        <input
-                          className="input setting-grow-input"
-                          type="password"
-                          aria-label="API Key 明文输入"
-                          value={keySecret}
-                          placeholder="粘贴 sk-... 后保存到系统钥匙串"
-                          onChange={(e) => setKeySecret(e.target.value)}
-                          disabled={busy}
-                        />
-                        <button
-                          type="button"
-                          className="btn btn-primary btn-sm"
-                          onClick={() => void handleSaveKey()}
-                          disabled={busy}
-                        >
-                          存入钥匙串
-                        </button>
-                      </div>
-                    ) : null}
-
-                    {envItems.length > 0 ? (
-                      <p className="field-hint">
-                        环境变量状态：
-                        {envItems
-                          .map(
-                            (c) =>
-                              `${c.provider}（${c.env_var ?? "-"}：${c.configured ? "已检测" : "未设置"}）`,
-                          )
-                          .join(" · ")}
-                      </p>
-                    ) : null}
                   </section>
                 </>
               )}

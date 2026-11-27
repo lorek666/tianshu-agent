@@ -16,7 +16,7 @@
 | Python 分发 | **python-build-standalone**（Astral 构建）+ 预解析 venv，作为 resource 打包 | 可复现、可逐文件签名、无 PyInstaller bootloader 黑盒 | PyInstaller：启动慢、Windows 杀软误报高；Nuitka：构建慢、调试难 |
 | IPC | **本地 socket + 长度前缀帧**（macOS: Unix domain socket；Windows: Named Pipe） | **不起 TCP 端口 = 不触发 Windows 防火墙弹窗**；无端口冲突 | localhost HTTP：Windows 每次弹防火墙 |
 | 本地存储 | SQLite（WAL）append-only 单提交点（事件表 + 同库投影） | 单用户场景足够；事务与回放简单（PRD §5.3 已修正早期「一事件一文件」草案，2026-11-14 对账） | 嵌入式 KV：查询能力不足 |
-| 密钥 | macOS Keychain / Windows DPAPI | 系统托管，开源后不落明文 | config 文件：开源即泄密 |
+| 密钥 | 启动环境变量；非敏感设置用 JSON | 维护者选择，跨平台不依赖系统凭据后端 | 密钥写入 config 文件：不采用 |
 | 遥测 | 本地 OTel 导出，无强制上报 | 桌面产品 + 开源 | SaaS 后端：违反"无闭源运行时依赖" |
 | 更新 | Tauri updater + Ed25519 签名清单 | 内置、跨平台 | 自建更新服务：维护成本 |
 
@@ -160,7 +160,7 @@ payload = JSON（v1）/ msgpack（后续，需版本协商）
 | 文件监视 | 目标原语 FSEvents | 目标原语 `ReadDirectoryChangesW` | 本表不承诺系统级文件监视已交付 |
 | 沙箱 | Seatbelt（选用 `seatbelt` 后端且系统有可执行的 `sandbox-exec`） | 原生子进程沙箱后端待交付 | W14 同时提供符合内核条件的 Linux Landlock，实测范围见 §6 |
 | 截屏 / 输入 / 无障碍 | 目标原语 ScreenCaptureKit / CGEvent / AXUIElement | 目标原语 Windows.Graphics.Capture / `SendInput` / UIA | 不作为当前桌面候选已交付能力 |
-| 密钥 | W1 已实现 Keychain Services | 系统凭据后端待交付 | 请求当前平台未实现的 `keychain` 后端时返回 `CredentialUnsupported` |
+| 密钥 | 环境变量只读 | 环境变量只读 | `TIANSHU_API_KEY` / `ANTHROPIC_API_KEY`；Keychain 已停用，见[凭据约定](credential-env-contract.md) |
 | 托盘 | Tauri 托盘 | Tauri 托盘 | 源码已接线，用户设备体验待验 |
 | 签名 | Developer ID + notarytool | Authenticode（EV / Azure Trusted Signing） | 当前分发方案不做 OS 签名，见 §8.2 |
 
@@ -547,8 +547,7 @@ src/tianshu/          Python 源码 + eval/ 子包（下面只按职责分组；
 ├─ 模型层 ───────────────────────────────────────────────────
 │  model.py         C1 接缝：adapter 只做双向翻译，不改写内部形状
 │  capability.py    F9a 能力声明与准入（只用于路由，不用于授权）
-│  credentials.py   F12 凭据分域查找 + 全链路脱敏（Keychain 后端 macOS 已落地）
-│  keychain_macos.py macOS Keychain 直调后端（SecItem，仅 darwin 加载）
+│  credentials.py   F12 环境变量凭据分域查找 + 全链路脱敏
 │  embedding_openai.py OpenAI 兼容 embedding 端点适配器（W6，需数据外发许可）
 │  pricing.py       F13 成本账：整数微美元，未知价格记 None 并单独计数
 │  budget.py        共享预算账本（PRD §5.6）：token / 金额预占与结算

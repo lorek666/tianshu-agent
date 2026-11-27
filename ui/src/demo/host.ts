@@ -269,6 +269,9 @@ export class DemoHostClient implements HostClient {
 
       case "settings.get":
       case "model.configure": {
+        if (params.credential_backend !== undefined && params.credential_backend !== "env") {
+          throw new HostRpcError("bad_params", "凭据仅支持环境变量");
+        }
         const mode = typeof params.mode === "string" ? params.mode : "scripted";
         const modelName = typeof params.model_name === "string" ? params.model_name : "";
         return {
@@ -276,45 +279,29 @@ export class DemoHostClient implements HostClient {
             mode,
             model_name: modelName,
             base_url: typeof params.base_url === "string" ? params.base_url : "",
-            credential_backend:
-              typeof params.credential_backend === "string" ? params.credential_backend : "keychain",
+            credential_backend: "env",
             summary: mode === "scripted" ? "演示脚本模型（离线）" : `${mode} · ${modelName}`,
           },
           credentials: [
-            {
-              provider: "openai",
-              capability_class: "llm",
-              backend: "keychain",
-              active_backend: true,
-              implemented: true,
-              secure_storage: true,
-              writable: true,
-              configured: false,
-              env_var: null,
-              error: null,
-            },
-          ],
+            ["openai", "TIANSHU_API_KEY"], ["anthropic", "ANTHROPIC_API_KEY"],
+          ].map(([provider, env_var]) => ({
+            provider,
+            capability_class: "llm",
+            backend: "env",
+            active_backend: true,
+            implemented: true,
+            secure_storage: false,
+            writable: false,
+            configured: false,
+            env_var,
+            error: null,
+          })),
         } as T;
       }
 
       case "credential.set":
       case "credential.delete":
-        return {
-          credentials: [
-            {
-              provider: "openai",
-              capability_class: "llm",
-              backend: "keychain",
-              active_backend: true,
-              implemented: true,
-              secure_storage: true,
-              writable: true,
-              configured: method === "credential.set",
-              env_var: null,
-              error: null,
-            },
-          ],
-        } as T;
+        throw new HostRpcError("unsupported", "环境变量凭据只读，请在启动应用前配置");
 
       case "schedule.list":
         return { schedules: [] } as T;
