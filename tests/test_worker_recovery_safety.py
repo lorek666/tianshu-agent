@@ -184,11 +184,13 @@ def test_cleanup_does_not_replace_model_interrupt(queue, monkeypatch, route, fai
         seen.append("model")
         raise primary
 
-    def park(claim, *, reason):
+    def park(claim, *, reason, defer_to_cancel=False):
         assert claim.run_id == job.run_id
         seen.append("settle")
         if failed_cleanup == "settle":
             raise secondary
+        if defer_to_cancel:
+            return real_park(claim, reason=reason, defer_to_cancel=True)
         return real_park(claim, reason=reason)
 
     monkeypatch.setattr(model, "complete", complete)

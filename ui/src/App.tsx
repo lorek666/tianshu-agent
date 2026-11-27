@@ -1020,7 +1020,9 @@ export function App() {
               ? "已请求暂停；执行器会在安全点停下"
               : action === "resume"
                 ? "已请求继续运行"
-                : "已请求取消；执行器会在安全点停下",
+                : updated?.state === "cancelled"
+                  ? "已取消；已经生效的修改不会被自动回滚"
+                  : "取消请求已收到，尚未完成；无法确认修改结果时需按恢复提示处理",
             "info",
           );
           await refreshSnapshot(host);

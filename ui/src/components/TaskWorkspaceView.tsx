@@ -143,6 +143,7 @@ function deriveCompanionStatus(
 ): WelcomePetStatus {
   if (connectionAlert || hasOpenApproval) return "error";
   if (run === null) return "idle";
+  if (run.control_requested === "cancel" || run.state === "reconciling") return "thinking";
   switch (run.state) {
     case "running":
       return "executing";
@@ -272,6 +273,12 @@ export function TaskWorkspaceView({
   const terminal =
     controlTargetRun !== null ? isTerminalRunState(controlTargetRun.state) : true;
   const requested = controlTargetRun?.control_requested ?? null;
+  const cancelPending = requested === "cancel" && !terminal;
+  const recoveryNotice = cancelPending
+    ? "取消尚未完成：执行器会在安全点核对并停止；若修改结果无法确认，将保留现场并显示恢复提示。"
+    : selectedRun?.state === "reconciling"
+      ? "正在核对已有修改；确认前不会重复执行，也无法把未知结果当作已取消。"
+      : null;
   const pauseDisabled =
     controlTargetRun === null ||
     requested !== null ||
@@ -398,16 +405,20 @@ export function TaskWorkspaceView({
   const primaryStateLabel =
     taskApprovals.length > 0
       ? `${taskApprovals.length} 项待批准`
-      : selectedRun !== null
-        ? runStateLabel(selectedRun.state)
-        : taskStatusLabel(task.status);
+      : cancelPending
+        ? "正在取消"
+        : selectedRun !== null
+          ? runStateLabel(selectedRun.state)
+          : taskStatusLabel(task.status);
 
   const primaryStateTone =
     taskApprovals.length > 0
       ? "approval"
-      : selectedRun !== null
-        ? runStateTone(selectedRun.state)
-        : runStateTone(task.status);
+      : cancelPending
+        ? "warn"
+        : selectedRun !== null
+          ? runStateTone(selectedRun.state)
+          : runStateTone(task.status);
 
   return (
     <>
@@ -426,7 +437,12 @@ export function TaskWorkspaceView({
               </StatusPill>
             ) : null}
             {requested !== null ? (
-              <StatusPill tone="warn">已请求{controlLabel(requested)}</StatusPill>
+              <StatusPill tone="warn">
+                {cancelPending ? "取消请求待确认" : `已请求${controlLabel(requested)}`}
+              </StatusPill>
+            ) : null}
+            {recoveryNotice !== null ? (
+              <p className="warn-text control-state-note" role="status">{recoveryNotice}</p>
             ) : null}
           </div>
 
@@ -469,6 +485,19 @@ export function TaskWorkspaceView({
                   </span>
                 </button>
               )
+            ) : null}
+
+            {controlTargetRun !== null && !terminal && cancelPending ? (
+              <button
+                type="button"
+                className="chip-btn is-warn"
+                disabled
+                aria-busy="true"
+                title={recoveryNotice ?? "取消尚未完成"}
+              >
+                <IconStop size={13} />
+                <span>取消中…</span>
+              </button>
             ) : null}
 
             {controlTargetRun !== null && !terminal && requested !== "cancel" ? (

@@ -36,6 +36,7 @@ from .events import Event, EventLog, canonical_bytes, sha256_hex
 from .guard import scan_blocked, scan_blocked_objects
 from .jobs import JobClaim, JobStore
 from .leases import LeaseStore
+from .summary_telemetry import read_calls
 from .workspace import parse_bindings
 
 if TYPE_CHECKING:  # pragma: no cover - 只为类型标注，运行期不导入
@@ -504,6 +505,25 @@ class _TaskCursorRebuildMixin:
                 tokens += (inp or 0) + (out or 0)
                 unknown_usage += int(inp is None or out is None)
             unknown_cost = result_count - len(known_costs)
+            # 摘要调用不是 model.result，但已是独立的持久化真实调用。游标丢失
+            # 时只从主结果算会漏账；有游标时预算账本已含摘要，绝不重复相加。
+            for call in read_calls(self._log):
+                if call["request"]["run_id"] != run_id:
+                    continue
+                response = call["response"]
+                if response is None:
+                    unknown_usage += 1
+                    unknown_cost += 1
+                    continue
+                usage = response["usage"]
+                inp, out = usage.get("input_tokens"), usage.get("output_tokens")
+                tokens += (inp or 0) + (out or 0)
+                unknown_usage += int(inp is None or out is None)
+                cost = response["cost"]["cost"]
+                if type(cost) is int:
+                    known_costs.append(cost)
+                else:
+                    unknown_cost += 1
             known_cost_sum = sum(known_costs)
         else:
             ledger = stored[0].budget_ledger or {}

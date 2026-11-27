@@ -28,6 +28,7 @@ import sys
 import tempfile
 import threading
 import time
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -39,7 +40,7 @@ from tianshu.events import EventLog, canonical_bytes, sha256_hex
 from tianshu.jobs import JobStore
 from tianshu.loop import Limits
 from tianshu.model import ModelResponse, ScriptedModel, ToolCall
-from tianshu.tasks import RUN_RECONCILING, RUN_RUNNING, RUN_WAITING_APPROVAL
+from tianshu.tasks import RUN_RECONCILING, RUN_RUNNING, RUN_WAITING_APPROVAL, TaskStore
 
 # --------------------------------------------------------------------------- 夹具
 
@@ -1637,3 +1638,183 @@ def test_state_rpc_survives_adversarial_task_goals(root, start_daemon) -> None:
         assert all(item["goal"] == goal for item in state["tasks"])
     finally:
         client.close()
+
+
+@pytest.mark.parametrize("cancel_first,effect_known,rollback", [
+    (True, True, False),
+    (False, True, False),
+    (True, False, False),
+    (False, False, False),
+    (False, True, True),
+])
+def test_cancel_chat_without_cursor_during_worker_handoff(
+    root, start_daemon, cancel_first, effect_known, rollback,
+):
+    from tianshu.receipt import verify_receipts
+
+    db_path = root / "events.db"
+    workspace = root / "w"
+    workspace.mkdir()
+    point = "after_receipt" if effect_known else "after_write"
+    initial = subprocess.run(
+        [sys.executable, "-m", "tianshu", "run", "--workspace", str(workspace),
+         "--task", "报告", "--out", "r.md", "--model", "scripted", "--db", str(db_path),
+         "--data-root", str(root)],
+        env={**os.environ, "TIANSHU_FAILPOINT": point},
+        capture_output=True, timeout=20,
+    )
+    assert initial.returncode == 77 and point.encode() in initial.stderr
+    target = workspace / "r.md"
+    original = target.read_bytes()
+    with closing(EventLog(db_path, data_root=root)) as log:
+        run_id, = log.conn.execute("SELECT run_id FROM runs").fetchone()
+    if not effect_known:
+        from tianshu.cli import main
+
+        target.write_bytes(b"changed outside the run\n")
+        original = target.read_bytes()
+        assert main([
+            "recover", "--run-id", run_id, "--workspace", str(workspace),
+            "--db", str(db_path), "--data-root", str(root),
+        ]) == 1
+    with closing(EventLog(db_path, data_root=root)) as log:
+        with log.transaction():
+            assert log.conn.execute(
+                "DELETE FROM run_cursors WHERE run_id=?", (run_id,),
+            ).rowcount == 1
+        before = log.read_run(run_id, event_types=("model.intent", "model.result", "tool.intent",
+                                                  "tool.result", "receipt"))
+        leases_before = stack_for(log, data_root=root).leases.list_for_run(run_id)
+    worker_code = """
+import json
+import sys
+from contextlib import closing
+from pathlib import Path
+from tianshu.events import EventLog
+from tianshu.loop import build_stack
+from tianshu.model import ScriptedModel
+from tianshu.restore_access import default_material_paths
+from tianshu.worker import Worker
+
+root = Path(sys.argv[1])
+db = root / "events.db"
+def db_for():
+    return EventLog(db, blob_dir=default_material_paths(db, root)[1], data_root=root)
+class NeverModel(ScriptedModel):
+    def complete(self, messages, tools):
+        (root / "model-hit").touch()
+        return super().complete(messages, tools)
+with closing(db_for()) as log:
+    model = NeverModel([])
+    stack = build_stack(log, data_root=root)
+    with Worker(stack, model=model, heartbeat_interval_ms=None) as worker:
+        park = worker._claims.park
+        gated = [False]
+        def gated_park(*args, **kwargs):
+            if gated[0]:
+                return park(*args, **kwargs)
+            gated[0] = True
+            assert any("ChatResumeCursorMissing" in error for error in worker.errors), worker.errors
+            print("BEFORE_PARK", flush=True)
+            assert sys.stdin.readline().strip() == "go"
+            return park(*args, **kwargs)
+        worker._claims.park = gated_park
+        assert worker.run_once()
+        assert not worker.run_once()
+        print(json.dumps(worker.errors, ensure_ascii=False), flush=True)
+"""
+    model = ScriptedModel([])
+    with subprocess.Popen(
+        [sys.executable, "-c", worker_code, str(root)], text=True,
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    ) as worker:
+        marker = queue.Queue()
+        reader = threading.Thread(target=lambda: marker.put(worker.stdout.readline()), daemon=True)
+        reader.start()
+        try:
+            reached = marker.get(timeout=15).strip()
+            assert reached == "BEFORE_PARK", (reached, worker.poll(), worker.stderr.read())
+            start_daemon(model)
+            client = _connect(root)
+            try:
+                if cancel_first:
+                    requested = client.call("run.cancel", {"run_id": run_id})["run"]
+                    assert requested["control_requested"] == "cancel"
+                worker.stdin.write("go\n")
+                worker.stdin.flush()
+                assert worker.wait(timeout=15) == 0, worker.stderr.read()
+                worker_errors = json.loads(worker.stdout.readline())
+                assert not any("结算未生效" in error for error in worker_errors), worker_errors
+                if rollback:
+                    with closing(EventLog(db_path, data_root=root)) as log:
+                        log.conn.execute("CREATE TRIGGER fail_cancel BEFORE INSERT ON events"
+                                         " WHEN NEW.type='run.end'"
+                                         " BEGIN SELECT RAISE(ABORT, 'probe run.end failure'); END")
+                    with closing(EventLog(db_path, data_root=root)) as log:
+                        before_rollback = log.read_run(run_id)
+                        job_before = JobStore(log).job_for_run(run_id)
+                        run_before = TaskStore(log).get_run(run_id)
+                    try:
+                        with pytest.raises(ipc.RemoteError):
+                            client.call("run.cancel", {"run_id": run_id})
+                        with closing(EventLog(db_path, data_root=root)) as log:
+                            assert log.read_run(run_id) == before_rollback
+                            assert JobStore(log).job_for_run(run_id) == job_before
+                            assert TaskStore(log).get_run(run_id) == run_before
+                    finally:
+                        with closing(EventLog(db_path, data_root=root)) as log:
+                            log.conn.execute("DROP TRIGGER fail_cancel")
+                if not cancel_first:
+                    if effect_known:
+                        cancelled = client.call("run.cancel", {"run_id": run_id})["run"]
+                        assert cancelled["state"] == "cancelled"
+                    else:
+                        with pytest.raises(ipc.RemoteError) as exc:
+                            client.call("run.cancel", {"run_id": run_id})
+                        assert exc.value.details == {
+                            "reason": "chat_resume_cursor_missing", "recovery_required": True,
+                        }
+                run = client.call("run.status", {"run_id": run_id})["run"]
+                if effect_known:
+                    assert (run["state"], run["control_requested"]) == ("cancelled", None), (
+                        run, worker.stderr.read(),
+                    )
+                    assert client.call(
+                        "run.cancel", {"run_id": run_id},
+                    )["run"]["state"] == "cancelled"
+                else:
+                    expected_control = "cancel" if cancel_first else None
+                    assert (run["state"], run["control_requested"]) == (
+                        "running", expected_control,
+                    )
+                    with pytest.raises(ipc.RemoteError) as exc:
+                        client.call("run.cancel", {"run_id": run_id})
+                    assert exc.value.details == {
+                        "reason": "chat_resume_cursor_missing", "recovery_required": True,
+                    }
+            finally:
+                client.close()
+        finally:
+            if worker.poll() is None:
+                worker.kill()
+                worker.communicate(timeout=5)
+    assert target.read_bytes() == original
+    assert not (root / "model-hit").exists()
+    with closing(EventLog(db_path, data_root=root)) as log:
+        assert log.read_run(run_id, event_types=("model.intent", "model.result", "tool.intent",
+                                                "tool.result", "receipt")) == before
+        final_stack = stack_for(log, data_root=root)
+        leases_after = final_stack.leases.list_for_run(run_id)
+        job = JobStore(log).job_for_run(run_id)
+        if effect_known:
+            assert final_stack.leases.live_paths(run_id) == []
+            assert job.state == "cancelled"
+            end, = log.read_run(run_id, event_types=("run.end",))
+            assert end.payload["effect_state"] == "applied"
+            assert end.payload["receipt_ids"] == [e.payload["receipt_id"] for e in before
+                                                 if e.type == "receipt"]
+            assert verify_receipts(log, run_id) == []
+        else:
+            assert leases_after == leases_before
+            assert job.state == "waiting"
+            assert not log.read_run(run_id, event_types=("run.end",))

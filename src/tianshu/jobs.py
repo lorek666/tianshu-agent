@@ -694,7 +694,9 @@ class JobStore:
             )
         return self.get(job_id)
 
-    def park(self, claim: JobClaim, *, reason: str) -> Job:
+    def park(
+        self, claim: JobClaim, *, reason: str, defer_to_cancel: bool = False,
+    ) -> Job:
         """把作业挂起：还开着，但不该被自动跑，等外面的事件叫醒它。
 
         `reason` 是 `waiting_approval` / `paused` / `reconciling` 这类"Run 停下
@@ -702,8 +704,24 @@ class JobStore:
         再认领、再停在同一个地方，每一轮涨一次 `claim_epoch`——用户刚批下来的
         审批会被下一轮作废，于是"批准之后永远执行不了"。留在 `claimed` 也是
         错的：进程已经要把控制权交出来了，`claimed` 对外说的是"有人正在跑"。
+
+        `defer_to_cancel` 让缺游标的执行者在同一写事务里把 parking 让给已到达的
+        取消请求，避免“先读控制位、后写 waiting”的竞态。返回 claimed 表示请求
+        已先到，调用方仍持有 claim，可在执行侧核对效果后原子取消。
         """
         with self._log.transaction() as tx:
+            if defer_to_cancel:
+                self.assert_claim(claim)
+            if defer_to_cancel and self._conn.execute(
+                "SELECT 1 FROM runs WHERE run_id=? AND control_requested='cancel'",
+                (claim.run_id,),
+            ).fetchone():
+                row = self._conn.execute(
+                    "SELECT * FROM jobs WHERE job_id=?", (claim.job_id,),
+                ).fetchone()
+                if row is None:  # pragma: no cover - assert_claim 刚验证过
+                    raise JobUnavailable(f"job 不存在：{claim.job_id}")
+                return self._row_to_job(row)
             cur = self._conn.execute(
                 # `ended_at` 保持 NULL：作业没结束，只是没人该自动跑它。
                 "UPDATE jobs SET state='waiting', owner_instance_id=NULL,"
@@ -725,7 +743,10 @@ class JobStore:
                 JOB_PARKED,
                 {**claim.to_dict(), "reason": reason},
             )
-        return self.get(claim.job_id)  # type: ignore[return-value]
+            job = self.get(claim.job_id)
+            if job is None:  # pragma: no cover - 同一事务里刚更新
+                raise JobUnavailable(f"job 不存在：{claim.job_id}")
+            return job
 
     def request_cancel(self, job_id: str) -> Job:
         """记下取消请求。执行侧在安全点自己确认，不能假装瞬时停止。"""

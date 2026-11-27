@@ -619,7 +619,23 @@ class Worker:
             elif requeue or (retry_finish and state == RUN_RUNNING):
                 self._claims.requeue(claim)
             else:
-                self._claims.park(claim, reason=state)
+                missing_cursor = (
+                    run is not None and self._tasks.load_cursor(claim.run_id) is None
+                )
+                if missing_cursor:
+                    parked = self._claims.park(
+                        claim, reason=state, defer_to_cancel=True,
+                    )
+                else:
+                    parked = self._claims.park(claim, reason=state)
+                if parked.state == JOB_CLAIMED and missing_cursor:
+                    # park 的写事务发现取消先到，保留 claim。缺游标的 Chat
+                    # 不会再到循环安全点，现在由执行侧核对效果并原子收尾；
+                    # 未知效果继续挂起，绝不把请求冒充已取消。
+                    try:
+                        self._tasks.confirm_control(claim.run_id, claim=claim)
+                    except ChatResumeCursorMissing:
+                        self._claims.park(claim, reason=state)
         except TianshuError as exc:
             # 被接管 / 作业已被别处收掉：不是我们的活，也不该让整个循环崩掉
             self.errors.append(f"结算未生效：{exc}")

@@ -42,10 +42,10 @@ function welcome() {
   />;
 }
 
-function followup() {
+function followup(run: RunView = source) {
   return <TaskWorkspaceView
-    task={task} taskRuns={[source]} allRuns={[source]} approvals={[]}
-    selectedRun={source} selectedRunId={source.run_id}
+    task={task} taskRuns={[run]} allRuns={[run]} approvals={[]}
+    selectedRun={run} selectedRunId={run.run_id}
     entries={[]} events={[]} hasMore={false} cost={summarizeCost([])} streamStatus="live"
     connectionLost={false} eventSeqHead={0} busy={null} now={1}
     executionPolicy={{ format_version: 1, mode: "pure_only" }} defaultMode="plan"
@@ -160,6 +160,32 @@ describe.each([["新建", welcome], ["追问", followup]] as const)("%s技能调
     await send();
     expect(api.prepare).toHaveBeenCalledWith("review@0123456789ab", "", ["/workspace"]);
   });
+});
+
+it("取消请求保留明确的取消中状态、恢复说明和终态切换", async () => {
+  const cancelling: RunView = {
+    ...source, state: "running", outcome: null, ended_at: null,
+    control_requested: "cancel",
+  };
+  await act(async () => root.render(followup(cancelling)));
+  const heading = container.querySelector(".canvas-task-heading")!;
+  expect(heading.textContent).toContain("正在取消");
+  expect(heading.textContent).not.toContain("运行中");
+  expect(heading.textContent).toContain("恢复提示");
+  const pending = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+    (button) => button.textContent?.includes("取消中…"),
+  );
+  expect(pending).toBeDefined();
+  expect(pending!.disabled).toBe(true);
+
+  await act(async () => root.render(followup({
+    ...cancelling, state: "cancelled", outcome: "cancelled", ended_at: 2,
+    control_requested: null,
+  })));
+  expect(heading.textContent).toContain("已取消");
+  expect([...container.querySelectorAll<HTMLButtonElement>("button")].some(
+    (button) => button.textContent?.includes("取消中…"),
+  )).toBe(false);
 });
 
 it("任务修订后忽略旧准备结果，仍可提交新修订的技能", async () => {

@@ -1138,6 +1138,8 @@ class TaskStore(_SubtaskStoreMixin, _TaskCursorRebuildMixin):
             if (run.state in safe or parked) and not self._conn.execute(
                 "SELECT 1 FROM run_cursors WHERE run_id=?", (run_id,),
             ).fetchone():
+                if run.effect_state == "unknown":
+                    raise ChatResumeCursorMissing(effect_state=None)
                 try:
                     self.check_chat_resume_without_cursor(run_id)
                 except ChatResumeCursorMissing as exc:
@@ -1147,6 +1149,7 @@ class TaskStore(_SubtaskStoreMixin, _TaskCursorRebuildMixin):
                     if parked and run.state not in safe:
                         # 作业已挂起，没有驱动者会确认请求；在同一事务内核对作业和副作用。
                         safe = (*safe, run.state)
+            immediate = run.state in safe
             marks = ",".join("?" * len(safe))
             tx.append(
                 run_id,
@@ -1155,8 +1158,8 @@ class TaskStore(_SubtaskStoreMixin, _TaskCursorRebuildMixin):
                     "run_id": run_id,
                     "task_id": run.task_id,
                     "action": CONTROL_CANCEL,
-                    "applied_immediately": run.state in safe,
-                    "effect_state": run.effect_state,
+                    "applied_immediately": immediate,
+                    "effect_state": effect_state,
                 },
                 task_id=run.task_id,
                 actor_kind="human",
@@ -1251,6 +1254,21 @@ class TaskStore(_SubtaskStoreMixin, _TaskCursorRebuildMixin):
                     task_id=run.task_id,
                 )
                 return CONTROL_PAUSE
+            effect_state = run.effect_state or "none_applied"
+            if action == CONTROL_CANCEL and not self._conn.execute(
+                "SELECT 1 FROM run_cursors WHERE run_id=?", (run_id,),
+            ).fetchone():
+                # 缺游标时 Run 投影里的 effect_state 可能尚未反映已落库的
+                # Receipt/未知副作用。核对与 run.end 必须同事务，且 unknown
+                # 原样阻断，不能退化成 none_applied。
+                if run.effect_state == "unknown":
+                    raise ChatResumeCursorMissing(effect_state=None)
+                try:
+                    self.check_chat_resume_without_cursor(run_id)
+                except ChatResumeCursorMissing as exc:
+                    if exc.effect_state is None:
+                        raise
+                    effect_state = exc.effect_state
             cur = self._conn.execute(
                 "UPDATE runs SET state=?, control_requested=NULL"
                 " WHERE run_id=? AND state=? AND control_requested=?",
@@ -1280,7 +1298,7 @@ class TaskStore(_SubtaskStoreMixin, _TaskCursorRebuildMixin):
                 tx,
                 run_id,
                 outcome="cancelled",
-                effect_state=run.effect_state or "none_applied",
+                effect_state=effect_state,
                 reason=CANCEL_REASON,
             )
             return CONTROL_CANCEL
