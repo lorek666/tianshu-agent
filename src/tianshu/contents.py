@@ -220,7 +220,7 @@ class ContentStore:
         if self._blob_dir is None:
             ensure_log_write_allowed(self._log)
         lease = (
-            ensure_material_write_allowed(self._blob_dir, owner_log=self._log)
+            ensure_material_write_allowed(self._blob_dir / digest, owner_log=self._log)
             if self._blob_dir is not None
             else _NOOP_MATERIAL_LEASE
         )

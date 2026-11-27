@@ -2,7 +2,9 @@
 
 固定顺序是 restore gate → canonical namespace → native entity → registry 短读/事务。
 gate 只覆盖 anchor/身份固定窗口；namespace 与 entity access 从 SQLite 打开前一直持续到
-真实 close 成功。外部 OS 锁是协作式准入，不把路径字符串当安全边界。
+真实 close 成功。外部 OS 锁是协作式准入，不把路径字符串当安全边界。材料守卫只核验
+检查时的具体 target；同 uid 仍可在检查后替换目录链接，本轮不以 fd-relative/openat
+建立物理封闭，也不把 canonical containment 冒充 TOCTOU 隔离。
 """
 
 from __future__ import annotations
@@ -83,10 +85,19 @@ def _absolute_target(path: Path) -> Path:
         raise RestoreAccessError(f"目标路径不能规范化：{value}") from exc
 
 
+def _scope_key(path: Path | str) -> str:
+    text = str(path)
+    if text.startswith("\\\\?\\UNC\\"):
+        text = "\\\\" + text[8:]
+    elif text.startswith("\\\\?\\"):
+        text = text[4:]
+    return overlap_key(text)
+
+
 def _target_scope_keys(path: Path) -> set[str]:
-    keys = {overlap_key(str(path)), overlap_key(str(path.parent))}
+    keys = {_scope_key(path), _scope_key(path.parent)}
     try:
-        keys.add(overlap_key(str(path.resolve(strict=False))))
+        keys.add(_scope_key(path.resolve(strict=False)))
     except (OSError, RuntimeError):
         pass
     return keys
@@ -94,7 +105,7 @@ def _target_scope_keys(path: Path) -> set[str]:
 
 def _in_scope(target: Path, root: Path) -> bool:
     for target_key in _target_scope_keys(target):
-        if is_ancestor_or_self(overlap_key(str(root)), target_key):
+        if is_ancestor_or_self(_scope_key(root), target_key):
             return True
     return False
 
@@ -463,7 +474,7 @@ def _active_scope_blocks(
             matched = True
         if not matched and sealed is not None:
             binding = sealed.binding
-            if overlap_key(binding.final_database.text) in target_keys:
+            if _scope_key(binding.final_database.text) in target_keys:
                 matched = True
             elif existing_identity is not None and binding.database_identity == existing_identity:
                 matched = True
@@ -556,10 +567,21 @@ def ensure_path_not_held(
     registry: RestoreRegistry | None = None,
 ) -> None:
     """独立材料/后台/维护入口的隔离守卫；不反向抢 restore_gate，遵守全局锁序。"""
+    _ensure_path_not_held(Path(path), registry, set())
 
+
+def _ensure_path_not_held(
+    path: Path,
+    registry: RestoreRegistry | None,
+    seen: set[str],
+) -> None:
     if str(path) == ":memory:":
         return
-    target = _absolute_target(Path(path))
+    target = _absolute_target(path)
+    target_key = _scope_key(target)
+    if target_key in seen:
+        return
+    seen.add(target_key)
     reg = _registry_factory() if registry is None else registry
     observed = reg.observe()
     existing_identity: EntityIdentityV1 | None = None
@@ -570,6 +592,25 @@ def ensure_path_not_held(
         existing_identity = None
     if _active_scope_blocks(observed, target, existing_identity):
         raise RestoreScopeBusy(f"路径落入尚未终结/尚未解除隔离的恢复范围：{target}")
+
+    # realpath(strict=False) is not a complete scope oracle: Windows raises
+    # WinError 267 for a directory-kind leaf link aimed at an existing file,
+    # before ntpath reaches its readlink fallback. Inspect explicit link targets
+    # independently, including ancestors, before any caller checks exists().
+    for entry in (target, *target.parents):
+        try:
+            is_link = entry.is_symlink() or entry.is_junction()
+        except OSError as exc:
+            raise RestoreAccessError(f"无法检查路径链接状态：{entry}") from exc
+        if not is_link:
+            continue
+        try:
+            linked = Path(os.readlink(entry))
+        except (OSError, ValueError) as exc:
+            raise RestoreAccessError(f"无法读取路径链接目标：{entry}") from exc
+        if not linked.is_absolute():
+            linked = entry.parent / linked
+        _ensure_path_not_held(linked, reg, seen)
 
 
 def _revalidate_registry_under_gate(
@@ -662,13 +703,17 @@ class RestoreDatabaseAccess:
             handle.verify_path()
 
     def borrow_initialized(self) -> _MaterialWriteLease:
+        return self._borrow_for_material(require_registered=True)
+
+    def _borrow_for_material(self, *, require_registered: bool) -> _MaterialWriteLease:
         with self._lifetime:
             if self._closing:
                 raise RestoreAccessError(f"所属 EventLog 未持有活跃连续准入锁：{self.path}")
-            with _ACTIVE_EVENTLOG_LOCK:
-                registered = _ACTIVE_EVENTLOG_ACCESSES.get(id(self)) is self
-            if not registered:
-                raise RestoreAccessError(f"所属 EventLog 尚未完成初始化与准入：{self.path}")
+            if require_registered:
+                with _ACTIVE_EVENTLOG_LOCK:
+                    registered = _ACTIVE_EVENTLOG_ACCESSES.get(id(self)) is self
+                if not registered:
+                    raise RestoreAccessError(f"所属 EventLog 尚未完成初始化与准入：{self.path}")
             try:
                 if self.path.stat().st_size <= 0:
                     raise RestoreAccessError(f"所属 EventLog 主库为空/未初始化：{self.path}")
@@ -1211,10 +1256,29 @@ def unregister_admitted_eventlog(access: RestoreDatabaseAccess) -> None:
         _ACTIVE_EVENTLOG_ACCESSES.pop(id(access), None)
 
 
+def _private_material_container(target: Path) -> Path | None:
+    for entry in (target, *target.parents):
+        name_key = overlap_key(entry.name)
+        if (
+            name_key.startswith(".")
+            and name_key.endswith(".materials")
+            and len(name_key) > len(".materials") + 1
+        ):
+            return entry
+    return None
+
+
 def _standard_material_root_and_domain(target: Path) -> tuple[Path, str] | None:
     for entry in (target, *target.parents):
         name_key = overlap_key(entry.name)
         parent_name_key = overlap_key(entry.parent.name)
+        # Private containers are naming boundaries, not unrelated standard domains.
+        if (
+            name_key.startswith(".")
+            and name_key.endswith(".materials")
+            and len(name_key) > len(".materials") + 1
+        ):
+            return None
         if name_key == overlap_key("blobs") and parent_name_key == overlap_key("artifacts"):
             continue
         domains = {
@@ -1264,28 +1328,47 @@ def ensure_log_write_allowed(owner_log: Any) -> None:
         pass
 
 
+_VERIFIED_MAIN_MATERIAL_SCOPES = threading.local()
+
+
 class _MaterialWriteLease:
     """Pin an admitted owner or hold independently verified main access."""
 
-    __slots__ = ("_access", "_borrowed")
+    __slots__ = ("_access", "_borrowed", "_verified_main_key", "_scope")
 
     def __init__(
-        self, access: RestoreDatabaseAccess | None = None, *, borrowed: bool = False
+        self, access: RestoreDatabaseAccess | None = None, *, borrowed: bool = False,
+        verified_main_key: str | None = None,
     ) -> None:
         self._access = access
         self._borrowed = borrowed
+        self._verified_main_key = (
+            (os.getpid(), verified_main_key) if verified_main_key is not None else None
+        )
+        self._scope: dict[tuple[int, str], RestoreDatabaseAccess] | None = None
 
     @property
     def active(self) -> bool:
         return self._access is not None and self._access.active
 
     def __enter__(self) -> _MaterialWriteLease:
+        if self._verified_main_key is not None and self._access is not None:
+            # Only this process and thread may reuse the verified exclusive main.
+            # A forked child inherits the thread-local values but not this PID key.
+            scope = getattr(_VERIFIED_MAIN_MATERIAL_SCOPES, "mains", None)
+            if scope is None:
+                scope = _VERIFIED_MAIN_MATERIAL_SCOPES.mains = {}
+            scope[self._verified_main_key] = self._access
+            self._scope = scope
         return self
 
     def __exit__(self, *_exc: object) -> None:
         self.close()
 
     def close(self) -> None:
+        if self._scope is not None and self._verified_main_key is not None:
+            self._scope.pop(self._verified_main_key, None)
+            self._scope = None
         acc, self._access = self._access, None
         if acc is not None:
             if self._borrowed:
@@ -1355,18 +1438,44 @@ def ensure_material_write_allowed(
     *,
     owner_log: Any = None,
 ) -> _MaterialWriteLease:
-    """三材料域每个写 API 统一写前守卫：动态重验隔离范围 + 唯一标准主库白名单连续准入。"""
+    """守卫具体材料 target，并动态重验隔离范围与唯一标准主库连续准入。
+
+    私有 ``.<db>.materials`` / ``.memory.materials`` 容器内的 target 解析后不得
+    逃逸其 canonical 容器；标准材料域仍要求 raw/canonical 同根同域。这里是检查时
+    的协作式边界，同 uid 在检查后换链的竞态仍需 fd-relative/openat 才能物理封闭。
+    """
     if str(material_path) == ":memory:":
         return _NOOP_MATERIAL_LEASE
     ensure_path_not_held(material_path)
 
-    target = _absolute_target(Path(material_path))
-    located = _standard_material_root_and_domain(target)
-    if located is None:
-        try:
-            located = _standard_material_root_and_domain(target.resolve(strict=False))
-        except (OSError, RuntimeError) as exc:
-            raise RestoreAccessError(f"无法解析材料写入目标路径：{target}") from exc
+    target = Path(material_path).absolute()
+    raw_located = _standard_material_root_and_domain(target)
+    raw_private_container = _private_material_container(target)
+    try:
+        resolved_target = target.resolve(strict=False)
+        if raw_private_container is not None:
+            canonical_container = raw_private_container.resolve(strict=False)
+            if not is_ancestor_or_self(
+                overlap_key(str(canonical_container)),
+                overlap_key(str(resolved_target)),
+            ):
+                raise RestoreAccessError(
+                    "私有材料 target 解析后逃逸 canonical 容器："
+                    f"{target} -> {resolved_target}"
+                )
+        located = _standard_material_root_and_domain(resolved_target)
+        if raw_located is not None and (
+            located is None
+            or raw_located[1] != located[1]
+            or overlap_key(str(raw_located[0].resolve(strict=False)))
+            != overlap_key(str(located[0]))
+        ):
+            raise RestoreAccessError(
+                "材料路径 canonical 解析后改变标准根/域，不能沿用原始同根 events.db 绑定："
+                f"{target}"
+            )
+    except (OSError, RuntimeError) as exc:
+        raise RestoreAccessError(f"无法解析材料写入目标路径：{target}") from exc
     if located is None:
         return _owner_material_lease(owner_log) if owner_log is not None else _NOOP_MATERIAL_LEASE
     standard_root, domain = located
@@ -1391,7 +1500,14 @@ def ensure_material_write_allowed(
     if borrowed is not None:
         return borrowed
     if domain in ("artifacts", "blobs"):
-        return _MaterialWriteLease(_acquire_verified_existing_main_access(std_events_db))
+        scope = getattr(_VERIFIED_MAIN_MATERIAL_SCOPES, "mains", None)
+        contained = None if scope is None else scope.get((os.getpid(), std_events_key))
+        if contained is not None:
+            return contained._borrow_for_material(require_registered=False)
+        return _MaterialWriteLease(
+            _acquire_verified_existing_main_access(std_events_db),
+            verified_main_key=std_events_key,
+        )
     raise RestoreAccessError(
         f"标准数据根材料写入必须绑定已初始化、已准入的 events.db 连续 access：{target}"
     )

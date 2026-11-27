@@ -280,11 +280,12 @@ class JournalStore:
     def _save(self, journal: UndoJournal) -> None:
         from .restore_access import ensure_material_write_allowed
 
-        with ensure_material_write_allowed(self.root, owner_log=self._owner_log):
+        path = self.path(journal.run_id)
+        with ensure_material_write_allowed(path, owner_log=self._owner_log):
             payload = json.dumps(
                 journal.to_dict(), ensure_ascii=False, indent=2
             ).encode("utf-8")
-            atomic_write_bytes(self.path(journal.run_id), payload)
+            atomic_write_bytes(path, payload)
 
     def begin(
         self,
@@ -296,8 +297,9 @@ class JournalStore:
         """动手前落盘完整计划。已有 journal 时拒绝（续做走 `load`＋`record_done`）。"""
         from .restore_access import ensure_material_write_allowed
 
-        with ensure_material_write_allowed(self.root, owner_log=self._owner_log):
-            if self.path(run_id).exists():
+        path = self.path(run_id)
+        with ensure_material_write_allowed(path, owner_log=self._owner_log):
+            if path.exists():
                 raise UndoJournalConflict(
                     f"{run_id} 已有未清理的 undo journal：拒绝覆盖已有意图日志"
                 )
@@ -311,7 +313,7 @@ class JournalStore:
             payload = json.dumps(
                 journal.to_dict(), ensure_ascii=False, indent=2
             ).encode("utf-8")
-            atomic_write_bytes(self.path(journal.run_id), payload)
+            atomic_write_bytes(path, payload)
             return journal
 
     def record_done(
