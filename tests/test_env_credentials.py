@@ -73,27 +73,53 @@ def test_text_config_reloads_and_reads_env_only(monkeypatch, tmp_path, provider,
     monkeypatch.delenv(variable)
     assert EnvCredentialStore().get(CredentialRef(domain, "llm")) is None
     # 真子进程只接收导入/平台所需的非敏感变量，绝不继承生产 provider key。
+    child_home = tmp_path / "child-home"
+    child_tmp = tmp_path / "child-tmp"
+    child_home.mkdir()
+    child_tmp.mkdir()
     child_env = {
         name: os.environ[name]
         for name in (
-            "PATH", "PYTHONPATH", "HOME", "USERPROFILE", "SYSTEMROOT", "SystemRoot",
-            "TMPDIR", "TEMP", "TMP",
+            "PATH", "PYTHONPATH", "SystemRoot",
+            "TIANSHU_TEST_LOCK_ROOT", "PYTEST_TIANSHU_REGISTRY_HOME",
+            "TIANSHU_AUTHORITY_ROOT",
         )
         if name in os.environ
     }
+    child_env.update(
+        HOME=str(child_home), USERPROFILE=str(child_home),
+        TMPDIR=str(child_tmp), TEMP=str(child_tmp), TMP=str(child_tmp),
+    )
     child_env[variable] = key
     assert "TIANSHU_API_KEY" not in child_env or variable == "TIANSHU_API_KEY"
     assert "ANTHROPIC_API_KEY" not in child_env or variable == "ANTHROPIC_API_KEY"
-    result = subprocess.run([
-        sys.executable, "-c",
+    child_code = (
         "from pathlib import Path; import os, sys; "
+        "from tianshu import maintenance, restore_registry; "
+        "from tianshu.authority import authority_root; "
         "from tianshu.settings_control import RuntimeModelSlot; "
+        "assert maintenance._lock_root() == Path(os.environ['TIANSHU_TEST_LOCK_ROOT']); "
+        "assert restore_registry._user_home() == Path(os.environ['PYTEST_TIANSHU_REGISTRY_HOME']); "
+        "assert authority_root() == Path(os.environ['TIANSHU_AUTHORITY_ROOT']).resolve(); "
         "slot = RuntimeModelSlot(None, data_root=Path(sys.argv[1])); "
         "assert slot._resolve_active_model().api_key == os.environ[sys.argv[2]]; "
-        "assert slot.current_config().credential_backend == 'env'",
-        str(root), variable,
-    ], env=child_env, capture_output=True, text=True, timeout=20)
+        "assert slot.current_config().credential_backend == 'env'"
+    )
+    child_argv = [sys.executable, "-c", child_code, str(root), variable]
+    result = subprocess.run(
+        child_argv, env=child_env, capture_output=True, text=True, timeout=20,
+    )
     assert result.returncode == 0, result.stderr
+    for missing in (
+        "TIANSHU_TEST_LOCK_ROOT", "PYTEST_TIANSHU_REGISTRY_HOME",
+        "TIANSHU_AUTHORITY_ROOT",
+    ):
+        broken_env = dict(child_env)
+        broken_env.pop(missing)
+        result = subprocess.run(
+            child_argv, env=broken_env, capture_output=True, text=True, timeout=20,
+        )
+        assert result.returncode != 0, missing
 
 
 @pytest.mark.parametrize("mode", ["openai", "anthropic", "openai-responses"])
