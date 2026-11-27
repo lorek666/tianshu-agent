@@ -38,7 +38,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
-from .errors import TianshuError
+from .errors import RunFinishPersistenceError, TianshuError
 from .events import EventLog
 from .jobs import (
     JOB_CLAIMED,
@@ -62,6 +62,7 @@ from .restore_access import preflight_legacy_material_layout
 from .tasks import (
     RUN_FENCED,
     RUN_PAUSED,
+    RUN_RUNNING,
     RUN_WAITING_APPROVAL,
     TERMINAL_STATES,
 )
@@ -333,8 +334,9 @@ class Worker:
         self.run_ids.append(claim.run_id)
         self.contended = False
         requeue = False
+        retry_finish = False
         def settle() -> None:
-            self._settle(claim, requeue=requeue)
+            self._settle(claim, requeue=requeue, retry_finish=retry_finish)
 
         with _cleanup_preserving_primary(settle, "作业结算失败"):
             try:
@@ -346,6 +348,10 @@ class Worker:
                 self.notes.append(f"工作区被占用，已交还作业：{exc}")
             except (JobLost, JobUnavailable):
                 self.errors.append("作业已被接管，本实例停止提交")
+            except RunFinishPersistenceError as exc:
+                retry_finish = exc.requeue and self._heartbeat is None
+                # 让 Daemon 的连续驱动失败门禁处理持续写库故障。
+                raise
             except Exception as exc:  # noqa: BLE001 - 单个作业失败不该带走整个循环
                 self.errors.append(f"{type(exc).__name__}: {exc}")
         # 心跳仍持连接或本轮中断时，不能排入更多工作。
@@ -572,7 +578,9 @@ class Worker:
             self._heartbeat_active = False
             self._record_heartbeat(loop)
 
-    def _settle(self, claim: JobClaim, *, requeue: bool = False) -> None:
+    def _settle(
+        self, claim: JobClaim, *, requeue: bool = False, retry_finish: bool = False,
+    ) -> None:
         """把作业状态与 Run 状态对齐。**只在还持有 claim 时才动。**"""
         job = self._claims.get(claim.job_id)
         if job is None or job.state != JOB_CLAIMED:
@@ -588,7 +596,7 @@ class Worker:
                 )
             elif state == RUN_FENCED:
                 self._claims.finish(claim, outcome="failed")
-            elif requeue:
+            elif requeue or (retry_finish and state == RUN_RUNNING):
                 self._claims.requeue(claim)
             else:
                 self._claims.park(claim, reason=state)

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -19,7 +20,7 @@ from .dispatcher import (
     DISPATCH_INTENT,
     Dispatcher,
 )
-from .errors import RunFenced, TianshuError, ToolArgumentError
+from .errors import RunFenced, RunFinishPersistenceError, TianshuError, ToolArgumentError
 from .events import Event, EventLog
 from .fsutil import atomic_write_bytes
 from .guard import scan_blocked
@@ -686,11 +687,7 @@ class _LoopBookkeepingMixin:
         outcome: str,
         error: str | None,
     ) -> RunResult:
-        """终结：先把作业收掉（证明我们还是 owner），再写 Run 结论。
-
-        顺序不能反：先写 Run 成功、再发现 claim 已被接管，就会留下一条
-        "旧 owner 宣告成功"的记录，而这正是 fencing 要禁止的事。
-        """
+        """核验作业归属，在同一次提交中落作业和 Run 的终态。"""
         self._dispatcher.close_run_mcp(run_id)
         events = self._log.read_run(run_id, verify=False)
         effect = self._sync_persisted_effects(events, progress)
@@ -739,17 +736,8 @@ class _LoopBookkeepingMixin:
             )
         run_outcome = "succeeded" if outcome == "noop" else outcome
         try:
-            self._claims.finish(claim, outcome=run_outcome)
-        except (JobLost, JobUnavailable, TianshuError) as exc:
-            return self._result(
-                run_id,
-                progress,
-                state=self._state_of(run_id),
-                error=f"收尾被拒绝（claim 已失效）：{exc}",
-            )
-
-        try:
             with self._log.transaction() as tx:
+                self._claims.finish(claim, outcome=run_outcome)
                 # `run.end` 由这里写（终态事件只有这一个写者，CLI 直接取消
                 # 也走同一条路），结算字段全部从事件与游标派生。
                 #
@@ -767,6 +755,21 @@ class _LoopBookkeepingMixin:
                         "noop" if outcome == "noop" and effect == "none_applied" else None
                     ),
                 )
+        except sqlite3.OperationalError as exc:
+            # 正常收尾已有终止游标，下一次驱动只需重试结算。其它失败保留原恢复路径。
+            turn = progress.model_turn
+            requeue = (
+                run_outcome == "succeeded" and turn is not None
+                and turn["finish_reason"] == "end_turn" and not progress.pending
+            )
+            raise RunFinishPersistenceError(f"Run 收尾写入失败：{exc}", requeue=requeue) from exc
+        except (JobLost, JobUnavailable) as exc:
+            return self._result(
+                run_id,
+                progress,
+                state=self._state_of(run_id),
+                error=f"收尾被拒绝（claim 已失效）：{exc}",
+            )
         except RunFenced as exc:
             return self._result(
                 run_id, progress, state=self._state_of(run_id), error=str(exc)

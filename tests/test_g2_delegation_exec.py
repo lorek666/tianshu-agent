@@ -11,23 +11,35 @@
 
 from __future__ import annotations
 
+import os
+import sqlite3
+import subprocess
+import sys
+import threading
+from contextlib import closing
 from pathlib import Path
 
-from support import approve_pending, engine_for, stack_for
+import pytest
+from support import CHILD_TEXT, approve_pending, engine_for
 
+from tianshu.control import ControlPlane
+from tianshu.daemon import _Daemon
+from tianshu.errors import TianshuError
 from tianshu.events import EventLog
-from tianshu.jobs import JobClaim
+from tianshu.jobs import JobClaim, JobStore
+from tianshu.leases import ProcessIdentity
+from tianshu.loop import build_stack
 from tianshu.model import ModelResponse, ScriptedModel, ToolCall
 from tianshu.restore_access import default_material_paths
-from tianshu.worker import Worker
+from tianshu.worker import Worker, run_worker_once
 
 # ---------------------------------------------------------------- 夹具
 
 
-def _stack(tmp_path: Path):
+def _stack(tmp_path: Path, *, identity: ProcessIdentity | None = None):
     db, root = tmp_path / "events.db", tmp_path / "data"
     log = EventLog(db, blob_dir=default_material_paths(db, root)[1], data_root=root)
-    return log, stack_for(log, data_root=tmp_path / "data")
+    return log, build_stack(log, data_root=root, identity=identity)
 
 
 def _workspace(tmp_path: Path) -> Path:
@@ -186,19 +198,7 @@ def test_worker_drives_child_run(tmp_path):
 
 
 def test_child_finish_is_one_transaction(tmp_path):
-    """子任务收尾的行 / 事件 / 预算在**同一个事务**里，失败一起回滚。
-
-    注意覆盖面：这里的注入点在 `_settle_subtask_budget`（行 → 事件 → 预算的
-    中段），证明这三件同生共死；**不含** `claims.finish` 那一笔——作业收尾是
-    `_finish` 里更早的一次提交，两笔之间的窗口登记在规格 §5 边界 12。
-    `wake` 在本例里走不到（唯一的子任务正是被收尾的那个），所以本测试不断言
-    "唤醒同事务"；唤醒的原子性由 `JobStore.wake` 的条件 UPDATE 自己保证。
-
-    注入发生在预算结算（收尾事务的中段）：如果实现把 `subtasks` 行或
-    `subtask.finished` 提前提交了，回滚之后就只剩"Run 还是 running、子任务却
-    已经 succeeded"这种无法解释的中间态——父 Run 会永远等一个已完成的孩子。
-    这条断言看的是**回滚之后的磁盘事实**，不是代码里写了几个 with。
-    """
+    """子作业和 Run 的终态一起回滚，死去的 owner 留下的作业能被 Worker 接手。"""
     ws = _workspace(tmp_path)
     log, stack = _stack(tmp_path)
     try:
@@ -207,14 +207,29 @@ def test_child_finish_is_one_transaction(tmp_path):
         parent_run_id = parent_result.run_id
         (row,) = stack.tasks.list_subtasks(parent_run_id)
 
-        def boom(row, *, state, never_executed):  # noqa: ARG001 - 注入点签名
-            raise RuntimeError("注入：结算失败后整个收尾事务必须回滚")
+        script = """
+import sys
+from pathlib import Path
 
-        stack.tasks._settle_subtask_budget = boom  # noqa: SLF001 - 负控注入点
-        child_engine = engine_for(stack, _child_model())
-        result = child_engine.resume_run(row.child_run_id)
-        # 第二次收尾会因 claim 已交还而如实失败；关键是磁盘状态被整体回滚。
-        assert result.state == "running", result
+from test_g2_delegation_exec import _drive_child, _stack
+from tianshu.crashpoint import failpoint
+
+log, stack = _stack(Path(sys.argv[1]))
+stack.tasks._settle_subtask_budget = lambda *args, **kwargs: failpoint("child-before-settlement")
+_drive_child(stack)
+log.close()
+"""
+        env = {**os.environ, "TIANSHU_FAILPOINT": "child-before-settlement"}
+        process = subprocess.run(
+            [sys.executable, "-c", script, str(tmp_path)],
+            cwd=Path(__file__).parent,
+            env=env,
+            capture_output=True,
+            timeout=20,
+            **CHILD_TEXT,
+        )
+        assert process.returncode == 77, process.stderr
+        assert "[failpoint] child-before-settlement" in process.stderr
 
         child = stack.tasks.get_run(row.child_run_id)
         assert child.state == "running", "run.end 与终态写入必须一起回滚"
@@ -225,8 +240,128 @@ def test_child_finish_is_one_transaction(tmp_path):
         assert _events(log, parent_run_id, "subtask.finished") == []
         assert stack.budget.usage(f"run:{parent_run_id}")["reserved"]["subtasks"] == 1
         assert stack.claims.job_for_run(parent_run_id).state == "waiting"
+        child_job = stack.claims.get(row.job_id)
+        assert child_job.state == "claimed", "作业终态不能在 Run 终态之前独立提交"
+        assert _events(log, row.child_run_id, "job.finished") == []
+
+        model = ScriptedModel([])
+        with Worker(stack, model=model, heartbeat_interval_ms=None) as worker:
+            assert worker.drain(max_jobs=1) == [row.child_run_id]
+            assert worker.errors == []
+        assert model.calls == 0
+        assert stack.tasks.get_run(row.child_run_id).state == "succeeded"
+        finished_job = stack.claims.get(row.job_id)
+        assert finished_job.state == "done"
+        assert finished_job.claim_epoch == child_job.claim_epoch + 1
+        assert len(_events(log, row.child_run_id, "job.finished")) == 1
+        assert len(_events(log, row.child_run_id, "run.end")) == 1
+        assert len(_events(log, parent_run_id, "subtask.finished")) == 1
+        assert [event["reason"] for event in _events(log, parent_run_id, "job.requeued")] == [
+            "children_finished"
+        ]
+        assert stack.claims.job_for_run(parent_run_id).state == "pending"
+        assert stack.budget.usage(f"run:{parent_run_id}")["reserved"]["subtasks"] == 0
     finally:
         log.close()
+
+
+def test_child_finishes_with_independent_job_store(tmp_path):
+    ws = _workspace(tmp_path)
+    owner = ProcessIdentity.mint()
+    log, stack = _stack(tmp_path, identity=owner)
+    with closing(log), closing(EventLog(
+        log.db_path, blob_dir=log.blob_dir, data_root=stack.data_root,
+    )) as other:
+        task = stack.tasks.create_task("父任务", [str(ws)], max_subtasks=2)
+        _, parent = _spawn_then_park(stack, task)
+        (child,) = stack.tasks.list_subtasks(parent.run_id)
+        now = owner.started_at + 10
+        store = JobStore(other, identity=owner, clock=lambda: now)
+        other.conn.execute("PRAGMA busy_timeout=100")
+        model = ScriptedModel([ModelResponse("end_turn", content="子任务的结果")])
+
+        assert run_worker_once(store, owner, stack=stack, model=model, heartbeat_interval_ms=None)
+
+        job = store.get(child.job_id)
+        assert (job.state, job.outcome, job.ended_at, job.owner_instance_id) == (
+            "done", "succeeded", now, owner.instance_id,
+        )
+        assert model.calls == 1
+        assert stack.tasks.get_run(child.child_run_id).outcome == "succeeded"
+        assert stack.tasks.get_subtask(parent.run_id, "reader").state == "succeeded"
+        assert stack.claims.job_for_run(parent.run_id).state == "pending"
+        assert len(_events(log, child.child_run_id, "job.finished")) == 1
+
+
+@pytest.mark.parametrize("driver", ["worker", "daemon", "loop"])
+def test_child_finish_storage_failure_is_recoverable(tmp_path, monkeypatch, driver):
+    ws = _workspace(tmp_path)
+    log, stack = _stack(tmp_path)
+    with closing(log):
+        task = stack.tasks.create_task("父任务", [str(ws)], max_subtasks=2)
+        _, parent = _spawn_then_park(stack, task)
+        (child,) = stack.tasks.list_subtasks(parent.run_id)
+        run_id = child.child_run_id
+        wake_parent = stack.tasks._maybe_wake_parent
+        fail = True
+
+        def wake_then_fail(parent_id):
+            nonlocal fail
+            woken = wake_parent(parent_id)
+            if woken and fail:
+                fail = False
+                raise sqlite3.OperationalError("settlement probe")
+            return woken
+
+        monkeypatch.setattr(stack.tasks, "_maybe_wake_parent", wake_then_fail)
+        model = ScriptedModel([ModelResponse("end_turn", content="子任务的结果")])
+        if driver == "loop":
+            with pytest.raises(TianshuError, match="settlement probe"):
+                engine_for(stack, model).resume_run(run_id)
+        elif driver == "daemon":
+            daemon = _Daemon(stack.data_root, model=model, limits=None, driver_interval_s=0.005,
+                             stop_event=threading.Event(), on_ready=None)
+            daemon.driver_log = log
+            daemon.driver_stack = stack
+            daemon.plane = ControlPlane(stack, model=model, resume_requests=daemon.resume_requests)
+            try:
+                daemon._resume_one(engine_for(stack, model), run_id)
+            finally:
+                daemon._close_resume_channel()
+        else:
+            with Worker(stack, model=model, heartbeat_interval_ms=None) as worker:
+                with pytest.raises(TianshuError, match="settlement probe"):
+                    worker.run_once()
+
+        assert not fail and model.calls == 1
+        assert stack.tasks.get_run(run_id).state == "running"
+        assert stack.tasks.get_subtask(parent.run_id, "reader").state == "running"
+        assert stack.claims.job_for_run(parent.run_id).state == "waiting"
+        assert stack.budget.usage(f"run:{parent.run_id}")["reserved"]["subtasks"] == 1
+        for event in ("job.finished", "run.end", "run.finish"):
+            assert _events(log, run_id, event) == []
+        assert _events(log, parent.run_id, "subtask.finished") == []
+        assert _events(log, parent.run_id, "job.requeued") == []
+
+        remaining = ScriptedModel([])
+        if driver == "loop":
+            assert engine_for(stack, remaining).resume_run(run_id).state == "succeeded"
+        else:
+            with Worker(stack, model=remaining, heartbeat_interval_ms=None) as worker:
+                assert worker.drain(max_jobs=1) == [run_id]
+                assert worker.errors == []
+        assert remaining.calls == 0
+        assert stack.claims.get(child.job_id).outcome == "succeeded"
+        assert stack.tasks.get_run(run_id).outcome == "succeeded"
+        assert stack.tasks.get_subtask(parent.run_id, "reader").state == "succeeded"
+        assert stack.claims.job_for_run(parent.run_id).state == "pending"
+        assert stack.budget.usage(f"run:{parent.run_id}")["reserved"]["subtasks"] == 0
+        for event in ("model.intent", "model.result", "job.finished", "run.end", "run.finish"):
+            assert len(_events(log, run_id, event)) == 1
+        assert len(_events(log, parent.run_id, "subtask.finished")) == 1
+        assert [p["reason"] for p in _events(log, parent.run_id, "job.requeued")] == [
+            "children_finished",
+        ]
 
 
 # ---------------------------------------------------------------- D2-c2

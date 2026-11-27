@@ -131,6 +131,14 @@ class RunFenced(TianshuError):
     """
 
 
+class RunFinishPersistenceError(TianshuError):
+    """作业与 Run 的终态事务未完成。"""
+
+    def __init__(self, message: str, *, requeue: bool) -> None:
+        super().__init__(message)
+        self.requeue = requeue
+
+
 class CredentialUnsupported(TianshuError):
     """这个凭据后端/平台**做不到**这件事（例如 v1 的 OS Keychain）。
 

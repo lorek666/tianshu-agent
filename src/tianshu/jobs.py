@@ -277,6 +277,14 @@ class JobStore:
     def transaction(self):
         return self._log.transaction()
 
+    def bind(self, log: EventLog) -> JobStore:
+        """在同库的另一条连接上保留本 store 的认领身份和时钟。"""
+        if log is self._log:
+            return self
+        if str(log.db_path) == ":memory:" or log.db_path.resolve() != self._log.db_path.resolve():
+            raise TianshuError("JobStore 只能绑定到同一个事件库")
+        return JobStore(log, identity=self._identity, clock=self._clock)
+
     # ---- 入队 ----
 
     def enqueue(self, run_id: str) -> Job:

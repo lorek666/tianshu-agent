@@ -66,7 +66,7 @@ from typing import Any
 
 from . import ipc, metrics
 from .control import DAEMON_VERSION, ControlError, ControlPlane, event_view
-from .errors import TianshuError
+from .errors import RunFinishPersistenceError, TianshuError
 from .events import EventLog
 from .jobs import JobLost, JobStore, JobUnavailable, renew_claim
 from .leases import (
@@ -86,6 +86,7 @@ from .tasks import (
     RUN_CANCELLING,
     RUN_FENCED,
     RUN_RECONCILING,
+    RUN_RUNNING,
     RUN_WAITING_APPROVAL,
     TERMINAL_STATES,
 )
@@ -1537,7 +1538,12 @@ class _Daemon:
 
                 def settle() -> None:
                     if claim is not None:
-                        self._settle_job(claim)
+                        error = sys.exception()
+                        requeue = (
+                            isinstance(error, RunFinishPersistenceError) and error.requeue
+                            and self._resume_heartbeat is None
+                        )
+                        self._settle_job(claim, requeue=requeue)
 
                 with _cleanup_preserving_primary(settle, "续跑作业结算失败"):
                     if claim is None:
@@ -1597,7 +1603,7 @@ class _Daemon:
             )
         return self.side
 
-    def _settle_job(self, claim: Any) -> None:
+    def _settle_job(self, claim: Any, *, requeue: bool = False) -> None:
         """把作业状态与 Run 状态对齐（只在还持有 claim 时动）。"""
         assert self.driver_stack is not None
         claims = self.driver_stack.claims
@@ -1613,6 +1619,8 @@ class _Daemon:
                 claims.finish(claim, outcome=outcome)
             elif state == RUN_FENCED:
                 claims.finish(claim, outcome="failed")
+            elif requeue and state == RUN_RUNNING:
+                claims.requeue(claim)
             else:
                 claims.park(claim, reason=state)
         except TianshuError as exc:
