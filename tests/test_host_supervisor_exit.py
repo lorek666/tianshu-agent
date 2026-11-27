@@ -19,6 +19,7 @@ import support
 from support import shutdown_daemon_and_wait
 
 from tianshu import host
+from tianshu.diagnostics_export import redact_diagnostic_text
 
 
 def _child_env():
@@ -35,6 +36,52 @@ def _child_env():
 
 def _test_interpreter() -> str:
     return sys._base_executable if os.name == "nt" else sys.executable
+
+
+def _first_host_start_failure(root: Path, proc: subprocess.Popen[bytes]) -> str:
+    lines = [f"First Host did not become ready (exit={proc.returncode})"]
+    for relative in ("first.stderr", "logs/daemon.log"):
+        try:
+            with (root / relative).open("rb") as stream:
+                stream.seek(0, os.SEEK_END)
+                start = max(0, stream.tell() - 4096)
+                stream.seek(start)
+                tail = stream.read(4096)
+        except OSError as exc:
+            lines.append(f"{relative}: unavailable ({type(exc).__name__})")
+            continue
+        if start:
+            # Do not print a partial first line; it could start inside a secret or path.
+            tail = tail.partition(b"\n")[2]
+        text = redact_diagnostic_text(
+            tail.decode("utf-8", "replace"),
+            extra_paths=[str(root), str(Path.home()), str(Path.cwd())],
+        )
+        lines.append(f"{relative}:\n{text or '(no complete diagnostic line)'}")
+    return "\n".join(lines)
+
+
+def test_host_snapshot_helper_does_not_load_execution_backend():
+    # Reject the expensive import inside a fresh interpreter, where the parent
+    # pytest session's already-imported modules cannot mask the dependency.
+    script = """
+import importlib.abc
+import sys
+
+class NoExecutionAdmission(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == 'tianshu.execution_admission':
+            raise AssertionError('snapshot helper loaded execution admission')
+
+sys.meta_path.insert(0, NoExecutionAdmission())
+from tianshu.host import _daemon_helper
+assert callable(_daemon_helper)
+"""
+    proc = subprocess.run(
+        [_test_interpreter(), "-c", script], env=_child_env(),
+        capture_output=True, text=True, encoding="utf-8", timeout=10, check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
 
 
 def test_native_windows_test_interpreter_keeps_project_imports(monkeypatch):
@@ -2557,7 +2604,9 @@ raise SystemExit(host.run_host(
                     and first_info.port > 0 and host._http_alive(first_info)
                 ):
                     break
-                assert first.poll() is None and time.monotonic() < deadline
+                assert first.poll() is None and time.monotonic() < deadline, (
+                    _first_host_start_failure(root, first)
+                )
                 threading.Event().wait(0.02)
             original_daemon = daemon.lock_path(root).read_bytes()
             original_host = host.host_lock_path(root).read_bytes()
@@ -2787,7 +2836,9 @@ raise SystemExit(host.run_host(
                 )
                 deadline = time.monotonic() + 30
                 while not (root / "first-bridge-pending").exists():
-                    assert first.poll() is None and time.monotonic() < deadline
+                    assert first.poll() is None and time.monotonic() < deadline, (
+                        _first_host_start_failure(root, first)
+                    )
                     threading.Event().wait(0.02)
                 attached_snapshot = daemon.lock_path(root).read_bytes()
                 second_err = (root / "second.stderr").open("wb")
@@ -2982,9 +3033,20 @@ while True:
             supervisor._close_log()
 
 
-def test_owned_readiness_cannot_adopt_another_process_endpoint():
+def test_owned_readiness_cannot_adopt_another_process_endpoint(monkeypatch):
     from tianshu import daemon, ipc
 
+    replacement_script = """
+import sys
+from pathlib import Path
+from tianshu import cli, daemon
+root = Path(sys.argv[1])
+serve = daemon.serve
+def serve_with_ready(*args, **kwargs):
+    return serve(*args, **kwargs, on_ready=lambda: (root / 'replacement-ready').touch())
+daemon.serve = serve_with_ready
+raise SystemExit(cli.main(['daemon', '--model', 'scripted', '--data-root', str(root)]))
+"""
     with tempfile.TemporaryDirectory(
         prefix="tsh-ownswap-", dir=None if os.name == "nt" else "/tmp",
     ) as directory:
@@ -2995,8 +3057,17 @@ def test_owned_readiness_cannot_adopt_another_process_endpoint():
         )
         supervisor = host.DaemonSupervisor(
             root, [sys._base_executable, "-c", script, str(root / "started")],
-            start_timeout_s=10,
+            start_timeout_s=25,
         )
+        replacement_ready = threading.Event()
+        alive = supervisor.alive
+
+        def check_endpoint_after_replacement_start():
+            if supervisor._process is not None:
+                assert replacement_ready.wait(20), "replacement readiness barrier timed out"
+            return alive()
+
+        monkeypatch.setattr(supervisor, "alive", check_endpoint_after_replacement_start)
         errors = []
 
         def ensure():
@@ -3017,32 +3088,52 @@ def test_owned_readiness_cannot_adopt_another_process_endpoint():
             owned = supervisor._process
             assert owned is not None and owned.poll() is None
             replacement = subprocess.Popen(
-                [sys.executable, "-m", "tianshu", "daemon", "--model", "scripted",
-                 "--data-root", str(root)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=_child_env(),
+                [_test_interpreter(), "-u", "-c", replacement_script, str(root)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, env=_child_env(),
             )
-            worker.join(timeout=15)
-            assert not worker.is_alive()
-            assert errors and isinstance(errors[0], host.HostError), (
-                "readiness adopted another process's endpoint"
-            )
-            assert owned.poll() is not None and supervisor._process is None
-            assert replacement.poll() is None and ipc.probe(root, timeout=0.1)
-        finally:
-            try:
-                owner = json.loads(daemon.lock_path(root).read_bytes())
-            except FileNotFoundError:
-                owner = None
-            if owner is not None:
-                daemon.request_shutdown(root, expected_instance_id=owner["instance_id"])
-            supervisor._stop.set()
-            for child in (owned, replacement):
-                if child is not None:
-                    if child.poll() is None:
-                        child.kill()
-                    child.wait(timeout=10)
+            while not (root / "replacement-ready").exists():
+                assert replacement.poll() is None and time.monotonic() < deadline, (
+                    "replacement Daemon did not complete startup and authentication"
+                )
+                threading.Event().wait(0.01)
+            other = daemon.lock_path(root).read_bytes()
+            assert json.loads(other)["pid"] == replacement.pid
+            replacement_ready.set()
             worker.join(timeout=10)
-            supervisor._close_log()
+            assert not worker.is_alive()
+            assert len(errors) == 1 and isinstance(errors[0], host.HostError), errors
+            assert "Daemon 就绪实例不属于本次启动的进程" in str(errors[0]), errors
+            assert owned.poll() is not None and supervisor._process is None
+            assert replacement.poll() is None and ipc.probe(root, timeout=1)
+            assert daemon.lock_path(root).read_bytes() == other
+        finally:
+            supervisor._stop.set()
+            replacement_ready.set()
+            worker.join(timeout=10)
+            try:
+                if owned is None:
+                    owned = supervisor._process
+                if owned is not None and owned.poll() is None:
+                    owned.kill()
+                    owned.wait(timeout=5)
+                if replacement is not None:
+                    try:
+                        owner = json.loads(daemon.lock_path(root).read_bytes())
+                    except FileNotFoundError:
+                        owner = None
+                    if owner is not None and owner["pid"] == replacement.pid:
+                        if supervisor._request_shutdown(
+                            reason="test_cleanup", instance_id=owner["instance_id"], timeout=3,
+                        ):
+                            try:
+                                replacement.wait(timeout=5)
+                            except subprocess.TimeoutExpired:
+                                pass
+                    if replacement.poll() is None:
+                        replacement.kill()
+                    replacement.communicate(timeout=5)
+            finally:
+                supervisor._close_log()
 
 
 @pytest.mark.parametrize("probe_errno", [None, errno.EACCES, errno.ETIMEDOUT, errno.ECONNREFUSED])

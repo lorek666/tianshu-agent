@@ -612,7 +612,7 @@ log.close()
             child.wait(timeout=5)
 
 
-@pytest.mark.parametrize("producer", ["loop", "control", "memory", "undo"])
+@pytest.mark.parametrize("producer", ["loop", "control", "control_mcp_free", "memory", "undo"])
 @pytest.mark.parametrize("low", [False, True])
 def test_real_mcp_producer_preparation_and_low_disk_order(tmp_path, producer, low):
     import sys
@@ -627,16 +627,17 @@ def test_real_mcp_producer_preparation_and_low_disk_order(tmp_path, producer, lo
     from tianshu.worker import Worker
 
     with closing(EventLog(tmp_path / "events.db")) as log:
-        stack = stack_for(log, data_root=tmp_path / "data")
+        control_stack = stack_for(log, data_root=tmp_path / "data")
+        control_producer = producer in ("control", "control_mcp_free")
         workspace = tmp_path / "workspace"
         workspace.mkdir()
-        task = stack.tasks.create_task(
-            "produce", [str(workspace)], mcp_servers=["fake"] if producer == "control" else (),
+        task = control_stack.tasks.create_task(
+            "produce", [str(workspace)], mcp_servers=["fake"] if control_producer else (),
         )
         target_run = None
         if producer == "undo":
             target_run = engine_for(
-                stack,
+                control_stack,
                 ScriptedModel(
                     [
                         ModelResponse(
@@ -674,10 +675,10 @@ def test_real_mcp_producer_preparation_and_low_disk_order(tmp_path, producer, lo
             stack = build_stack(log, data_root=tmp_path / "data", mcp_clients=clients)
             assert clients.server("fake") is None
             if low:
-                stack.tasks._disk_admission = DiskAdmission(
-                    stack.tasks.disk_admission.context,
-                    probe=lambda p: 0,
-                )
+                for owner in (control_stack, stack):
+                    owner.tasks._disk_admission = DiskAdmission(
+                        owner.tasks.disk_admission.context, probe=lambda p: 0,
+                    )
             before = {
                 table: log.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
                 for table in ("tasks", "runs", "jobs", "events")
@@ -687,8 +688,9 @@ def test_real_mcp_producer_preparation_and_low_disk_order(tmp_path, producer, lo
             def produce():
                 if producer == "loop":
                     return engine_for(stack, model).start(task.task_id)
-                if producer == "control":
-                    return ControlPlane(stack, model=model).handle(
+                if control_producer:
+                    plane_stack = control_stack if producer == "control_mcp_free" else stack
+                    return ControlPlane(plane_stack, model=model).handle(
                         "run.start",
                         {"task_id": task.task_id, "tool_ids": ["mcp__fake__echo"]},
                     )
@@ -716,13 +718,14 @@ def test_real_mcp_producer_preparation_and_low_disk_order(tmp_path, producer, lo
                 } == before
             else:
                 produced = produce()
-                if producer == "control":
+                if control_producer:
                     # 入队事务不启动或发现 MCP；由后续驱动线程按 Run scope 准备。
                     assert clients.ready_names() == ()
                     assert not startup.exists()
                     assert model.calls == 0
                     run_id = produced["run"]["run_id"]
-                    assert stack.claims.job_for_run(run_id).state == "pending"
+                    job = stack.claims.job_for_run(run_id)
+                    assert job is not None and job.state == "pending"
                     model_events = {"model.intent", "model.result"}
                     assert model_events <= EVENT_TYPES
                     assert model_events.isdisjoint(e.type for e in log.read_run(run_id))
@@ -731,6 +734,7 @@ def test_real_mcp_producer_preparation_and_low_disk_order(tmp_path, producer, lo
                     try:
                         assert worker.run_once()
                         assert worker.errors == []
+                        assert worker.run_ids == [run_id]
                         assert stack.tasks.get_run(run_id).state == "succeeded"
                         assert driving_model.calls == 1
                         assert startup.read_bytes() == b"started"

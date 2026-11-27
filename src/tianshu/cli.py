@@ -576,7 +576,7 @@ def _run_status(stack, args: argparse.Namespace) -> int:
     # 尝试次数是 #58 才进账本的键。旧游标没有它（或明示为"不完整"）→ `None`
     # （不知道），不是 0（"不知道"和"零次"必须分开，否则又变回一句假话）。
     model_attempts = None
-    if "model_attempts" in ledger and ledger.get("model_attempts_known") is not False:
+    if cursor is not None and cursor[0].has_exact_model_attempts():
         model_attempts = int(ledger["model_attempts"])
     if args.json:
         print(json.dumps(

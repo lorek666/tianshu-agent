@@ -108,6 +108,10 @@ def rebuild_responses_progress(log: EventLog, events: list[Event]):
             output = p.get("output", {}) if ev.type == "tool.result" else {
                 "error": f"未派发：{p.get('reason')}"
             }
+            if ev.type == "tool.result":
+                from .mcp_results import hydrate_mcp_output
+
+                output = hydrate_mcp_output(output, log=log)
             progress.messages.append({
                 "role": "tool", "tool_call_id": p["call_id"], "name": p.get("tool_id", ""),
                 "content": json.dumps(output, ensure_ascii=False, sort_keys=True),

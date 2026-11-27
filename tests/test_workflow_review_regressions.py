@@ -208,8 +208,8 @@ def test_compact_pending_pure_tool_gate_negative_control(review_env, monkeypatch
     rid = _compact(plane, stack, task)
     original = workflow_for
 
-    def bypass_compact_gate(log, run_id):
-        found = original(log, run_id)
+    def bypass_compact_gate(log, run_id, *, events=None):
+        found = original(log, run_id, events=events)
         return replace(found, mode="plan") if found and found.mode == "compact" else found
 
     # 只在本用例把 compact 误当 plan，并旁路新增的 Mission 固定交集；
