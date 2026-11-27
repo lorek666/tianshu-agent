@@ -69,7 +69,7 @@ describe("子任务视图：合并与状态（J1 / J2）", () => {
     expect(rows[0]?.childRunId).toBe("run_child_1");
   });
 
-  it("只有 spawned（未 finished）= 进行中，不冒充终态；子 Run 状态可回填", () => {
+  it("只有 spawned 时尚无委派结论，子 Run 状态另行保留", () => {
     const rows = buildSubtaskViews(
       [event("subtask.spawned", SPAWNED, 1)],
       [run("run_child_1", "running")],

@@ -143,6 +143,33 @@ describe("子任务面板渲染", () => {
     expect(html).not.toContain("已完成");
   });
 
+  it.each([
+    ["paused", "已暂停"],
+    ["waiting_approval", "等待你的批准"],
+    ["reconciling", "正在核对结果"],
+  ])("子运行在 %s 时不显示进行中或委派已完成", (state, label) => {
+    const html = renderToStaticMarkup(
+      <SubtaskPanel
+        events={[event("subtask.spawned", SPAWNED, 1)]}
+        runs={[run("run_child_1", state, "task_child_1")]}
+      />,
+    );
+    expect(html).toContain(label);
+    expect(html).not.toContain("进行中");
+    expect(html).not.toContain("已完成");
+  });
+
+  it("找不到子运行时不猜测运行状态", () => {
+    const html = renderToStaticMarkup(
+      <SubtaskPanel
+        events={[event("subtask.spawned", SPAWNED, 1)]}
+        runs={[run("unrelated_run", "running", "unrelated_task")]}
+      />,
+    );
+    expect(html).toContain("子运行状态暂不可用");
+    expect(html).not.toContain("进行中");
+  });
+
   it("收尾的子任务显示终态与用量；error 文本被转义（J10）", () => {
     const payload = '<img src=x onerror="alert(1)"><script>alert(2)</script>';
     const html = renderToStaticMarkup(
