@@ -109,6 +109,36 @@ def _repo_fixture(base: Path) -> Path:
     return repo
 
 
+def _write_fixture_version(repo: Path, version: str) -> None:
+    (repo / "src" / "tianshu" / "__init__.py").write_text(
+        f"__version__ = '{version}'\n", encoding="utf-8"
+    )
+    (repo / "pyproject.toml").write_text(
+        f'[project]\nname = "tianshu"\nversion = "{version}"\n', encoding="utf-8"
+    )
+    (repo / "src" / "tianshu" / "control.py").write_text(
+        f"DAEMON_VERSION = '{version}'\n", encoding="utf-8"
+    )
+    (repo / "uv.lock").write_text(
+        'version = 1\n[[package]]\nname = "tianshu"\n'
+        f'version = "{version}"\n',
+        encoding="utf-8",
+    )
+    desktop = repo / "desktop" / "src-tauri"
+    desktop.mkdir(parents=True)
+    (desktop / "Cargo.toml").write_text(
+        f'[package]\nname = "tianshu-desktop"\nversion = "{version}"\n', encoding="utf-8"
+    )
+    (desktop / "Cargo.lock").write_text(
+        'version = 4\n[[package]]\nname = "tianshu-desktop"\n'
+        f'version = "{version}"\n',
+        encoding="utf-8",
+    )
+    (desktop / "tauri.conf.json").write_text(
+        json.dumps({"version": version}) + "\n", encoding="utf-8"
+    )
+
+
 def test_prepare_bundle_contains_only_app_runtime_and_ui(tmp_path):
     module = _load_module()
     repo = _repo_fixture(tmp_path)
@@ -323,6 +353,45 @@ def test_source_identity_requires_exact_clean_head(tmp_path):
     (repo / "dirty.txt").write_text("dirty", encoding="utf-8")
     with pytest.raises(module.BuildError, match="干净工作树"):
         module.verify_source_identity(repo, head)
+
+
+def test_source_version_requires_all_live_release_identity_sites():
+    module = _load_module()
+
+    module.verify_source_version(ROOT, "0.1.2")
+
+    with pytest.raises(module.BuildError, match="pyproject.toml"):
+        module.verify_source_version(ROOT, "0.1.1")
+
+
+def test_source_version_reports_missing_identity_file_as_build_error(tmp_path):
+    module = _load_module()
+    repo = _repo_fixture(tmp_path)
+    _write_fixture_version(repo, "0.1.2")
+    (repo / "src" / "tianshu" / "control.py").unlink()
+
+    with pytest.raises(module.BuildError, match="无法读取发行版本身份文件"):
+        module.verify_source_version(repo, "0.1.2")
+
+
+@pytest.mark.parametrize(
+    ("relative", "content"),
+    [
+        ("pyproject.toml", 'project = "invalid"\n'),
+        ("uv.lock", 'version = 1\npackage = "invalid"\n'),
+        ("desktop/src-tauri/tauri.conf.json", "[]\n"),
+    ],
+)
+def test_source_version_reports_malformed_identity_shape_as_build_error(
+    tmp_path, relative, content
+):
+    module = _load_module()
+    repo = _repo_fixture(tmp_path)
+    _write_fixture_version(repo, "0.1.2")
+    (repo / relative).write_text(content, encoding="utf-8")
+
+    with pytest.raises(module.BuildError, match="必须是"):
+        module.verify_source_version(repo, "0.1.2")
 
 
 def test_runtime_lock_pins_full_download_urls_and_published_hashes():
@@ -993,6 +1062,7 @@ def test_replacement_refs_cannot_change_bundled_source_bytes(tmp_path):
 
 def test_cli_rejects_arbitrary_runtime_lock_path(tmp_path):
     repo = _repo_fixture(tmp_path)
+    _write_fixture_version(repo, "0.1.0")
     commit = _commit_fixture(repo)
     archive = _runtime_archive(tmp_path / "fake-runtime.tar.gz", target="macos-arm64")
     arbitrary_lock = tmp_path / "arbitrary-runtime-lock.json"
@@ -1025,6 +1095,7 @@ def test_cli_rejects_arbitrary_runtime_lock_path(tmp_path):
 def test_publish_crash_is_recovered_and_restart_is_idempotent(tmp_path, failpoint):
     module = _load_module()
     repo = _repo_fixture(tmp_path)
+    _write_fixture_version(repo, "0.2.0")
     archive = _runtime_archive(tmp_path / "runtime.tar.gz", target="macos-arm64")
     _write_fixed_runtime_lock(repo, _runtime_lock_for_archive(archive))
     commit = _commit_fixture(repo)
@@ -1269,6 +1340,7 @@ def test_download_runtime_rejects_symlink_ancestor_without_external_write(tmp_pa
 def test_prejournal_crash_staging_is_cleaned_without_touching_unknown_directory(tmp_path):
     module = _load_module()
     repo = _repo_fixture(tmp_path)
+    _write_fixture_version(repo, "0.2.0")
     archive = _runtime_archive(tmp_path / "runtime.tar.gz", target="macos-arm64")
     _write_fixed_runtime_lock(repo, _runtime_lock_for_archive(archive))
     commit = _commit_fixture(repo)
