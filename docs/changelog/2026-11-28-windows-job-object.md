@@ -4,7 +4,7 @@
 
 Issue [#224](https://github.com/lorek666/tianshu-agent/issues/224) 的 Windows 进程树边界尚未交付。契约已由 PR [#256](https://github.com/lorek666/tianshu-agent/pull/256) 单独冻结；本候选只实现显式 `windows_job_object` 后端，不改变默认 `local`/`auto`，不宣称文件、网络或凭据隔离，也不关闭 #224 的整体验收。
 
-重放冻结起点：`acd2df00250d2094ac254dabba380881bf338b64`，tree `64774b4cc3fce4d1a07f30e42c231993ab287ca5`。分支已重放到 `origin/main` `b5bf2b8f63a285f2e1344b386699201ed868a90c`，不包含 native 工作树提交；后续复审修复与最终提交另绑定，不把该起点当作验收树。
+重放冻结起点：`acd2df00250d2094ac254dabba380881bf338b64`，tree `64774b4cc3fce4d1a07f30e42c231993ab287ca5`。最终候选已重放到 GitHub `main` `12bb1fc12100abf5c9ae35429cb4d16c375854eb`，代码复审树为当前提交，后续文档提交只补验收记录，不改变产品代码。
 
 ## 实现决策
 
@@ -81,7 +81,7 @@ uv run --frozen pytest -q \
 
 前一轮最终代码复审另修正了原生整数句柄、259 退出码消歧、句柄关闭重试、管道所有权转移、双读线程收尾、query 失败仍终止与收集异常必关 Job；探针清理进一步取消“先采样 PID、再按 PID 终止”的竞态。本轮四项新修复的变异均实际 RED，恢复后 GREEN；定向套件与本机静态门禁另列实时结果。
 
-本机裸全量、最终独立第二读者结论与 Windows required CI 结果将在取得后回填；不得用本机 fake 测试、macOS 跳过或历史 CI 代替 Windows 真子进程证据。
+本机裸全量与受影响域回归已在最终代码树重跑，Windows 原生用例在本机 macOS 按预期跳过；最终独立第二读者和 Windows required CI 仍绑定远端候选 head。不得用本机 fake 测试、macOS 跳过或历史 CI 代替 Windows 真子进程证据。
 
 ## 未决边界
 
