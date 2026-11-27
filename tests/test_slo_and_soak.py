@@ -14,7 +14,9 @@ from __future__ import annotations
 import copy
 import datetime as dt
 import hashlib
+import io
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -192,6 +194,69 @@ def _dummy_valid_slo_report(thresholds: dict, sha: str) -> dict:
         "orphan_pids": [],
         "failures": [],
     }
+
+
+@pytest.mark.parametrize("slow_startup", [False, True])
+@pytest.mark.parametrize("broken_stderr", [False, True], ids=["stderr-ok", "stderr-pipe-closed"])
+def test_slo_startup_diagnostic_write_failure_preserves_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+    slow_startup: bool, broken_stderr: bool,
+) -> None:
+    thresholds, sha, _ = slo_mod.load_and_validate_thresholds()
+    fixture = _dummy_valid_slo_report(thresholds, sha)
+    cold_ms = thresholds["metrics"]["startup_cold_ms"]["max_ceiling"] + 1 if slow_startup else 5.0
+    monkeypatch.setattr(slo_mod, "collect_hardware_metadata", lambda: fixture["environment"])
+    monkeypatch.setattr(
+        slo_mod, "run_suite1_startup",
+        lambda *args, **kwargs: ([cold_ms], [5.0], fixture["dataset"]),
+    )
+    monkeypatch.setattr(
+        slo_mod, "run_suite2_cancel_and_approval",
+        lambda *args, **kwargs: (
+            [5.0], [5.0], [5.0], fixture["slow_subscriber"], fixture["in_flight_effects"],
+        ),
+    )
+    monkeypatch.setattr(
+        slo_mod, "run_suite3_crash_recovery",
+        lambda *args, **kwargs: ([5.0], fixture["recovery_audit"]),
+    )
+    # A real file where the writer requires a directory fails on all platforms.
+    collision = tmp_path / "not-a-directory"
+    collision.write_bytes(b"keep")
+    samples = tmp_path / "samples.json"
+    gate_json = tmp_path / "gate.json"
+    gate_md = tmp_path / "gate.md"
+
+    with ExitStack() as stack:
+        if broken_stderr:
+            read_fd, write_fd = os.pipe()
+            os.close(read_fd)
+            # Unbuffered writes surface the real pipe error at the diagnostic call.
+            pipe = stack.enter_context(io.TextIOWrapper(
+                os.fdopen(write_fd, "wb", buffering=0), write_through=True,
+            ))
+            stack.enter_context(monkeypatch.context()).setattr(sys, "stderr", pipe)
+        code = slo_mod.main([
+            "--smoke", "--repeats", "1", "--output-startup-phases-json",
+            str(collision / "phases.json"), "--output-samples-json", str(samples),
+            "--output-json", str(gate_json), "--output-md", str(gate_md),
+        ])
+
+    captured = capsys.readouterr()
+    assert code == 1
+    if not broken_stderr:
+        assert "startup_phases_write_failed" in captured.err
+    assert str(tmp_path) not in captured.err
+    assert collision.read_bytes() == b"keep"
+    report = json.loads(gate_json.read_text(encoding="utf-8"))
+    verdict = "FAIL" if slow_startup else "PASS"
+    assert report["verdict"] == json.loads(captured.out)["verdict"] == verdict
+    assert gate_md.read_text(encoding="utf-8") == slo_mod.render_markdown_report(report)
+    raw = json.loads(samples.read_text(encoding="utf-8"))["samples"]
+    assert set(raw) == set(slo_mod.REQUIRED_SLO_METRICS)
+    assert raw["startup_cold_ms"] == [cold_ms]
+    assert raw["approval_rpc_ms"] == raw["restart_recovery_ms"] == [5.0]
+    assert bool(report["failures"]) is slow_startup
 
 
 def test_slo_schema_and_frozen_thresholds_binding() -> None:
@@ -491,6 +556,7 @@ def test_measure_slo_smoke_and_run_soak_real_subprocesses(
     slo_json = tmp_path / "slo-smoke.json"
     slo_md = tmp_path / "slo-smoke.md"
     slo_samples = tmp_path / "slo-samples.json"
+    startup_phases = tmp_path / "slo-startup-phases.json"
     soak_dir = tmp_path / "soak-out"
     diagnostics_value = os.environ.get("TIANSHU_SLO_DIAGNOSTICS_DIR")
     diagnostics = Path(diagnostics_value) if diagnostics_value else None
@@ -511,6 +577,8 @@ def test_measure_slo_smoke_and_run_soak_real_subprocesses(
                 str(slo_md),
                 "--output-samples-json",
                 str(slo_samples),
+                "--output-startup-phases-json",
+                str(startup_phases),
             ],
             env=dict(os.environ),
         )
@@ -553,6 +621,7 @@ def test_measure_slo_smoke_and_run_soak_real_subprocesses(
             slo_json,
             slo_md,
             slo_samples,
+            startup_phases,
             soak_dir / "soak-report.json",
             soak_dir / "samples.jsonl",
             soak_dir / "status.json",
@@ -566,7 +635,7 @@ def test_measure_slo_smoke_and_run_soak_real_subprocesses(
             "cpu_count": os.cpu_count(),
             "platform": slo_mod.platform.platform(),
             "pytest_worker": os.environ.get("PYTEST_XDIST_WORKER"),
-            "ci_shard_index": os.environ.get("TIANSHU_CI_SHARD_INDEX"),
+            "ci_shard_index": os.environ.get("CI_SHARD_INDEX"),
             "timeouts": timeouts,
         },
     )
@@ -585,6 +654,25 @@ def test_measure_slo_smoke_and_run_soak_real_subprocesses(
     samples_report = json.loads(slo_samples.read_text(encoding="utf-8"))
     assert samples_report["schema_version"] == "slo-samples-v1"
     assert set(samples_report["samples"]) == set(slo_mod.REQUIRED_SLO_METRICS)
+    phases = json.loads(startup_phases.read_text(encoding="utf-8"))
+    assert set(phases) == {"schema_version", "cold", "warm"}
+    assert phases["schema_version"] == "slo-startup-phases-v1"
+    boundaries = ("process_spawned_ms", "host_ready_ms", "state_ready_ms", "task_created_ms")
+    for kind in ("cold", "warm"):
+        totals = samples_report["samples"][f"startup_{kind}_ms"]
+        assert len(phases[kind]) == len(totals)
+        for sample, total in zip(phases[kind], totals, strict=True):
+            assert set(sample) == {*boundaries, "daemon_internal_ready_ms"}
+            offsets = [sample[name] for name in boundaries]
+            assert all(type(value) in (int, float) and math.isfinite(value) for value in offsets)
+            assert 0 <= offsets[0] <= offsets[1] <= offsets[2] <= offsets[3] == total
+            internal = sample["daemon_internal_ready_ms"]
+            assert internal is None or (type(internal) in (int, float) and math.isfinite(internal)
+                                        and internal >= 0)
+    if diagnostics is not None:
+        assert (diagnostics / startup_phases.name).read_bytes() == startup_phases.read_bytes()
+        context = json.loads((diagnostics / "run-context.json").read_text(encoding="utf-8"))
+        assert context["ci_shard_index"] == os.environ.get("CI_SHARD_INDEX")
     for name, samples in samples_report["samples"].items():
         metric = slo_report["metrics"][name]
         config = thresholds["metrics"][name]
