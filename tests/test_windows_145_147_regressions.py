@@ -36,9 +36,9 @@ import hashlib
 import os
 import sqlite3
 import threading
-import time
 from ctypes import wintypes
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -592,7 +592,7 @@ def test_147_local_backend_retries_transient_winerror_32_and_5(
 ) -> None:
     backend = LocalBackend()
     delays: list[float] = []
-    monkeypatch.setattr(time, "sleep", delays.append)
+    monkeypatch.setattr(fsutil, "time", SimpleNamespace(sleep=delays.append))
 
     target = tmp_path / "doc.txt"
     write_exact(target, "hello\n")
@@ -663,7 +663,7 @@ def test_147_posix_permission_error_without_winerror_never_retries(
 ) -> None:
     backend = LocalBackend()
     delays: list[float] = []
-    monkeypatch.setattr(time, "sleep", delays.append)
+    monkeypatch.setattr(fsutil, "time", SimpleNamespace(sleep=delays.append))
     target = tmp_path / "readonly.txt"
     write_exact(target, "keep\n")
 
@@ -699,8 +699,9 @@ def test_147_delete_after_approval_transient_succeeds_and_persistent_reconciles(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
     """复刻 #147 审批删除链路：瞬态锁重试成功产 receipt；持久锁绝不伪装成 succeeded。"""
+    # Capture only filesystem backoff; subprocess/other waits stay real.
     sleep_delays: list[float] = []
-    monkeypatch.setattr(time, "sleep", sleep_delays.append)
+    monkeypatch.setattr(fsutil, "time", SimpleNamespace(sleep=sleep_delays.append))
     ws = tmp_path / "ws"
     ws.mkdir()
     old_file = ws / "old.txt"
@@ -1157,7 +1158,7 @@ def test_147_stat_primitives_retry_transient_winerror_32_and_post_approval_delet
     """`LocalBackend.exists/is_file/is_dir/size/require_root` 对瞬态 winerror=32/5 有界重试。"""
     backend = LocalBackend()
     delays: list[float] = []
-    monkeypatch.setattr(time, "sleep", delays.append)
+    monkeypatch.setattr(fsutil, "time", SimpleNamespace(sleep=delays.append))
 
     ws = tmp_path / "ws"
     ws.mkdir()

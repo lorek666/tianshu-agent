@@ -536,43 +536,44 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
         - 没人认领（暂停/进程死亡/租约过期）：重新认领，`claim_epoch` +1，
           于是旧批准全部作废、需要重新批一次。
         """
-        run = self._tasks.get_run(run_id)
-        if run is None:
-            raise TianshuError(f"run 不存在：{run_id}")
-        if run.state == RUN_FENCED:
-            raise RunFenced(
-                f"run {run_id} 已被 fence（目标或绑定被改过），"
-                "请为新目标 start 一个新的 run"
-            )
-        if run.state in TERMINAL_STATES:
-            # 已经结束的 Run 不"恢复"：重新跑一份是新 Run 的事，不能把终态改写
-            raise TianshuError(
-                f"run 已终结（{run.state}），不能 resume；需要重试请 start 新 run"
-            )
         from .mission import mission_messages
         from .workflow import workflow_for
 
-        workflow = workflow_for(self._log, run_id)
-        frozen_messages = mission_messages(self._log, run_id)
-        goal_round = any(e.type in ("goal.round_started", "goal.v2_phase_started")
-                         for e in self._log.read_run(run_id))
-        stored = self._tasks.load_cursor(run_id)
-        if stored is None:
-            stored = self._tasks.restore_responses_cursor(run_id)
-        if ((workflow is not None or goal_round) and stored is None
-                and any(e.type == "model.intent" for e in self._log.read_run(run_id))):
-            raise TianshuError("工作流游标缺失，无法安全续跑；请核对原记录后取消并另开 Run")
-        task = self._task(run.task_id)
-        claim = self._claim_for_resume(run)
-        if claim is None:
-            # `_claim_for_resume` 返回 None 只有一种含义：另一个**活着**的实例
-            # 持有这个 Run 的作业。这和 Run 当前是 running 还是 paused 无关——
-            # 只看状态会让暂停中的 Run 被外来实例改成 RUNNING（没有 claim 还
-            # 继续往下走），然后卡在一个谁都不认的状态上。
-            raise TianshuError(
-                f"run {run_id} 正由另一个实例持有（可能仍在跑），不能抢占；"
-                "请等它结束、暂停或释放"
-            )
+        # 上一位持有人可以在交还作业前保存新游标。读取、校验和认领须在
+        # 同一笔写事务中完成，心跳和模型驱动在事务提交后开始。
+        with self._tasks.transaction():
+            run = self._tasks.get_run(run_id)
+            if run is None:
+                raise TianshuError(f"run 不存在：{run_id}")
+            if run.state == RUN_FENCED:
+                raise RunFenced(
+                    f"run {run_id} 已被 fence（目标或绑定被改过），"
+                    "请为新目标 start 一个新的 run"
+                )
+            if run.state in TERMINAL_STATES:
+                raise TianshuError(
+                    f"run 已终结（{run.state}），不能 resume；需要重试请 start 新 run"
+                )
+
+            events = self._log.read_run(run_id)
+            workflow = workflow_for(self._log, run_id, events=events)
+            mission_messages(self._log, run_id, events=events)
+            goal_round = any(e.type in ("goal.round_started", "goal.v2_phase_started")
+                             for e in events)
+            stored = self._tasks.load_cursor(run_id)
+            if stored is None:
+                stored = self._tasks.restore_responses_cursor(run_id)
+            if ((workflow is not None or goal_round) and stored is None
+                    and any(e.type == "model.intent" for e in events)):
+                raise TianshuError("工作流游标缺失，无法安全续跑；请核对原记录后取消并另开 Run")
+            task = self._task(run.task_id)
+            progress = _Progress.of(stored[0]) if stored is not None else None
+            claim = self._claim_for_resume(run)
+            if claim is None:
+                raise TianshuError(
+                    f"run {run_id} 正由另一个实例持有（可能仍在跑），不能抢占；"
+                    "请等它结束、暂停或释放"
+                )
 
         writable = [b.identity() for b in task.workspaces if b.can_write]
         if self._tasks.run_execution_policy(run_id) == PURE_ONLY:
@@ -592,7 +593,7 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
 
         self._finalize_run_mission(run_id, claim)
         frozen_messages = mission_messages(self._log, run_id)
-        if stored is None:
+        if progress is None:
             # 没有游标（例如 Run 是直接由 TaskStore 开的）：按 run.start 里记的
             # 目标与输出文件名重建首轮提示，不能凭记忆补。
             payload = self._tasks.run_payload(run_id)
@@ -602,11 +603,9 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
                 checked_conversation(self._log, events), attachments_fact(events), workflow,
                 frozen_messages=frozen_messages,
             )
-        else:
-            progress = _Progress.of(stored[0])
-            if (frozen_messages is not None
-                    and progress.messages[:len(frozen_messages)] != frozen_messages):
-                raise TianshuError("Mission 快照与保存游标的首轮消息不一致")
+        elif (frozen_messages is not None
+              and progress.messages[:len(frozen_messages)] != frozen_messages):
+            raise TianshuError("Mission 快照与保存游标的首轮消息不一致")
         # intent 可以领先最后一次游标提交；恢复不能把已发送的尝试漏掉。
         events = self._log.read_run(run_id)
         saved_seq = max((e.seq for e in events if e.type == "run.cursor"), default=0)
@@ -1059,8 +1058,14 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
                      else RESPONSES_BUDGET_VERSION) if scope is not None else "ctx-v1",
         )
         try:
+            from .mcp_results import hydrate_mcp_messages
+
+            model_messages = hydrate_mcp_messages(
+                progress.messages, log=self._log,
+                blob_dir=self._snapshots.blob_dir if self._snapshots is not None else None,
+            )
             view = compile_context(
-                progress.messages,
+                model_messages,
                 self._message_source_seqs(run_id, progress),
                 budget,
             )

@@ -143,11 +143,12 @@ class _Progress:
             turns=int(ledger.get("turns", 0) or 0),
             # 旧游标没有尝试次数键：以完成轮次为**下限**（每次成功至少一次
             # 尝试），并标记 `model_attempts_known=False`——展示层据此说"不知道"，
-            # 而不是把一个下限当成精确值。resume 后新增的尝试继续累加。
+            # 而不是把一个下限当成精确值。resume 后新增的尝试继续累加，
+            # 但之前保存的 False 不能因计数键已存在而变成 True。
             model_attempts=int(
                 ledger.get("model_attempts", ledger.get("turns", 0)) or 0
             ),
-            model_attempts_known="model_attempts" in ledger,
+            model_attempts_known=cursor.has_exact_model_attempts(),
             tokens=int(ledger.get("tokens", 0) or 0),
             unknown_usage_calls=int(ledger.get("unknown_usage_calls", 0) or 0),
             cost_total_micros=int(ledger.get("cost_total_micros", 0) or 0),
@@ -203,12 +204,17 @@ def _dispatchable(resp: ModelResponse, call: ToolCall) -> tuple[bool, str]:
     return True, ""
 
 
-def _tool_message(call_id: str, tool_id: str, result: ToolResult) -> dict[str, Any]:
+def _tool_message(
+    call_id: str, tool_id: str, result: ToolResult, *, log=None, blob_dir=None,
+) -> dict[str, Any]:
+    from .mcp_results import hydrate_mcp_output
+
+    output = hydrate_mcp_output(result.output, log=log, blob_dir=blob_dir)
     return {
         "role": "tool",
         "tool_call_id": call_id,
         "name": tool_id,
-        "content": json.dumps(result.output, ensure_ascii=False, sort_keys=True),
+        "content": json.dumps(output, ensure_ascii=False, sort_keys=True),
     }
 
 
@@ -488,7 +494,11 @@ class _LoopBookkeepingMixin:
             output=recorded.get("output") or {},
         )
         progress.messages.append(
-            _tool_message(call_id, recorded.get("tool_id", ""), result)
+            _tool_message(
+                call_id, recorded.get("tool_id", ""), result,
+                log=self._log,
+                blob_dir=self._snapshots.blob_dir if self._snapshots is not None else None,
+            )
         )
         # 与消息平行地补一条归因。查不到（例如结果没有对应事件）就记 0：
         # 溯源是记账材料，宁可标"来源不明"也不在这里编一个 seq。

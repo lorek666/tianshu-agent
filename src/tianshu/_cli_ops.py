@@ -311,7 +311,7 @@ def _cmd_worker(args: argparse.Namespace) -> int:
             model=cli._model_from(args),
             limits=Limits(args.max_turns, args.max_total_tokens),
         )
-        try:
+        with worker:
             if args.once:
                 ran = [worker.run_ids[-1]] if worker.run_once() else []
                 idle = not ran
@@ -335,8 +335,6 @@ def _cmd_worker(args: argparse.Namespace) -> int:
                 # 只有“跑空”才算 idle：显式跑满 --max-jobs 或撞上被占用的工作区
                 # 都说明队里可能还有活，报 idle 是骗人。
                 idle = worker.exhausted
-        finally:
-            worker.close()
         payload = {
             "run_ids": ran,
             "idle": idle,

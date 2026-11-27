@@ -601,18 +601,27 @@ def test_native_dispatcher_binds_mcp_run_generation_and_receipt(tmp_path, monkey
                 if row.type == "tool.result" and row.payload["call_id"] == "native-call"
             )
             assert tool_result.payload["status"] == "succeeded", tool_result.payload
-            snapshot = tool_result.payload["output"]["mcp"]["spawn"]["session"]
+            mcp = tool_result.payload["output"]["mcp"]
+            assert "spawn" not in mcp and "endpoint" not in mcp
+            scoped_server = stack.dispatcher._mcp_clients.server("native")
+            snapshot = scoped_server.session_snapshot()
             assert snapshot["task_id"] == task.task_id
             assert snapshot["run_id"] == result.run_id
             assert snapshot["subject"]["kind"] == "local_mcp"
             assert snapshot["generation"]
+            lifecycle = snapshot["lifecycle"]["lifecycle_id"]
+            stages = [row.payload for row in events if row.type == "execution.admitted"
+                      and row.payload.get("call_id") == "native-call"]
+            assert [row["stage"] for row in stages] == ["call_pending", "call_completed"]
+            assert all(row["request_id"] == mcp["request_id"] for row in stages)
+            assert all(row["lifecycle"]["lifecycle_id"] == lifecycle for row in stages)
+            assert all(row["subject"] == snapshot["subject"] for row in stages)
             assert len(calls.read_text().splitlines()) == 1
             assert verify_receipts(log, result.run_id) == []
-            assert any(row.type == "execution.admitted" for row in events)
-            scoped_server = stack.dispatcher._mcp_clients.server("native")
             assert result.state == "succeeded"
             assert not scoped_server.is_alive, "终态 Run 必须关闭专属 MCP 进程"
-            assert any(row.type == "execution.ended" for row in events)
+            assert any(row.type == "execution.ended" and row.payload["lifecycle_id"] == lifecycle
+                       for row in events)
             # Switching back to a trusted manual task must restore its separate
             # source client, never lend a previous Run's admitted process.
             manual = stack.tasks.create_task(

@@ -34,7 +34,8 @@ from __future__ import annotations
 import sqlite3
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 from .errors import TianshuError
@@ -80,6 +81,28 @@ MAX_CONTENTION_WAITS = 20
 CONTENTION_WAIT_MS = 25
 
 
+def _heartbeat_error_text(error: BaseException) -> str:
+    try:
+        return str(error)
+    except BaseException:
+        return f"<unprintable {type(error).__name__}>"
+
+
+@contextmanager
+def _cleanup_preserving_primary(cleanup: Callable[[], None], label: str) -> Iterator[None]:
+    try:
+        yield
+    except BaseException as primary:
+        try:
+            cleanup()
+        except BaseException as error:
+            detail = _heartbeat_error_text(error)
+            BaseException.add_note(primary, f"{label}：{type(error).__name__}: {detail}")
+        raise
+    else:
+        cleanup()
+
+
 class HeartbeatLoop:
     """在宿主线程阻塞期间续 claim。
 
@@ -104,6 +127,11 @@ class HeartbeatLoop:
         self._join_timeout_s = join_timeout_ms / 1000
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._entered = threading.Event()
+        self._finished = threading.Event()
+        self._start_returned = False
+        self._join_uncertain = False
+        self.cleanup_errors: list[BaseException] = []
         self._count_lock = threading.Lock()
         self.beats = 0
         self.error: BaseException | None = None
@@ -112,12 +140,18 @@ class HeartbeatLoop:
     # ---- 生命周期 ----
 
     def start(self) -> HeartbeatLoop:
-        if self._thread is not None:
+        if self._thread is not None or not self.stopped_promptly:
             raise TianshuError("心跳循环已经启动过")
+        # Thread.start 本身也可能中断；未确认真实线程退出前不能关闭连接。
+        self.stopped_promptly = False
+        self._entered.clear()
+        self._finished.clear()
+        self._start_returned = False
         self._thread = threading.Thread(
-            target=self._run, name=self._name, daemon=True
+            target=self._run_owned, name=self._name, daemon=True
         )
         self._thread.start()
+        self._start_returned = True
         return self
 
     def stop(self) -> None:
@@ -128,18 +162,51 @@ class HeartbeatLoop:
         而那个异常出现在后台线程里，没人会看到它——只会表现成"心跳偶尔没生效"。
         单次 beat 最长会被 `busy_timeout`（5s）挡住，所以默认给 12s。
         """
-        self._stop.set()
-        thread, self._thread = self._thread, None
-        if thread is None:
+        thread = self._thread
+        if thread is None and self.stopped_promptly:
+            self._stop.set()
             return
-        thread.join(self._join_timeout_s)
-        self.stopped_promptly = not thread.is_alive()
+        self.stopped_promptly = False
+        try:
+            self._stop.set()
+            if thread is None or not (self._start_returned or self._entered.is_set()):
+                raise TianshuError("心跳启动状态未确认，保留线程与连接")
+            if self._join_uncertain:
+                raise TianshuError("心跳 join 曾中断，退出状态未确认，保留线程与连接")
+            try:
+                thread.join(self._join_timeout_s)
+                alive = thread.is_alive()
+            except BaseException:
+                # CPython 3.12 中断 join 后 is_alive 可失真；重试不能洗白 UNKNOWN。
+                self._join_uncertain = True
+                raise
+            if alive or not self._finished.is_set():
+                raise TianshuError("心跳线程未如期退出，保留线程与连接")
+        except BaseException as exc:
+            self.cleanup_errors.append(exc)
+            raise
+        self.stopped_promptly = True
+        self._thread = None
 
     def __enter__(self) -> HeartbeatLoop:
         return self.start()
 
-    def __exit__(self, *_exc) -> None:
-        self.stop()
+    def __exit__(self, _exc_type, exc, _tb) -> None:
+        try:
+            self.stop()
+        except BaseException as cleanup:
+            if exc is None:
+                raise
+            BaseException.add_note(
+                exc, f"心跳清理另行失败：{type(cleanup).__name__}: {_heartbeat_error_text(cleanup)}"
+            )
+
+    def _run_owned(self) -> None:
+        self._entered.set()
+        try:
+            self._run()
+        finally:
+            self._finished.set()
 
     # ---- 线程主体 ----
 
@@ -213,7 +280,7 @@ class _SideChannel:
 
 @dataclass
 class Worker:
-    """一个作业循环。没有状态：所有状态都在 SQLite 里。"""
+    """作业事实保存在 SQLite；本实例另持启动恢复与心跳清理状态。"""
 
     stack: Stack
     model: Model
@@ -235,6 +302,10 @@ class Worker:
     #: G2 委派 D2：启动恢复只做一次（协调未收尾的子任务行 + 唤醒停在
     #: `waiting` 的父作业）。每轮都扫一遍没有意义，还会在热路径上加写事务。
     _startup_reconciled: bool = False
+    _startup_reconcile_error: BaseException | None = field(default=None, init=False, repr=False)
+    _startup_reconcile_diagnostic_error: BaseException | None = field(
+        default=None, init=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         from .agent_control import ensure_consents
@@ -242,13 +313,19 @@ class Worker:
         self._claims = self.claims or self.stack.claims
         self._tasks = self.stack.tasks
         self._side: _SideChannel | None = None
+        self._heartbeat: HeartbeatLoop | None = None
+        self._heartbeat_active = False
+        self._heartbeat_beats = 0
+        self._heartbeat_error: BaseException | None = None
+        self._heartbeat_cleanup_count = 0
 
     # ---- 对外 ----
 
     def run_once(self) -> bool:
         """认领一个作业并推进它。返回"这次有没有活干"。"""
-        self.stack.dispatcher.close_inactive_mcp()
+        self._require_heartbeat_quiescence()
         self._reconcile_subtask_state()
+        self.stack.dispatcher.close_inactive_mcp()
         self._tick_goals()
         claim = self._claims.claim_next(ttl_ms=self.ttl_ms)
         if claim is None:
@@ -256,23 +333,23 @@ class Worker:
         self.run_ids.append(claim.run_id)
         self.contended = False
         requeue = False
-        try:
-            self._drive(claim)
-        except LeaseConflict as exc:
-            # 工作区被别的 Run 占着。这是**暂时**跑不了，不是"等人决定"：
-            # 挂起会让这条作业永远等人来 resume；而它其实只是排在别人后面。
-            # M2 的设计就是「同一棵树同一时刻只有一个写者」，所以正确做法是
-            # 交还作业，让持有者跑完再轮到自己。
-            requeue = True
-            self.contended = True
-            self.notes.append(f"工作区被占用，已交还作业：{exc}")
-        except (JobLost, JobUnavailable):
-            # 被接管：本实例已经不是 owner，交出去即可，不写任何状态
-            self.errors.append("作业已被接管，本实例停止提交")
-        except Exception as exc:  # noqa: BLE001 - 单个作业失败不该带走整个循环
-            self.errors.append(f"{type(exc).__name__}: {exc}")
-        finally:
+        def settle() -> None:
             self._settle(claim, requeue=requeue)
+
+        with _cleanup_preserving_primary(settle, "作业结算失败"):
+            try:
+                self._drive(claim)
+            except LeaseConflict as exc:
+                # 暂时拿不到工作区，让当前持有者跑完再重排作业。
+                requeue = True
+                self.contended = True
+                self.notes.append(f"工作区被占用，已交还作业：{exc}")
+            except (JobLost, JobUnavailable):
+                self.errors.append("作业已被接管，本实例停止提交")
+            except Exception as exc:  # noqa: BLE001 - 单个作业失败不该带走整个循环
+                self.errors.append(f"{type(exc).__name__}: {exc}")
+        # 心跳仍持连接或本轮中断时，不能排入更多工作。
+        if self._heartbeat is None:
             self.stack.dispatcher.close_inactive_mcp()
             self._tick_goals()
         return True
@@ -318,10 +395,13 @@ class Worker:
         return done
 
     def close(self) -> None:
-        if self._side is not None and self._side_stuck:
-            # 有线程可能还在用它：留着，让进程退出时由解释器回收
-            self._side = None
-            return
+        loop = self._heartbeat
+        if loop is not None:
+            try:
+                loop.stop()
+            finally:
+                self._record_heartbeat(loop)
+        self._require_heartbeat_quiescence()
         if self._side is not None:
             self._side.close()
             self._side = None
@@ -329,16 +409,54 @@ class Worker:
     def __enter__(self) -> Worker:
         return self
 
-    def __exit__(self, *_exc) -> None:
-        self.close()
+    def __exit__(self, _exc_type, exc, _tb) -> None:
+        try:
+            self.close()
+        except BaseException as cleanup:
+            self.errors.append(
+                f"Worker 清理失败：{type(cleanup).__name__}: {_heartbeat_error_text(cleanup)}"
+            )
+            if exc is None:
+                raise
+            BaseException.add_note(
+                exc,
+                f"Worker 清理另行失败：{type(cleanup).__name__}: {_heartbeat_error_text(cleanup)}",
+            )
 
     # ---- 内部 ----
 
-    def _tick_goals(self):
+    def _tick_goals(self) -> None:
         from .goal_v2 import GoalCoordinator
         if not self.stack.log.read_types(("goal.v2_created",)):
             return
         GoalCoordinator(self.stack, model=self.model, limits=self.limits).tick_all()
+
+    def _require_heartbeat_quiescence(self) -> None:
+        if self._heartbeat is not None or self._heartbeat_active or self._side_stuck:
+            self.exhausted = False
+            raise TianshuError("心跳生命周期尚未收拢，拒绝继续认领、驱动或关闭连接")
+
+    def _record_heartbeat(self, loop: HeartbeatLoop) -> None:
+        # 超时后 close 可再次采集；累计数和已采集错误不重复记账。
+        beats = loop.beats
+        self.beats += beats - self._heartbeat_beats
+        self._heartbeat_beats = beats
+        if not loop.stopped_promptly:
+            if not self._side_stuck:
+                self.errors.append("心跳线程未如期退出，保留线程与连接以免写入被截断")
+            self._side_stuck = True
+        else:
+            self._side_stuck = False
+        if loop.error is not None and loop.error is not self._heartbeat_error:
+            self.errors.append(f"心跳失效：{_heartbeat_error_text(loop.error)}")
+            self._heartbeat_error = loop.error
+        for cleanup in loop.cleanup_errors[self._heartbeat_cleanup_count:]:
+            self.errors.append(
+                f"心跳清理失败：{type(cleanup).__name__}: {_heartbeat_error_text(cleanup)}"
+            )
+        self._heartbeat_cleanup_count = len(loop.cleanup_errors)
+        if loop.stopped_promptly and not self._heartbeat_active:
+            self._heartbeat = None
 
     def _reconcile_subtask_state(self) -> None:
         """G2 委派 D2：worker 启动时先按证据修子任务状态，再认领作业。
@@ -352,17 +470,22 @@ class Worker:
         为什么放在 worker 而不是 CLI：worker 是"自动推进队列"的那个角色，
         它启动时必须先让队列反映真实证据；否则一条 waiting 作业谁都不会碰。
         """
+        if self._startup_reconcile_error is not None:
+            raise self._startup_reconcile_error
         if self._startup_reconciled:
             return
-        self._startup_reconciled = True
         try:
             fixed = self._tasks.reconcile_finished_subtasks()
             woken = self._tasks.wake_stale_parents()
-        except TianshuError as exc:
-            # 修不了就说出来（进 errors，CLI 退出码会红），不要带着半截状态
-            # 继续认领作业。
-            self.errors.append(f"子任务启动恢复失败：{exc}")
-            return
+        except BaseException as exc:
+            # 首错永久阻断本实例，不能把半截恢复当成功，也不能在下一次轮询跳过。
+            self._startup_reconcile_error = exc
+            try:
+                self.errors.append(f"子任务启动恢复失败：{exc}")
+            except BaseException as diagnostic:
+                self._startup_reconcile_diagnostic_error = diagnostic
+            raise
+        self._startup_reconciled = True
         if fixed:
             self.notes.append(f"启动恢复：按子 Run 终态修正 {len(fixed)} 个子任务")
         if woken:
@@ -409,6 +532,7 @@ class Worker:
         return self._side
 
     def _drive(self, claim: JobClaim) -> RunResult | None:
+        self._require_heartbeat_quiescence()
         run = self._tasks.get_run(claim.run_id)
         if run is None:
             raise TianshuError(f"作业指向的 Run 不存在：{claim.run_id}")
@@ -430,26 +554,23 @@ class Worker:
             return self._engine(claim).resume_run(claim.run_id)
 
         channel = self._side_channel()
-        with HeartbeatLoop(
+        loop = HeartbeatLoop(
             # 心跳必须用**认领时那个 ttl**：认领说 200ms 过期、心跳却按 30s 续命，
             # 谁都不知道到底多久算活着，测试里"抢不走"也就成了必然成立的空断言。
             lambda: channel.beat(claim, ttl_ms=self.ttl_ms),
             interval_ms=interval,
-        ) as loop:
-            result = self._engine(claim).resume_run(claim.run_id)
-        self.beats += loop.beats
-        if not loop.stopped_promptly:
-            # 线程没能在超时内退出：说明它卡在某次数据库写入里。此时**不能**
-            # 关掉它用的那条连接（关掉会让线程里抛 ProgrammingError，而那个
-            # 异常在后台线程里没人看得到）。宁可泄漏一条连接，也不制造一个
-            # 看不见的写失败。
-            self._side_stuck = True
-            self.errors.append("心跳线程未如期退出，保留连接以免写入被截断")
-        if loop.error is not None:
-            # 心跳线说自己已经不是 owner 了：这次驱动的结论不可信，
-            # 但也不要抛——主循环写状态时一样会被 claim 核验拦住。
-            self.errors.append(f"心跳失效：{loop.error}")
-        return result
+        )
+        self._heartbeat = loop
+        self._heartbeat_active = True
+        self._heartbeat_beats = 0
+        self._heartbeat_error = None
+        self._heartbeat_cleanup_count = 0
+        try:
+            with loop:
+                return self._engine(claim).resume_run(claim.run_id)
+        finally:
+            self._heartbeat_active = False
+            self._record_heartbeat(loop)
 
     def _settle(self, claim: JobClaim, *, requeue: bool = False) -> None:
         """把作业状态与 Run 状态对齐。**只在还持有 claim 时才动。**"""
@@ -506,10 +627,8 @@ def run_worker_once(
         heartbeat_interval_ms=heartbeat_interval_ms,
         claims=store,
     )
-    try:
+    with worker:
         return worker.run_once()
-    finally:
-        worker.close()
 
 
 __all__ = [
