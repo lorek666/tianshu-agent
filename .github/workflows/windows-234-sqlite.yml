@@ -1,0 +1,51 @@
+name: Windows migration fixture diagnostic
+on:
+  push:
+    branches: [codex/diagnose-234-sqlite]
+
+permissions:
+  contents: read
+
+jobs:
+  reproduce:
+    runs-on: windows-latest
+    timeout-minutes: 12
+    env:
+      FROZEN_SHA: c85338c897ec80af42be5a64d7204fdde07faf63
+      FROZEN_TREE: a3ba960090d4738d9a552b05471e0b66659d52fd
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: probe
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_SHA }}
+          path: frozen
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v5
+      - shell: bash
+        working-directory: frozen
+        env:
+          PYTEST_ADDOPTS: ''
+          BINDING_PROBE_DIR: ${{ runner.temp }}/binding-probe
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$FROZEN_SHA"
+          test "$(git rev-parse HEAD^{tree})" = "$FROZEN_TREE"
+          test "$(git -C ../probe rev-parse HEAD)" = "$GITHUB_SHA"
+          uv python install 3.12
+          uv lock --check
+          uv sync --frozen
+          mkdir -p "$BINDING_PROBE_DIR"
+          printf '%s\n' "$FROZEN_SHA" "$FROZEN_TREE" "$GITHUB_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" > "$BINDING_PROBE_DIR/identity.txt"
+          export PYTHONPATH="$(cygpath -w ../probe/scripts/diagnostics)"
+          uv run --frozen python scripts/pytest_with_stacks.py -o addopts="" -vv -rs --tb=short \
+            --stack-timeout=60 -p pytest_sqlite_binding_probe tests/test_data_binding.py \
+            | tee "$BINDING_PROBE_DIR/pytest.log"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: binding-probe-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/binding-probe
+          if-no-files-found: error
