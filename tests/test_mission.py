@@ -176,8 +176,16 @@ def test_chat_resume_without_cursor_does_not_send_or_claim_again(
     assert stack.tasks.get_run(run_id) == original_run
 
 
-@pytest.mark.parametrize("point", ["model-result-before-commit", "after_intent"])
-def test_worker_holds_crashed_chat_without_cursor(tmp_path, point):
+@pytest.mark.parametrize(("point", "action"), [
+    ("model-result-before-commit", "cancel"),
+    ("after_intent", "cancel"),
+    ("after_intent", "resume"),
+    ("after_intent", "recover_cancel"),
+    ("after_write", "recover_unknown"),
+    ("after_receipt", "cancel"),
+    ("after_receipt", "resume"),
+])
+def test_worker_holds_crashed_chat_without_cursor(tmp_path, point, action):
     db_path = tmp_path / "db"
     child = subprocess.run(
         [sys.executable, "-c", """
@@ -196,7 +204,7 @@ db_path = Path(sys.argv[1])
 root = db_path.parent
 point = sys.argv[2]
 os.environ["TIANSHU_FAILPOINT"] = point
-if point == "after_intent":
+if point in ("after_intent", "after_write", "after_receipt"):
     from tianshu.cli import main
     workspace = root / "workspace"
     workspace.mkdir()
@@ -217,18 +225,26 @@ Worker(stack, model=model, heartbeat_interval_ms=None).run_once()
         (run_id,) = log.conn.execute("SELECT run_id FROM runs").fetchone()
         original_run = stack.tasks.get_run(run_id)
         assert original_run.state == "running"
-        if point == "after_intent":
+        if point in ("after_intent", "after_write", "after_receipt"):
             assert stack.tasks.load_cursor(run_id) is not None
             with log.transaction():
                 log.conn.execute("DELETE FROM run_cursors WHERE run_id = ?", (run_id,))
         assert stack.tasks.load_cursor(run_id) is None
         effect_events = ("model.intent", "model.result", "tool.intent", "tool.result", "run.end")
         before = log.read_run(run_id, event_types=effect_events)
-        if point == "after_intent":
+        if point in ("after_intent", "after_write"):
             assert before[-1].type == "tool.intent"
             assert before[-1].payload["tool_id"] == "create_report"
+        elif point == "after_receipt":
+            assert before[-1].type == "tool.result"
+            assert before[-1].payload["effect_state"] == "applied"
         else:
             assert [event.type for event in before] == ["model.intent"]
+        receipts = log.read_run(run_id, event_types=("receipt",))
+        leases = stack.leases.list_for_run(run_id)
+        target = tmp_path / "workspace" / "r.md"
+        original_bytes = target.read_bytes() if point == "after_receipt" else None
+        assert len(receipts) == (1 if point == "after_receipt" else 0)
 
         model = RecordingModel()
         with Worker(stack, model=model, heartbeat_interval_ms=None) as worker:
@@ -238,13 +254,66 @@ Worker(stack, model=model, heartbeat_interval_ms=None).run_once()
         assert model.requests == []
         assert log.read_run(run_id, event_types=effect_events) == before
         assert stack.claims.job_for_run(run_id).state == "waiting"
-        if point == "after_intent":
+        if point in ("after_intent", "after_write"):
             assert stack.tasks.get_run(run_id) == original_run
-        else:
+            assert stack.leases.list_for_run(run_id) == leases
+        if point == "model-result-before-commit":
             assert stack.tasks.get_run(run_id).state == "reconciling"
-            plane = ControlPlane(stack, model=model)
+        requests = queue.SimpleQueue()
+        plane = ControlPlane(stack, model=model, resume_requests=requests)
+        needs_recovery = (
+            point in ("after_intent", "after_write") and action != "recover_cancel"
+        )
+        if action in ("recover_cancel", "recover_unknown"):
+            from tianshu.cli import main
+
+            if action == "recover_unknown":
+                original_bytes = b"changed outside the run\n"
+                target.write_bytes(original_bytes)
+            status = main([
+                "recover", "--run-id", run_id, "--workspace", str(target.parent),
+                "--db", str(db_path), "--data-root", str(tmp_path),
+            ])
+            assert (status == 0) == (action == "recover_cancel")
+            action = "cancel"
+        parked_job = stack.claims.job_for_run(run_id)
+        parked_events = log.read_run(run_id)
+        locked_leases = stack.leases.list_for_run(run_id)
+        if action == "resume" or needs_recovery:
+            with pytest.raises(ControlError) as exc:
+                plane.handle(f"run.{action}", {"run_id": run_id})
+            assert exc.value.code == "conflict"
+            assert exc.value.details == {
+                "reason": "chat_resume_cursor_missing",
+                "recovery_required": needs_recovery,
+            }
+            if needs_recovery:
+                assert "recover" in str(exc.value)
+            assert stack.leases.list_for_run(run_id) == locked_leases
+            assert stack.claims.job_for_run(run_id) == parked_job
+            assert log.read_run(run_id) == parked_events
+        else:
             cancelled = plane.handle("run.cancel", {"run_id": run_id})["run"]
             assert cancelled["state"] == "cancelled"
+            assert cancelled["control_requested"] is None
+            assert stack.claims.job_for_run(run_id).state == "cancelled"
+            end, = log.read_run(run_id, event_types=("run.end",))
+            expected_effect = "applied" if point == "after_receipt" else "none_applied"
+            assert end.payload["effect_state"] == expected_effect
+            assert cancelled["effect_state"] == expected_effect
+            assert end.payload["receipt_ids"] == [event.payload["receipt_id"] for event in receipts]
+            model_results = [event for event in before if event.type == "model.result"]
+            assert end.payload["turns"] == len(model_results)
+            assert end.payload["tokens_unknown_calls"] == len(model_results)
+            assert end.payload["cost_unknown_calls"] == len(model_results)
+            assert end.payload["cost_total_micros"] is None
+            assert end.payload["budget_enforced"] is False
+        if original_bytes is None:
+            assert not target.exists()
+        else:
+            assert target.read_bytes() == original_bytes
+        assert requests.empty()
+        assert not model.requests
 
 
 def test_research_route_cannot_dispatch_forged_write(env, tmp_path):

@@ -118,7 +118,7 @@ from ._tasks_types import (
     truncate_utf8,
 )
 from .disk_admission import DiskAdmission, DiskAdmissionError
-from .errors import RunFenced, TianshuError
+from .errors import ChatResumeCursorMissing, RunFenced, TianshuError
 from .events import EventLog
 from .execpolicy import ExecPolicy
 from .guard import assert_paths_not_blocked
@@ -1125,14 +1125,29 @@ class TaskStore(_SubtaskStoreMixin, _TaskCursorRebuildMixin):
         "取消"只保证不再派发新的副作用，不撤销已经发生的那一次：
         已经 applied 的 effect_state 会如实留在 Run 上。
         """
-        safe = tuple(self.SAFE_CONTROL_STATES)
-        marks = ",".join("?" * len(safe))
+        safe = self.SAFE_CONTROL_STATES
         with self._log.transaction() as tx:
             run = self.get_run(run_id)
             if run is None:
                 raise TianshuError(f"run 不存在：{run_id}")
             if run.state in TERMINAL_STATES or run.state == RUN_FENCED:
                 return run
+            effect_state = run.effect_state or "none_applied"
+            job = self._claims.job_for_run(run_id) if self._claims is not None else None
+            parked = job is not None and job.state == JOB_WAITING
+            if (run.state in safe or parked) and not self._conn.execute(
+                "SELECT 1 FROM run_cursors WHERE run_id=?", (run_id,),
+            ).fetchone():
+                try:
+                    self.check_chat_resume_without_cursor(run_id)
+                except ChatResumeCursorMissing as exc:
+                    if exc.effect_state is None:
+                        raise
+                    effect_state = exc.effect_state
+                    if parked and run.state not in safe:
+                        # 作业已挂起，没有驱动者会确认请求；在同一事务内核对作业和副作用。
+                        safe = (*safe, run.state)
+            marks = ",".join("?" * len(safe))
             tx.append(
                 run_id,
                 RUN_CONTROL,
@@ -1185,7 +1200,7 @@ class TaskStore(_SubtaskStoreMixin, _TaskCursorRebuildMixin):
                 tx,
                 run_id,
                 outcome="cancelled",
-                effect_state=run.effect_state or "none_applied",
+                effect_state=effect_state,
                 reason=CANCEL_REASON,
             )
         return self._must_run(run_id)

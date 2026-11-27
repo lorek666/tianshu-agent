@@ -8,6 +8,14 @@ class TianshuError(Exception):
 class ChatResumeCursorMissing(TianshuError):
     """Chat 已有模型请求记录，缺失续跑游标时不能从头开始。"""
 
+    def __init__(self, *, effect_state: str | None) -> None:
+        self.effect_state = effect_state
+        if effect_state is None:
+            tip = "工具操作尚未核清，请先使用 tianshu recover 核查原运行，再处理取消"
+        else:
+            tip = "请核对原记录后取消并另开 Run"
+        super().__init__(f"对话游标缺失，无法安全续跑。{tip}")
+
 
 class WorkspaceViolation(TianshuError):
     """路径越出 workspace。执行侧必须抛出，不允许静默降级。"""
