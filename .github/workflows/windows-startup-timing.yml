@@ -12,7 +12,8 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 25
     env:
-      FROZEN_SHA: ab25ea2222b9cc20572f88d5ee13a6c283e6095d
+      FROZEN_SHA: 40d866c1dc061ed9eda7a1a9db9f0d558a9ed077
+      FROZEN_TREE: 202c095359582bb85d685b8e6687f6bc0acd742b
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,27 +34,46 @@ jobs:
         env:
           PYTEST_ADDOPTS: ""
           CI_SHARD_INDEX: "3"
-          TIANSHU_SLO_DIAGNOSTICS_DIR: ${{ runner.temp }}/startup-diagnostic/slo
-          TIANSHU_STARTUP_TIMING_DIR: ${{ runner.temp }}/startup-diagnostic/timings
+          DIAGNOSTIC_ROOT: ${{ runner.temp }}/startup-diagnostic
           WORKFLOW_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$FROZEN_SHA"
+          test "$(git rev-parse HEAD^{tree})" = "$FROZEN_TREE"
           test "$(git -C ../probe rev-parse HEAD)" = "$WORKFLOW_SHA"
-          mkdir -p "$(dirname "$TIANSHU_SLO_DIAGNOSTICS_DIR")"
-          printf 'workflow_sha=%s\nfrozen_checkout=%s\nrun_id=%s\nrun_attempt=%s\n' \
-            "$WORKFLOW_SHA" "$FROZEN_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
-            | tee "$(dirname "$TIANSHU_SLO_DIAGNOSTICS_DIR")/identity.txt"
+          mkdir -p "$DIAGNOSTIC_ROOT"
+          printf 'workflow_sha=%s\nfrozen_checkout=%s\nfrozen_tree=%s\nrun_id=%s\nrun_attempt=%s\n' \
+            "$WORKFLOW_SHA" "$FROZEN_SHA" "$FROZEN_TREE" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
+            | tee "$DIAGNOSTIC_ROOT/identity.txt"
           uv python install 3.12
           uv lock --check
           uv sync --frozen
           export PYTHONPATH="$(cygpath -w ../probe/scripts/startup_timing)"
-          uv run --frozen python scripts/pytest_with_stacks.py -o addopts="" -vv -rs \
-            --tb=short --stack-timeout=60 -p pytest_startup_timing \
-            tests/test_slo_and_soak.py::test_measure_slo_smoke_and_run_soak_real_subprocesses
+          selector=tests/test_slo_and_soak.py::test_measure_slo_smoke_and_run_soak_real_subprocesses
+          wrapper=(uv run --frozen python scripts/pytest_with_stacks.py -o addopts="" -vv -rs --tb=short --stack-timeout=60)
+          export TIANSHU_SLO_DIAGNOSTICS_DIR="$DIAGNOSTIC_ROOT/control"
+          control=0
+          "${wrapper[@]}" --basetemp="$DIAGNOSTIC_ROOT/control-runtime" "$selector" || control=$?
+          export TIANSHU_SLO_DIAGNOSTICS_DIR="$DIAGNOSTIC_ROOT/traced"
+          export TIANSHU_STARTUP_TIMING_DIR="$DIAGNOSTIC_ROOT/timings"
+          traced=0
+          "${wrapper[@]}" --basetemp="$DIAGNOSTIC_ROOT/traced-runtime" -p pytest_startup_detailed "$selector" || traced=$?
+          verified=0
+          uv run --frozen python ../probe/scripts/startup_timing/check_startup_trace.py \
+            "$TIANSHU_STARTUP_TIMING_DIR" "$TIANSHU_SLO_DIAGNOSTICS_DIR/slo-startup-phases.json" \
+            "$TIANSHU_SLO_DIAGNOSTICS_DIR/slo-samples.json" > "$DIAGNOSTIC_ROOT/verified-trace.json" || verified=$?
+          printf 'control=%s\ntraced=%s\nverify=%s\n' "$control" "$traced" "$verified" \
+            | tee "$DIAGNOSTIC_ROOT/exit-codes.txt"
+          test "$control" = 0 && test "$traced" = 0 && test "$verified" = 0
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: startup-timing-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/startup-diagnostic
+          path: |
+            ${{ runner.temp }}/startup-diagnostic/identity.txt
+            ${{ runner.temp }}/startup-diagnostic/exit-codes.txt
+            ${{ runner.temp }}/startup-diagnostic/verified-trace.json
+            ${{ runner.temp }}/startup-diagnostic/control/*.json
+            ${{ runner.temp }}/startup-diagnostic/traced/*.json
+            ${{ runner.temp }}/startup-diagnostic/timings/*.json
           if-no-files-found: error
