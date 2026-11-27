@@ -16,7 +16,7 @@
 
 | # | 工作流 | 缺口出处 | 契约影响 | 冲突面 | 外部阻塞 | 状态 |
 |---|---|---|---|---|---|---|
-| W1 | Keychain 凭据后端（macOS） | §7 F12 | 无（接缝已在） | credentials.py 冷区 | 无（本机可测） | **已并入 main**（#151，`595be35`） |
+| W1 | Keychain 凭据后端（macOS） | §7 F12 | 无（接缝已在） | credentials.py 冷区 | 无（本机可测） | **历史已并入 main**（#151，`595be35`）；现已按[环境变量凭据方案](credential-env-contract.md)停用 |
 | W2 | net.py 速率限制/重试 | §7 G2 网络 | 无 | tools.py 接线（中） | 无 | **已并入 main**（#152，`7f4c07d`，run43668070804） |
 | W3 | state 响应 8MiB 上界 | §7 指标条 | IPC 语义（谨慎，加字段不升版本） | control.py（已交付，见 SPEC-STATE-RESPONSE-BOUND-2026-11-15） | 无 | **已并入 main `c637b52`**（#166，run 43721830851） |
 | W4 | 流式输出 | capability 声明 | **C1 + 事件面，docs(contract) 先行** | model.py / loop.py（热） | 无 | **已并入 main**（契约 #190 `beedf51` / 实现 #191 `e18624c`，run 44173429146） |

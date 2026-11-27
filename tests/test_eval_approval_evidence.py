@@ -85,7 +85,6 @@ def _private_evaluation(
     monkeypatch.setattr(credentials, "default_store", forbidden_external)
     monkeypatch.setattr(model_module, "default_store", forbidden_external)
     monkeypatch.setattr(credentials.EnvCredentialStore, "get", forbidden_external)
-    monkeypatch.setattr(credentials.KeychainCredentialStore, "__init__", forbidden_external)
     monkeypatch.setattr(subprocess, "run", own_ps_run)
     monkeypatch.setattr(subprocess, "Popen", own_ps_popen)
     monkeypatch.setattr(os, "system", forbidden_external)

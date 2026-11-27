@@ -1,53 +1,19 @@
-"""凭据接缝（F12）。
+"""凭据接缝（F12）：从环境变量按 provider / capability 分域读取。
 
-PRD §7 F12 原文写的是「密钥只存 OS Keychain」。**v1 没有 Keychain 后端**，
-这个模块不假装有：v1 交付的是**接缝** + 一个诚实的开发用后端（环境变量）
-+ 全链路脱敏，并把「Keychain 未实现」表达成 `CredentialUnsupported`，
-而不是静默降级成环境变量。
+非敏感设置持久化为 JSON 文本，密钥只读启动环境，不使用系统钥匙串。
+环境变量不是安全存储，可能被同用户进程、调试器或崩溃报告看到；执行子进程
+仍使用最小环境。本模块提供 Secret 表示与日志脱敏，不能防止直接输出明文值。
 
-为什么 v1 不做 ctypes 版 Keychain：零依赖是硬约束（`dependencies = []`），
-唯一的路是 ctypes 直调平台 C API。当时的判断是「没有任何平台能测它」（CI 只有
-ubuntu/macos runner，且以为 macOS runner 没有可用的 login keychain）——
-写一个没人跑过的安全关键后端，比明说"没做"更危险。**2026-11 F12 W1 起这个
-前提被推翻**：实测 macOS runner 的 login keychain 可用，`keychain_macos.py`
-（ctypes 直调 Security.framework）据此落地，keychain 测试在 CI 与本机都真实
-跑过；其他平台维持诚实 stub。
-
-## 三种状态必须分清（本模块的核心）
-
-| 状态 | 含义 | 表现 |
-|---|---|---|
-| **unsupported** | 这个后端/平台**做不到**这件事（如 Keychain） | 抛 `CredentialUnsupported` |
-| **未配置** | 后端能做，但那个域里**没有**凭据 | `get()` 返回 `None`（**绝不是空串**） |
-| **可用** | 拿到了密钥 | 返回 `Secret`（`repr` 已打码） |
-
-把 unsupported 和"没配置"混成一个 `None`，用户会去翻环境变量找一个根本
-不存在的键；混成一个异常，正常的"还没配 key"就变成了崩溃。
-
-## 环境变量后端的威胁模型（`EnvCredentialStore`）
-
-它**不是安全存储**，只是"能跑起来"。环境变量会：
-
-- **对子进程可见**：任何 `subprocess` 继承环境就拿到了 key（本项目
-  `execpolicy.py` 因此默认不把 `os.environ` 交给子进程，那条规矩不覆盖
-  用户自己手写的进程）；
-- **进 core dump / 崩溃报告**：进程内存里的密钥会随 core 一起落盘；
-- **进进程列表**：`ps -E`（部分平台）与调试器能看到；
-- **被日志/APM 顺手带走**：常见框架打印配置时会枚举环境。
-
-所以它的定位是**开发/CI 用**。macOS 生产可用 Keychain（`TIANSHU_CREDENTIAL_BACKEND=keychain`，
-见 `keychain_macos.py`）；这个模块始终保证的是**密钥不会出现在事件、日志、
-错误信息与 trace 里**。
+未配置返回 None，不支持的域或退役后端抛 CredentialUnsupported；写入和删除
+明确拒绝，不能把修改进程环境冒充持久化配置。见 docs/credential-env-contract.md。
 """
 
 from __future__ import annotations
 
 import os
 import re
-import sys
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from .errors import CredentialUnsupported, CredentialWriteRefused
@@ -55,14 +21,11 @@ from .errors import CredentialUnsupported, CredentialWriteRefused
 __all__ = [
     "CAPABILITY_CLASSES",
     "ENV_VARS",
-    "KEYCHAIN_CAPABILITIES",
-    "KEYCHAIN_CAPABILITIES_MACOS",
     "MASK",
     "CredentialBackendCapabilities",
     "CredentialRef",
     "CredentialStore",
     "EnvCredentialStore",
-    "KeychainCredentialStore",
     "Secret",
     "UnsupportedCredentialStore",
     "default_store",
@@ -77,8 +40,7 @@ MASK = "***"
 #: 硬编码一个全集等于替未来撒谎。这里只登记"现在真的有调用方"的域。
 CAPABILITY_CLASSES = ("llm",)
 
-#: 域 → 环境变量名。只在 `EnvCredentialStore` 里有意义；
-#: 别的后端（Keychain）会用自己的命名空间，不查这张表。
+#: 域 → 环境变量名。所有适配器通过同一接缝取值。
 ENV_VARS: dict[tuple[str, str], str] = {
     ("openai", "llm"): "TIANSHU_API_KEY",
     ("anthropic", "llm"): "ANTHROPIC_API_KEY",
@@ -216,26 +178,6 @@ ENV_CAPABILITIES = CredentialBackendCapabilities(
     implemented=True,
 )
 
-KEYCHAIN_CAPABILITIES = CredentialBackendCapabilities(
-    name="keychain",
-    secure_storage=True,
-    supports_write=False,
-    implemented=False,
-)
-
-#: darwin 上的真实现能力（2026-11-14，W1）：SecItem 直调默认 keychain，
-#: set/delete 都落地。平台差异照实声明——非 darwin 仍用上面的未实现声明。
-KEYCHAIN_CAPABILITIES_MACOS = CredentialBackendCapabilities(
-    name="keychain",
-    secure_storage=True,
-    supports_write=True,
-    implemented=True,
-)
-
-#: 生产命名空间：`kSecAttrService`。测试用独立 service 名，不混入这里。
-_KEYCHAIN_SERVICE = "tianshu-agent"
-
-
 # ---------------------------------------------------------------- 协议
 
 
@@ -262,7 +204,7 @@ class CredentialStore(Protocol):
 
 
 class EnvCredentialStore:
-    """开发/CI 用后端：从环境变量读。**不是安全存储**（威胁模型见模块 docstring）。
+    """只读凭据后端：从环境变量读。**不是安全存储**（威胁模型见模块 docstring）。
 
     只读：`set()` / `delete()` 一律拒绝。理由不是懒——环境变量是**进程启动时
     就定的镜像**，写 `os.environ` 不会持久化、也不影响已经启动的其他进程，
@@ -306,80 +248,6 @@ class EnvCredentialStore:
         )
 
 
-_KEYCHAIN_REASON = (
-    "OS Keychain 后端**仅 macOS 实现**（ctypes 直调 Security.framework 的 "
-    "SecItem，默认/login keychain；防交互挂 kSecUseAuthenticationUIFail）。"
-    "Windows Credential Manager 与 Linux Secret Service 未实现。"
-    "文件 keychain（keychain_path）不在本版支持范围——这是范围裁决，不是平台"
-    "事实断言：两轮独立探针对 SecItem 路由结论相反（见 SPEC §2 复审更正），"
-    "不以单轮探针事实为依据。"
-    "详见 src/tianshu/keychain_macos.py 模块文档与 "
-    "docs/SPEC-F12-KEYCHAIN-2026-11-14.md。"
-)
-
-
-class KeychainCredentialStore:
-    """OS Keychain 后端。
-
-    **macOS（darwin）**：真实现——`SecItemAdd/CopyMatching/Update/Delete`
-    直调默认（login）keychain，三态语义完整：未配置返回 `None`、后端做不到
-    （含钥匙串锁定）抛 `CredentialUnsupported`，绝不静默回退环境变量。
-    实现细节与探针证据见 `keychain_macos.py` 模块文档。
-
-    **其他平台**：保持诚实 stub——三方法一请求就报 unsupported，
-    `capabilities.implemented is False` 让调用方在做事之前就能问。
-
-    为什么这里（stub 路径）不是"抛异常然后调用方退回 env"：那会让"以为在
-    Keychain 里"悄悄变成"其实在环境变量里"。两者的安全属性差一个数量级
-    （见模块文档的威胁模型），静默降级等于把安全承诺换成了安慰剂。
-
-    `keychain_path` 参数**本版只接受 None**（默认 keychain）：对文件 keychain
-    的 SecItem 路由，2026-11-14 与 2026-11-15 两轮探针结论相反——不提供平台
-    语义不可依赖的路径参数，按范围裁决只支持默认 keychain（SPEC §2 复审更正）。
-    """
-
-    def __init__(self, keychain_path: Path | None = None) -> None:
-        if keychain_path is not None:
-            raise ValueError(
-                "keychain_path 本版不支持：文件 keychain 的 SecItem 路由在两轮 "
-                "探针中结论相反（见 keychain_macos.py 文档），不提供语义不可"
-                "依赖的路径参数；默认 keychain 是唯一支持的通路。"
-            )
-        if sys.platform == "darwin":
-            from . import keychain_macos
-
-            self._backend = keychain_macos
-            self.capabilities = KEYCHAIN_CAPABILITIES_MACOS
-        else:
-            self._backend = None
-            self.capabilities = KEYCHAIN_CAPABILITIES
-
-    def get(self, ref: CredentialRef) -> Secret | None:
-        if self._backend is None:
-            raise CredentialUnsupported(f"无法读取 {ref}：{_KEYCHAIN_REASON}")
-        raw = self._backend.get_item(_KEYCHAIN_SERVICE, str(ref))
-        if raw is None:
-            return None
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise CredentialUnsupported(
-                f"Keychain 条目 {ref} 不是 UTF-8 文本，无法作为凭据返回：{exc}"
-            ) from exc
-        register_secret(text)
-        return Secret(text)
-
-    def set(self, ref: CredentialRef, secret: str) -> None:
-        if self._backend is None:
-            raise CredentialUnsupported(f"无法写入 {ref}：{_KEYCHAIN_REASON}")
-        self._backend.set_item(_KEYCHAIN_SERVICE, str(ref), secret.encode("utf-8"))
-
-    def delete(self, ref: CredentialRef) -> None:
-        if self._backend is None:
-            raise CredentialUnsupported(f"无法删除 {ref}：{_KEYCHAIN_REASON}")
-        self._backend.delete_item(_KEYCHAIN_SERVICE, str(ref))
-
-
 class UnsupportedCredentialStore:
     """任意"这个平台做不到"的后端占位。
 
@@ -404,17 +272,13 @@ class UnsupportedCredentialStore:
 
 
 def default_store() -> CredentialStore:
-    """当前选的凭据后端。由 `TIANSHU_CREDENTIAL_BACKEND` 决定，默认 `env`。
-
-    选 `keychain` 在 macOS 上是换到 OS 安全存储（真实现）；平台没有实现时
-    **明确失败**，绝不静默回退环境变量——「以为在 Keychain 里、其实在 env 里」
-    的静默降级，等于把安全承诺换成安慰剂。
-    """
+    """仅支持 env；显式选择退役 Keychain 或未知后端必须报错。"""
     name = (os.environ.get("TIANSHU_CREDENTIAL_BACKEND") or "env").strip().lower()
     if name == "env":
         return EnvCredentialStore()
     if name == "keychain":
-        return KeychainCredentialStore()
-    raise CredentialUnsupported(
-        f"未知的凭据后端：{name!r}（可选 env / keychain；keychain 仅 macOS 实现）"
-    )
+        raise CredentialUnsupported(
+            "Keychain 凭据后端已停用，请移除 TIANSHU_CREDENTIAL_BACKEND=keychain，"
+            "并设置 TIANSHU_API_KEY / ANTHROPIC_API_KEY 后重新启动。"
+        )
+    raise CredentialUnsupported("未知的凭据后端（仅支持 env）")

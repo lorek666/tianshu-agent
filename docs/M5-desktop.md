@@ -152,7 +152,7 @@ M5 不重新发明一套。
 | `undo.apply` | `{run_id}` | `{applied: bool, refused?: [str]}` | 走既有"还原也经审批"的派发路径；前置拒绝抛 `refused`（含原因列表），执行期异常抛 `undo_failed`，不吞 |
 | `settings.get` | — | `{model, credentials}` | 首日配置只读视图；`credentials` 只返回各后端布尔 `configured` 与可写能力，**绝不回显任何密钥字符** |
 | `model.configure` | `{mode, model_name?, base_url?, credential_backend?, allow_image_attachments?, compact_threshold?}` | `{model, credentials}` | 原子写入 `<data_root>/model_config.json`（`0o600`，不含密钥）并热切换当前运行模型槽位 |
-| `credential.set` / `credential.delete` | `{provider, secret?, backend?}` | `{credentials}` | 对接系统钥匙串（macOS Keychain）；只读 `env` 或平台未实现时明确返回 `unsupported`，不静默降级 |
+| `credential.set` / `credential.delete` | `{provider, secret?, backend?}` | `{credentials}` | M5 首版曾对接 macOS Keychain；2026-11-22 环境变量迁移后 RPC 只读保留，写入与删除一律明确拒绝，不静默降级或触碰旧系统条目 |
 | `schedule.list` / `schedule.create` / `schedule.set_enabled` / `schedule.remove` | 对应 schedule 参数 | `{schedules}` / `{schedule}` / `{removed}` | 与 `tianshu schedule` 共用存储；时间与目录触发由 Daemon 驱动线程检查 |
 | `schedule.signal` | `{schedule_id,event_id}` | `{accepted,run_id}` | 只启动已启用的本机事件调度；重复事件返回原 Run。见[本机任务触发](changelog/2026-11-21-local-schedule-triggers.md) |
 | `budget.view` | `{run_id?}` | `{dimensions, run_account, accounts, unsettled_count}` | 暴露账户级上限、已结算用量与未决预占笔数（未知用量保持占位不记零） |
@@ -424,7 +424,7 @@ M5 只做"按顺序调用"，不新增判定。
   后续发行工单的 R1 候选补入未签名 Tauri 薄壳、托盘与单实例 `open` 转发；
   R2 的锁定运行时、R3 的安装/卸载与四目标 release workflow 尚未合入。这不代表
   §9 当时遗漏被追溯改写，也不等于 L1/L2/G3 或四目标支持已完成。
-- OS Keychain（F12 仍是环境变量后端，请求 Keychain 报 `unsupported`）
+- OS Keychain（历史 M5 能力；2026-11-22 起按[环境变量凭据契约](credential-env-contract.md)停用，显式旧请求返回 `unsupported`）
 - Computer Use（macOS 优先，v1 未实现）
 - E2 生成作业（只保留类型定义）
 - 多窗口 / 多用户

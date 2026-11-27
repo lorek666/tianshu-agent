@@ -11,53 +11,20 @@ import pytest
 from tianshu import cli
 from tianshu.control import ControlError, ControlPlane
 from tianshu.credentials import (
-    CredentialBackendCapabilities,
-    CredentialRef,
     EnvCredentialStore,
-    Secret,
-    UnsupportedCredentialStore,
     redact,
-    register_secret,
 )
 from tianshu.events import EventLog
 from tianshu.loop import build_stack
 from tianshu.model import ModelResponse, ScriptedModel
 
 
-class _FakeKeychainStore:
-    """隔离内存钥匙串替身：测试绝不触碰宿主机真实系统 Keychain。"""
-
-    capabilities = CredentialBackendCapabilities(
-        name="keychain",
-        secure_storage=True,
-        supports_write=True,
-        implemented=True,
-    )
-
-    def __init__(self) -> None:
-        self.items: dict[CredentialRef, str] = {}
-
-    def get(self, ref: CredentialRef) -> Secret | None:
-        val = self.items.get(ref)
-        if val is None:
-            return None
-        register_secret(val)
-        return Secret(val)
-
-    def set(self, ref: CredentialRef, secret: str) -> None:
-        self.items[ref] = secret
-
-    def delete(self, ref: CredentialRef) -> None:
-        self.items.pop(ref, None)
-
-
-def _make_plane(tmp_path: Path, *, keychain_store=None, env_map=None) -> ControlPlane:
+def _make_plane(tmp_path: Path, *, env_map=None) -> ControlPlane:
     data_root = tmp_path / "data_root"
     data_root.mkdir(parents=True, exist_ok=True)
     log = EventLog(data_root / "events.db", blob_dir=data_root / "blobs")
     stack = build_stack(log, data_root=data_root)
     stores = {
-        "keychain": keychain_store or _FakeKeychainStore(),
         "env": EnvCredentialStore(env_map if env_map is not None else {}),
     }
     model = ScriptedModel([ModelResponse(finish_reason="end_turn", content="ok")])
@@ -69,53 +36,29 @@ def _make_plane(tmp_path: Path, *, keychain_store=None, env_map=None) -> Control
     )
 
 
-def test_credential_set_delete_never_echoes_secret_and_refuses_env_write(
-    tmp_path: Path,
-) -> None:
-    fake_kc = _FakeKeychainStore()
-    plane = _make_plane(tmp_path, keychain_store=fake_kc)
+@pytest.mark.parametrize("method", ["credential.set", "credential.delete"])
+@pytest.mark.parametrize("backend", [None, "env", "keychain"])
+def test_credential_mutation_is_refused_without_leaking_or_writing(tmp_path, method, backend):
+    key = "test-env-rpc-secret-99887766"
+    env = {"TIANSHU_API_KEY": key}
+    plane = _make_plane(tmp_path, env_map=env)
     try:
-        secret_val = "sk-super-secret-value-99887766"
-        res = plane.handle(
-            "credential.set",
-            {"provider": "openai", "secret": f"  {secret_val}  ", "backend": "keychain"},
-        )
-        serialized = json.dumps(res, ensure_ascii=False)
-        assert secret_val not in serialized
-        assert "99887766" not in serialized
-        assert redact(f"leaked {secret_val}") == "leaked ***"
-
-        kc_openai = next(
-            c
-            for c in res["credentials"]
-            if c["backend"] == "keychain" and c["provider"] == "openai"
-        )
-        assert kc_openai["configured"] is True
-        assert kc_openai["writable"] is True
-
-        # env 后端是只读的：写入与删除均须明确报 unsupported，绝不静默落明文
-        with pytest.raises(ControlError) as exc_set:
-            plane.handle(
-                "credential.set",
-                {"provider": "openai", "secret": secret_val, "backend": "env"},
-            )
-        assert exc_set.value.code == "unsupported"
-
-        with pytest.raises(ControlError) as exc_del:
-            plane.handle(
-                "credential.delete", {"provider": "openai", "backend": "env"}
-            )
-        assert exc_del.value.code == "unsupported"
-
-        res_after_del = plane.handle(
-            "credential.delete", {"provider": "openai", "backend": "keychain"}
-        )
-        kc_after = next(
-            c
-            for c in res_after_del["credentials"]
-            if c["backend"] == "keychain" and c["provider"] == "openai"
-        )
-        assert kc_after["configured"] is False
+        root = tmp_path / "data_root"
+        before = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
+        params = {"provider": "openai", "secret": key}
+        if backend is not None:
+            params["backend"] = backend
+        with pytest.raises(ControlError) as error:
+            plane.handle(method, params)
+        assert error.value.code == "unsupported"
+        assert key not in str(error.value)
+        assert env == {"TIANSHU_API_KEY": key}
+        assert {p: p.read_bytes() for p in root.rglob("*") if p.is_file()} == before
+        view = plane.handle("settings.get", {})
+        assert key not in json.dumps(view)
+        assert view["credentials"][0]["configured"] is True
+        assert not (root / "model_config.json").exists()
+        assert redact(f"leaked {key}") == "leaked ***"
     finally:
         plane.close()
 
@@ -123,9 +66,8 @@ def test_credential_set_delete_never_echoes_secret_and_refuses_env_write(
 def test_model_configure_persists_without_secrets_and_hot_switches_slot(
     tmp_path: Path,
 ) -> None:
-    fake_kc = _FakeKeychainStore()
-    fake_kc.set(CredentialRef("openai", "llm"), "sk-test-persist-key-123456")
-    plane = _make_plane(tmp_path, keychain_store=fake_kc)
+    env = {"TIANSHU_API_KEY": "sk-test-persist-key-123456"}
+    plane = _make_plane(tmp_path, env_map=env)
     try:
         initial = plane.handle("settings.get", {})
         assert initial["model"]["mode"] == "scripted"
@@ -134,7 +76,7 @@ def test_model_configure_persists_without_secrets_and_hot_switches_slot(
         with pytest.raises(ControlError) as bad_anth:
             plane.handle(
                 "model.configure",
-                {"mode": "anthropic", "credential_backend": "keychain"},
+                {"mode": "anthropic", "credential_backend": "env"},
             )
         assert bad_anth.value.code == "bad_params"
 
@@ -146,7 +88,7 @@ def test_model_configure_persists_without_secrets_and_hot_switches_slot(
                     "mode": "openai",
                     "model_name": "gpt-4o-mini",
                     "base_url": "https://user:pass@api.openai.com/v1",
-                    "credential_backend": "keychain",
+                    "credential_backend": "env",
                 },
             )
         assert bad_url.value.code == "bad_params"
@@ -157,7 +99,7 @@ def test_model_configure_persists_without_secrets_and_hot_switches_slot(
                 "mode": "openai",
                 "model_name": "gpt-4o-mini",
                 "base_url": "https://api.openai.com/v1",
-                "credential_backend": "keychain",
+                "credential_backend": "env",
             },
         )
         assert configured["model"]["mode"] == "openai"
@@ -178,7 +120,7 @@ def test_model_configure_persists_without_secrets_and_hot_switches_slot(
         plane.close()
 
     # 重建 ControlPlane 验证配置跨重启保留
-    plane2 = _make_plane(tmp_path, keychain_store=fake_kc)
+    plane2 = _make_plane(tmp_path, env_map=env)
     try:
         reloaded = plane2.handle("settings.get", {})
         assert reloaded["model"]["mode"] == "openai"
@@ -187,26 +129,15 @@ def test_model_configure_persists_without_secrets_and_hot_switches_slot(
         plane2.close()
 
 
-def test_model_configure_refuses_unimplemented_credential_backend(
-    tmp_path: Path,
-) -> None:
-    unsupported = UnsupportedCredentialStore("keychain", "当前平台无系统钥匙串")
-    plane = _make_plane(tmp_path, keychain_store=unsupported)
+def test_model_configure_refuses_retired_credential_backend(tmp_path):
+    plane = _make_plane(tmp_path)
     try:
-        view = plane.handle("settings.get", {})
-        kc_items = [c for c in view["credentials"] if c["backend"] == "keychain"]
-        assert all(c["implemented"] is False for c in kc_items)
-
-        with pytest.raises(ControlError) as excinfo:
-            plane.handle(
-                "model.configure",
-                {
-                    "mode": "openai",
-                    "model_name": "gpt-4o-mini",
-                    "credential_backend": "keychain",
-                },
-            )
-        assert excinfo.value.code == "unsupported"
+        with pytest.raises(ControlError) as error:
+            plane.handle("model.configure", {
+                "mode": "openai", "model_name": "test", "credential_backend": "keychain",
+            })
+        assert error.value.code == "bad_params"
+        assert "停用" in str(error.value)
     finally:
         plane.close()
 
@@ -422,7 +353,7 @@ def test_second_reader_probes_secret_redaction_admission_and_stateless_scripted(
         slot = RuntimeModelSlot(
             OpenAICompatibleModel("gpt-4o-mini", api_key="sk-init-12345678"),
             data_root=root,
-            stores={"env": EnvCredentialStore({}), "keychain": _FakeKeychainStore()},
+            stores={"env": EnvCredentialStore({})},
         )
         slot.configure({"mode": "openai", "model_name": "gpt-4o-mini", "credential_backend": "env"})
         loop = AgentLoop(

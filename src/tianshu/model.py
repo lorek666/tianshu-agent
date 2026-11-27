@@ -753,9 +753,7 @@ def _provider_text_messages(messages: list[dict[str, Any]]) -> list[dict[str, An
 def _credential_for(provider: str, capability_class: str = "llm") -> str:
     """经凭据接缝取密钥；未配置返回空串（由 `_HttpModel` 统一报「缺少 API key」）。
 
-    为什么不让各 adapter 自己 `os.environ.get`：接缝后面将来是 OS Keychain，
-    散落的 `os.environ.get` 会让"换后端"变成一次全局搜索，而且**每个漏改的
-    点都会静默退回环境变量**——那就等于假装 Keychain 生效了。
+    所有 adapter 通过统一接缝读取变量映射并登记脱敏，避免分散的取值遗漏。
 
     未配置（`get() -> None`）与做不到（`CredentialUnsupported`）在这里分开：
     前者变成空串、走既有的 auth 错误提示（告诉用户设哪个变量）；

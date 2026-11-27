@@ -1,7 +1,7 @@
 /**
  * 首日设置、凭据状态、定时任务、预算账本与 MCP 状态的控制面调用封装。
  *
- * 红线：任何密钥明文在写入后即清空本地输入框，后端与前端均不回显任何凭据字符。
+ * 仅管理非敏感配置和凭据状态，不提供密钥输入或写入接口。
  */
 
 import type { HostClient } from "./host";
@@ -21,7 +21,7 @@ export interface ModelConfigView extends ModelProfileInput {
   mode: "scripted" | "openai" | "anthropic" | string;
   model_name: string;
   base_url: string;
-  credential_backend: "keychain" | "env" | string;
+  credential_backend: "env" | string;
   summary: string;
 }
 
@@ -126,8 +126,6 @@ export interface SettingsApi {
   configureModel(input: ModelProfileInput): Promise<SettingsView>;
   saveModelProfile?(name: string, config: ModelProfileInput): Promise<SettingsView>;
   removeModelProfile?(name: string): Promise<SettingsView>;
-  setCredential(provider: string, secret: string, backend: string): Promise<CredentialStatusView[]>;
-  deleteCredential(provider: string, backend: string): Promise<CredentialStatusView[]>;
   listSchedules(): Promise<ScheduleView[]>;
   createSchedule(input: ScheduleInput): Promise<ScheduleView | null>;
   setScheduleEnabled(scheduleId: string, enabled: boolean): Promise<ScheduleView | null>;
@@ -280,22 +278,6 @@ export function createSettingsApi(client: HostClient): SettingsApi {
     },
     async configureModel(input) {
       return normalizeSettings(await client.rpc<unknown>(RPC.modelConfigure, { ...input }));
-    },
-    async setCredential(provider, secret, backend) {
-      const raw = asRecord(
-        await client.rpc<unknown>(RPC.credentialSet, { provider, secret, backend }),
-      );
-      return asArray(raw["credentials"])
-        .map(normalizeCredential)
-        .filter((item): item is CredentialStatusView => item !== null);
-    },
-    async deleteCredential(provider, backend) {
-      const raw = asRecord(
-        await client.rpc<unknown>(RPC.credentialDelete, { provider, backend }),
-      );
-      return asArray(raw["credentials"])
-        .map(normalizeCredential)
-        .filter((item): item is CredentialStatusView => item !== null);
     },
     async listSchedules() {
       const raw = asRecord(await client.rpc<unknown>(RPC.scheduleList, {}));

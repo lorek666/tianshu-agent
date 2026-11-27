@@ -114,7 +114,7 @@ linker-ad-hoc 主程序，拒绝已有资源封套；其他已有签名由原生
 fixture；这不是 Apple 验签或信任判定。`release-index.json` 的 `signed: false`
 保持表示没有认证发布者证书签名，不表示 Mach-O 中绝无 linker/ad-hoc 签名位。
 没有 Developer ID、公证或 Authenticode，不保证 Gatekeeper/SmartScreen 放行，
-也不替代原生启动、Keychain 和安装/升级/回退验收。
+也不替代原生启动、环境变量凭据读取和安装/升级/回退验收。
 旧草稿和资产不得原地重签或覆盖，修复须走新提交和未占用版本的新候选。
 
 macOS 安装脚本只接受本地 archive 与 checksum 文件路径，不执行 `curl | bash`：
