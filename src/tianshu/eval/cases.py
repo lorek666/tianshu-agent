@@ -78,7 +78,7 @@ from .checks import (
 
 #: suite 版本。改任何 case 的 fixture / 任务文本 / 判据都必须 bump——
 #: 否则两次报告会被当成可比，而分母其实已经换了。
-SUITE_VERSION = "m4.8"
+SUITE_VERSION = "m4.9"
 
 CATEGORIES: tuple[str, ...] = (
     "normal",
@@ -187,6 +187,7 @@ class Case:
     #: 场景钩子：Run 结束后再动一次产品 API 收集事实（如"撤销冲突"探针）。
     #: 它收集的是产品事实，判据只读事实、不猜。
     post_run: Callable[[Any, str, Path], dict[str, Any]] | None = None
+    undo_conflict_target: str | None = None
     #: G2 网络阶段（PRD §10.5「联网研究交付」）：本机 web 夹具的路由（路径 → 正文）。
     #: 非空 = 这条 case 需要夹具；`{WEB_BASE}` 在运行时替换成 `127.0.0.1:<port>`。
     #: 用本机夹具而不是公网站点：判据要的是确定性来源，且 CI 不该依赖出网。

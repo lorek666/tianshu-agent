@@ -20,12 +20,21 @@
 
 from __future__ import annotations
 
+import errno
+import json
 from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from tianshu.eval import SUITE_VERSION, build_report, compare_reports, fixture_digest
+from tianshu.eval import (
+    SUITE_VERSION,
+    build_report,
+    compare_reports,
+    fixture_digest,
+    runner,
+)
 from tianshu.eval.cases import CASE_BY_ID, Case
 from tianshu.eval.checks import (
     KIND_COMPLETION,
@@ -50,7 +59,11 @@ from tianshu.eval.checks import (
     safety_violations,
 )
 from tianshu.eval.runner import run_suite
+from tianshu.eval.tasks import REAL_USER_TASK_BY_ID, undo_conflict_checks
+from tianshu.events import EventLog
 from tianshu.model import ModelResponse, ScriptedModel, ToolCall
+from tianshu.recovery import RecoveryReport
+from tianshu.snapshot import SnapshotStore, UndoReport
 
 # ---------------------------------------------------------------- 形状构造
 
@@ -428,7 +441,7 @@ def test_fixture_digest_changes_when_a_check_kind_changes():
 def test_previous_suite_version_is_not_comparable():
     """新报告不能拿旧版报告当基线（Mission 拒绝证据口径变了）。"""
     current = {"schema": "tianshu.eval.v1", "suite_version": SUITE_VERSION, "repeat": 3}
-    assert SUITE_VERSION == "m4.8"
+    assert SUITE_VERSION == "m4.9"
     previous = {**current, "suite_version": "m4.7"}
     comparison = compare_reports(previous, current)
     assert comparison["comparable"] is False
@@ -535,4 +548,371 @@ def _event(kind: str, payload: dict, seq: int = 1):
         payload_hash="",
         parent_seq=None,
         idem_key=None,
+    )
+
+
+# ---------------------------------------------------------------- RU-C3 两阶段取证
+
+
+@pytest.fixture
+def c3_case():
+    return REAL_USER_TASK_BY_ID["RU-C3"].to_case()
+
+
+def _c3_suite(case, tmp_path, script=None, *, repeat=1):
+    return run_suite(
+        (case,),
+        model_for=lambda _: ScriptedModel(list(case.script if script is None else script)),
+        workdir=tmp_path / "eval",
+        repeat=repeat,
+        keep=True,
+    )
+
+
+def _c3_run(case, tmp_path, script=None):
+    return _c3_suite(case, tmp_path, script).observations[0]
+
+
+def test_c3_without_target_write_never_touches_conflict_fixture(
+    c3_case, tmp_path, monkeypatch,
+):
+    calls = []
+    undo = SnapshotStore.undo
+
+    def record(self, *args, **kwargs):
+        calls.append(args[0])
+        return undo(self, *args, **kwargs)
+
+    monkeypatch.setattr(SnapshotStore, "undo", record)
+    obs = _c3_run(
+        c3_case, tmp_path,
+        [ModelResponse(finish_reason="end_turn", content="未修改")],
+    )
+    assert not calls
+    assert obs.files["notes.md"] == obs.fixture["notes.md"]
+    assert obs.valid and obs.error is None
+    checks = evaluate_checks(obs, c3_case.checks)
+    assert not safety_violations(checks)
+    assert completion_failures(checks)
+
+
+def test_c3_agent_bytes_are_observed_before_fixture_edit(c3_case, tmp_path):
+    suite = _c3_suite(c3_case, tmp_path, repeat=3)
+    obs = suite.observations[0]
+    assert obs.valid and obs.error is None
+    assert obs.files["notes.md"] == "Agent 写入的内容\n".encode()
+    assert not safety_violations(evaluate_checks(obs, c3_case.checks))
+    serialized = json.dumps(build_report(suite, (c3_case,)))
+    assert "用户原始内容" not in serialized
+    assert "Agent 写入的内容" not in serialized
+
+
+def test_c3_agent_capture_failure_prevents_fixture_actions(c3_case, tmp_path, monkeypatch):
+    calls = []
+    undo = SnapshotStore.undo
+
+    def record(self, *args, **kwargs):
+        calls.append(args[0])
+        return undo(self, *args, **kwargs)
+
+    def unavailable(*_args, **_kwargs):
+        raise OSError(errno.EIO, "test evidence read fault")
+
+    monkeypatch.setattr(SnapshotStore, "undo", record)
+    monkeypatch.setattr(runner, "replay", unavailable)
+    obs = _c3_run(c3_case, tmp_path)
+    assert not obs.valid and "OSError" in obs.invalid_reason
+    assert not calls
+    assert obs.files["notes.md"] == "Agent 写入的内容\n".encode()
+
+
+def test_c3_failed_manual_edit_is_not_counted_as_an_edit(c3_case, tmp_path, monkeypatch):
+    calls = []
+    undo = SnapshotStore.undo
+
+    def record(self, *args, **kwargs):
+        calls.append(args[0])
+        return undo(self, *args, **kwargs)
+
+    write_bytes = Path.write_bytes
+    edited = "用户后来手动改的内容（撤销不得覆盖）\n".encode()
+
+    def fail_edit(self, data):
+        if data == edited:
+            raise OSError(errno.EIO, "private manual edit fault")
+        return write_bytes(self, data)
+
+    monkeypatch.setattr(SnapshotStore, "undo", record)
+    monkeypatch.setattr(Path, "write_bytes", fail_edit)
+    obs = _c3_run(c3_case, tmp_path)
+    assert not obs.valid and "OSError" in obs.invalid_reason
+    assert obs.post_run["manual_edits"] == 0
+    assert obs.post_run["preflights"] == 0
+    assert not calls
+    assert obs.files["notes.md"] == "Agent 写入的内容\n".encode()
+
+
+def test_c3_unrelated_refusal_does_not_prove_target_conflict(c3_case, tmp_path, monkeypatch):
+    def unrelated(*_args, **_kwargs):
+        return UndoReport(ok=False, problems=["unrelated refusal"])
+
+    monkeypatch.setattr(SnapshotStore, "undo", unrelated)
+    obs = _c3_run(c3_case, tmp_path)
+    assert obs.valid
+    assert completion_failures(evaluate_checks(obs, c3_case.checks))
+
+
+def test_c3_entering_write_callback_is_unsafe_even_if_bytes_match(
+    c3_case, tmp_path, monkeypatch,
+):
+    def write_path(self, run_id, ws, *, guard, apply):
+        guard()
+        change = self.load(run_id)[0]
+        apply(change, (ws.root / change.path).read_bytes())
+        pytest.fail("the evaluation write callback should stop the undo")
+
+    monkeypatch.setattr(SnapshotStore, "undo", write_path)
+    obs = _c3_run(c3_case, tmp_path)
+    assert obs.valid and obs.post_run["after_bytes"] == obs.post_run["user_bytes"]
+    assert obs.post_run["callbacks"] == 1
+    assert [c.check_id for c in safety_violations(evaluate_checks(obs, c3_case.checks))] == [
+        "ru_c3.undo_no_write_v2"
+    ]
+
+
+@pytest.mark.parametrize("io_error", [False, True])
+def test_c3_distinguishes_missing_request_from_request_read_error(
+    c3_case, tmp_path, monkeypatch, io_error,
+):
+    collect = runner._collect_request_facts
+
+    def evidence_read(dispatcher, events, **kwargs):
+        def get_request(_request_id):
+            if io_error:
+                raise OSError(errno.EIO, "fixture request read failure")
+            return None
+
+        with monkeypatch.context() as patch:
+            patch.setattr(dispatcher, "get_request", get_request)
+            return collect(dispatcher, events, **kwargs)
+
+    monkeypatch.setattr(runner, "_collect_request_facts", evidence_read)
+    obs = _c3_run(c3_case, tmp_path)
+    assert obs.files["notes.md"] == "Agent 写入的内容\n".encode()
+    assert not obs.post_run.get("manual_edits")
+    if io_error:
+        assert not obs.valid and "OSError" in obs.invalid_reason
+    else:
+        assert obs.valid and obs.request_fact_errors
+        assert safety_violations(evaluate_checks(obs, c3_case.checks))
+
+
+def test_c3_write_callback_remains_unsafe_when_postflight_read_fails(
+    c3_case, tmp_path, monkeypatch,
+):
+    def write_path(self, run_id, ws, *, guard, apply):
+        change = self.load(run_id)[0]
+        target = ws.root / change.path
+        try:
+            apply(change, target.read_bytes())
+        finally:
+            read_bytes = type(target).read_bytes
+
+            def observation_fault(path):
+                if path == target:
+                    raise OSError(errno.EIO, "private fixture bytes")
+                return read_bytes(path)
+
+            monkeypatch.setattr(type(target), "read_bytes", observation_fault)
+
+    monkeypatch.setattr(SnapshotStore, "undo", write_path)
+    suite = _c3_suite(c3_case, tmp_path, repeat=3)
+    obs = suite.observations[0]
+    report = build_report(suite, (c3_case,))
+    assert obs.post_run["callbacks"] == 1
+    assert obs.valid and report["verdict"] == "unsafe"
+    assert [v["check_id"] for v in report["safety_gate"]["violations"]] == [
+        "ru_c3.undo_no_write_v2"
+    ] * 3
+    assert "private fixture bytes" not in json.dumps(report)
+
+
+def test_c3_unexpected_preflight_exception_is_reported_without_private_text(
+    c3_case, tmp_path, monkeypatch,
+):
+    def unavailable(*_args, **_kwargs):
+        raise RuntimeError("private fixture bytes and arbitrary exception text")
+
+    monkeypatch.setattr(SnapshotStore, "undo", unavailable)
+    suite = _c3_suite(c3_case, tmp_path, repeat=3)
+    report = build_report(suite, (c3_case,))
+    assert suite.observations[0].valid
+    assert "RuntimeError" in suite.observations[0].error
+    assert report["verdict"] == "unsafe"
+    assert "private fixture bytes" not in json.dumps(report)
+    assert "arbitrary exception text" not in json.dumps(report)
+
+
+@pytest.mark.parametrize("source", ["error", "replay", "invalid", "checker"])
+def test_c3_report_never_exports_private_exception_or_fixture_text(
+    c3_case, tmp_path, source,
+):
+    private = "private fixture bytes and arbitrary exception text"
+    suite = _c3_suite(c3_case, tmp_path, repeat=3)
+    if source == "error":
+        suite.observations = [replace(obs, error=private) for obs in suite.observations]
+    elif source == "replay":
+        suite.observations = [
+            replace(obs, replay_report=replace(obs.replay_report, ok=False, problems=[private]))
+            for obs in suite.observations
+        ]
+    elif source == "invalid":
+        suite.observations = [
+            replace(obs, invalid_reason=f"取证失败：{private}") for obs in suite.observations
+        ]
+    elif source == "checker":
+
+        def explode(_obs):
+            raise RuntimeError(private)
+
+        c3_case = replace(c3_case, checks=tuple(
+            Check(check.check_id, check.safety, check.metric, explode)
+            if check.check_id == "ru_c3.agent_evidence_v2" else check
+            for check in c3_case.checks
+        ))
+    report = build_report(suite, (c3_case,))
+    assert private not in json.dumps(report)
+    if source == "checker":
+        assert "RuntimeError" in json.dumps(report)
+
+
+@pytest.mark.parametrize("fault", ["duplicate", "unknown"])
+def test_c3_report_redacts_request_identifiers_from_effect_failures(
+    c3_case, tmp_path, fault,
+):
+    suite = _c3_suite(c3_case, tmp_path, repeat=3)
+    if fault == "duplicate":
+        observations = []
+        for obs in suite.observations:
+            result = obs.events_of("tool.result")[0]
+            duplicate = _event(
+                "tool.result", dict(result.payload), seq=obs.events[-1].seq + 1,
+            )
+            observations.append(replace(obs, events=[*obs.events, duplicate]))
+        suite = replace(suite, observations=observations)
+        private = result.payload["call_id"]
+    else:
+        private = "private-request-detail"
+        suite = replace(suite, observations=[
+            replace(
+                obs,
+                recovery_report=RecoveryReport(run_id=obs.run_id, unresolved=[private]),
+            )
+            for obs in suite.observations
+        ])
+    report = build_report(suite, (c3_case,))
+    serialized = json.dumps(report, ensure_ascii=False)
+    assert private not in serialized
+    assert "详情已脱敏" in serialized
+
+
+@pytest.mark.parametrize("nonhuman", [False, True])
+def test_c3_other_approved_write_uses_its_own_human_decision(
+    c3_case, tmp_path, monkeypatch, nonhuman,
+):
+    case = replace(c3_case, fixture={**c3_case.fixture, "other.md": "原文\n"})
+    other = ModelResponse(finish_reason="tool_use", tool_calls=[
+        ToolCall("edit_other", "modify_text", {"path": "other.md", "content": "补充\n"}),
+    ])
+    read_run = EventLog.read_run
+
+    def observed_events(self, *args, **kwargs):
+        events = read_run(self, *args, **kwargs)
+        other_approval = next((event.payload["approval_id"] for event in events
+                               if event.type == "approval.requested" and any(
+                                   resource.endswith("other.md")
+                                   for resource in event.payload["resources"])), None)
+        return [replace(event, actor_kind="core") if (
+            event.type == "approval.decided" and other_approval is not None
+            and event.payload["approval_id"] == other_approval
+        ) else event for event in events]
+
+    if nonhuman:
+        monkeypatch.setattr(EventLog, "read_run", observed_events)
+    obs = _c3_run(case, tmp_path, [*case.script[:-1], other, case.script[-1]])
+    assert obs.valid and obs.error is None
+    assert obs.files["other.md"] == "补充\n".encode()
+    assert len(obs.receipts_on("notes.md")) == len(obs.receipts_on("other.md")) == 1
+    violations = safety_violations(evaluate_checks(obs, case.checks))
+    assert [v.check_id for v in violations] == (["ru_c3.agent_evidence_v2"] if nonhuman else [])
+    assert obs.post_run["preflights"] == (0 if nonhuman else 1)
+
+
+def test_c3_known_missing_product_request_survives_later_request_read_fault(
+    c3_case, tmp_path, monkeypatch,
+):
+    case = replace(c3_case, fixture={**c3_case.fixture, "other.md": "原文\n"})
+    other = ModelResponse(finish_reason="tool_use", tool_calls=[
+        ToolCall("edit_other", "modify_text", {"path": "other.md", "content": "补充\n"}),
+    ])
+    collect = runner._collect_request_facts
+
+    def partial_evidence(dispatcher, events, **kwargs):
+        requests = sorted(e.payload["request_id"] for e in events
+                          if e.type == "approval.requested")
+        assert len(requests) == 2
+
+        def read_request(request_id):
+            if request_id == requests[0]:
+                return None
+            raise OSError(errno.EIO, "confidential fixture path")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(dispatcher, "get_request", read_request)
+            return collect(dispatcher, events, **kwargs)
+
+    monkeypatch.setattr(runner, "_collect_request_facts", partial_evidence)
+    obs = _c3_run(case, tmp_path, [*case.script[:-1], other, case.script[-1]])
+    assert obs.valid and obs.request_fact_errors
+    assert not obs.post_run.get("manual_edits")
+    assert [v.check_id for v in safety_violations(evaluate_checks(obs, case.checks))] == [
+        "ru_c3.agent_evidence_v2"
+    ]
+
+
+@pytest.mark.parametrize("helper", [
+    "_c3_digest",
+    "_c3_after_state",
+    "_c3_approvals",
+    "_c3_agent_evidence",
+    "_C3UnexpectedWrite",
+    "undo_conflict_probe",
+    "undo_conflict_checks",
+])
+def test_c3_fixture_digest_covers_each_two_phase_helper(c3_case, monkeypatch, helper):
+    from tianshu.eval import tasks as tasks_mod
+
+    before = fixture_digest(c3_case)
+    monkeypatch.setattr(tasks_mod, helper, lambda *_args, **_kwargs: None)
+    assert fixture_digest(c3_case) != before, helper
+
+
+def test_c3_fixture_digest_covers_target_and_expected_bytes(c3_case):
+    assert fixture_digest(c3_case) != fixture_digest(
+        replace(c3_case, undo_conflict_target="other.md")
+    )
+    changed_expected = tuple(
+        replace(check, fn=lambda obs: (False, "changed"))
+        if check.check_id == "ru_c3.agent_target_v2" else check
+        for check in c3_case.checks
+    )
+    assert fixture_digest(c3_case) != fixture_digest(
+        replace(c3_case, checks=changed_expected)
+    )
+    changed_checks = (
+        *undo_conflict_checks("notes.md", b"different expected bytes"),
+        *c3_case.checks[4:],
+    )
+    assert fixture_digest(c3_case) != fixture_digest(
+        replace(c3_case, checks=changed_checks)
     )

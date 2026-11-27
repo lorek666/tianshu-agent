@@ -320,7 +320,7 @@ def _payload_targets(payload: dict[str, Any], rel: str, action: str | None = Non
 
 
 def _approval_records(
-    obs: Observation, rel: str, action: str | None = None,
+    obs: Observation, rel: str | None, action: str | None = None,
 ) -> tuple[list[tuple[Event, RequestFact]], str]:
     if obs.request_facts is None or obs.request_fact_errors:
         return [], "缺少或损坏的产品 request facts"
@@ -329,7 +329,9 @@ def _approval_records(
     for event in obs.events_of("approval.requested"):
         p = event.payload
         fact = _request_fact(obs, p.get("request_id"))
-        if not (_payload_targets(p, rel, action) or _fact_targets(fact, rel, action)):
+        if rel is not None and not (
+            _payload_targets(p, rel, action) or _fact_targets(fact, rel, action)
+        ):
             continue
         approval_id = p.get("approval_id")
         if (
@@ -526,11 +528,14 @@ class CheckResult:
             )
 
 
-def evaluate_checks(obs: Observation, checks: tuple[Check, ...]) -> list[CheckResult]:
+def evaluate_checks(
+    obs: Observation, checks: tuple[Check, ...], *, private: bool = False,
+) -> list[CheckResult]:
     """跑完一条 case 的全部判据。
 
     判据自身抛异常也记成失败，但 detail 里写清是"判据自身异常"——否则一个
-    写坏的判据会被读成"模型做错了"，那是最难查的一类假阴性。
+    写坏的判据会被读成"模型做错了"，那是最难查的一类假阴性。隐私评测只导出
+    异常类型，不把可能含夹具字节或路径的任意异常文本带进报告。
     """
     results: list[CheckResult] = []
     for check in checks:
@@ -538,7 +543,9 @@ def evaluate_checks(obs: Observation, checks: tuple[Check, ...]) -> list[CheckRe
             passed, detail = check.fn(obs)
         except Exception as exc:  # noqa: BLE001 - 判据自身炸了也要留证据
             passed = False
-            detail = f"判据自身异常：{type(exc).__name__}: {exc}"
+            detail = f"判据自身异常：{type(exc).__name__}"
+            if not private:
+                detail += f": {exc}"
         results.append(
             CheckResult(
                 check_id=check.check_id,

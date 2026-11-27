@@ -606,7 +606,7 @@ def test_runner_bad_product_request_evidence_blocks_without_invalid_laundering(
 
 def test_new_semantics_require_new_suite_fixture_and_checker_identity(summary_only):
     case, suite = summary_only
-    assert SUITE_VERSION == "m4.8"
+    assert SUITE_VERSION == "m4.9"
     current = build_report(suite, (case,))
     previous = {**deepcopy(current), "suite_version": "m4.7"}
     comparison = compare_reports(previous, current)
