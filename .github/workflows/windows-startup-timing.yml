@@ -1,0 +1,59 @@
+name: Windows startup timing
+
+on:
+  push:
+    branches: [codex/windows-startup-timing]
+
+permissions:
+  contents: read
+
+jobs:
+  diagnostic:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      FROZEN_SHA: ab25ea2222b9cc20572f88d5ee13a6c283e6095d
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: probe
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.FROZEN_SHA }}
+          path: frozen
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: frozen/uv.lock
+      - name: Check source identity and run the original smoke test
+        shell: bash
+        working-directory: frozen
+        env:
+          PYTEST_ADDOPTS: ""
+          CI_SHARD_INDEX: "3"
+          TIANSHU_SLO_DIAGNOSTICS_DIR: ${{ runner.temp }}/startup-diagnostic/slo
+          TIANSHU_STARTUP_TIMING_DIR: ${{ runner.temp }}/startup-diagnostic/timings
+          WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$FROZEN_SHA"
+          test "$(git -C ../probe rev-parse HEAD)" = "$WORKFLOW_SHA"
+          mkdir -p "$(dirname "$TIANSHU_SLO_DIAGNOSTICS_DIR")"
+          printf 'workflow_sha=%s\nfrozen_checkout=%s\nrun_id=%s\nrun_attempt=%s\n' \
+            "$WORKFLOW_SHA" "$FROZEN_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
+            | tee "$(dirname "$TIANSHU_SLO_DIAGNOSTICS_DIR")/identity.txt"
+          uv python install 3.12
+          uv lock --check
+          uv sync --frozen
+          export PYTHONPATH="$(cygpath -w ../probe/scripts/startup_timing)"
+          uv run --frozen python scripts/pytest_with_stacks.py -o addopts="" -vv -rs \
+            --tb=short --stack-timeout=60 -p pytest_startup_timing \
+            tests/test_slo_and_soak.py::test_measure_slo_smoke_and_run_soak_real_subprocesses
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: startup-timing-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/startup-diagnostic
+          if-no-files-found: error
