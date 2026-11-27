@@ -307,12 +307,13 @@ def test_concurrent_approval_consumes_once(env, tmp_path):
         t.join(timeout=15)
 
     assert not errors, errors
+    assert len(results) == 2
     applied = [
         r for r in results
         if getattr(r, "effect_state", "none_applied") == "applied"
     ]
-    assert len(applied) == 1, f"只能执行一次，实际：{results}"
-    assert len(results) == 2
+    assert applied
+    assert all(result == applied[0] for result in applied), results
 
     rows = env.log.conn.execute(
         "SELECT * FROM dispatches WHERE run_id=? AND call_id=?",
@@ -324,6 +325,9 @@ def test_concurrent_approval_consumes_once(env, tmp_path):
 
     intents = [e for e in env.log.read_run(run.run_id) if e.type == "tool.intent"]
     assert len(intents) == 1, "同一 call_id 不能出现两份 intent"
+    assert len([
+        e for e in env.log.read_run(run.run_id) if e.type == "execution.started"
+    ]) == 1, "同一 call_id 只能实际执行一次"
 
 
 # ---------------------------------------------------------------- 3. 撤销
