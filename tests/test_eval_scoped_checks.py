@@ -62,6 +62,7 @@ from tianshu.eval.runner import run_suite
 from tianshu.eval.tasks import REAL_USER_TASK_BY_ID, undo_conflict_checks
 from tianshu.events import EventLog
 from tianshu.model import ModelResponse, ScriptedModel, ToolCall
+from tianshu.recovery import RecoveryReport
 from tianshu.snapshot import SnapshotStore, UndoReport
 
 # ---------------------------------------------------------------- 形状构造
@@ -783,6 +784,36 @@ def test_c3_report_never_exports_private_exception_or_fixture_text(
     assert private not in json.dumps(report)
     if source == "checker":
         assert "RuntimeError" in json.dumps(report)
+
+
+@pytest.mark.parametrize("fault", ["duplicate", "unknown"])
+def test_c3_report_redacts_request_identifiers_from_effect_failures(
+    c3_case, tmp_path, fault,
+):
+    suite = _c3_suite(c3_case, tmp_path, repeat=3)
+    if fault == "duplicate":
+        observations = []
+        for obs in suite.observations:
+            result = obs.events_of("tool.result")[0]
+            duplicate = _event(
+                "tool.result", dict(result.payload), seq=obs.events[-1].seq + 1,
+            )
+            observations.append(replace(obs, events=[*obs.events, duplicate]))
+        suite = replace(suite, observations=observations)
+        private = result.payload["call_id"]
+    else:
+        private = "private-request-detail"
+        suite = replace(suite, observations=[
+            replace(
+                obs,
+                recovery_report=RecoveryReport(run_id=obs.run_id, unresolved=[private]),
+            )
+            for obs in suite.observations
+        ])
+    report = build_report(suite, (c3_case,))
+    serialized = json.dumps(report, ensure_ascii=False)
+    assert private not in serialized
+    assert "详情已脱敏" in serialized
 
 
 @pytest.mark.parametrize("nonhuman", [False, True])

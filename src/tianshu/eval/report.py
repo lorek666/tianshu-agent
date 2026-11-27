@@ -369,6 +369,10 @@ def _private_detail(result: Any) -> str:
         return "回放通过" if result.passed else "回放失败（问题详情已脱敏）"
     if result.check_id == "harness.no_error":
         return "评测器无异常" if result.passed else "评测器异常（详情已脱敏）"
+    if result.check_id == "effect.no_duplicates":
+        return "未发现重复副作用" if result.passed else "存在重复副作用（标识详情已脱敏）"
+    if result.check_id == "effect.no_unknown":
+        return "未发现效果未知" if result.passed else "存在效果未知（请求详情已脱敏）"
     return result.detail
 
 
