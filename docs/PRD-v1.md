@@ -1136,7 +1136,7 @@ D1 接上排队面、D2 接上收尾：spawn 在父账户 `subtasks` 维度真�
 | **F8** | 任务与运行 | Task/Run 分离、状态机、**作业表**（`job_id, state, lease, heartbeat, timeout, cancel, output_path`）。租约需 PID 存活校验 | OpenHands `conversation_lease.py` |
 | **F9a** | 模型准入 | CapabilityProfile 登记、必需能力缺失即拒绝、schema/上下文核验、有界重试（默认 3 次 attempt） | PRD v1 |
 | **F11** | 产物存储与可回滚工作区 | 内容寻址 `{artifacts_root}/blobs/<sha256>`，状态只存 ref；**首次写入前取写前副本（preimage）**，按 Run 生成 manifest（变更路径 + 前后哈希 + 重命名/删除记录），reflink/COW 优先、不支持则复制 + 内容去重。保留策略见 §8.4 | Deep Agents `_blob_offload.py` |
-| **F12** | 凭据 | 按 `(provider, capability_class)` 分域，API Key 只从启动环境变量读取；非敏感模型设置保存在 JSON 文本。密钥不进 prompt、配置、事件日志或 RPC 响应，错误与 `repr()` 脱敏。Keychain 已按维护者要求停用，不迁移或删除旧系统凭据；历史事件只读兼容与当前配置迁移见[文本配置与环境变量凭据](credential-env-contract.md)。环境变量不是 OS 安全存储，执行子进程仍须使用最小环境。 | 维护者决策（2026-11-22） |
+| **F12** | 凭据 | 按 `(provider, capability_class)` 分域，API Key 只从启动环境变量读取；非敏感模型设置保存在 JSON 文本。密钥不进 prompt、配置、事件日志或 RPC 响应，错误与 `repr()` 脱敏。迁移实施前，macOS 仍使用既有的 Keychain 后端。目标版本停用 Keychain，保留旧系统凭据和绑定历史。迁移规则见[文本配置与环境变量凭据](credential-env-contract.md)。环境变量不是 OS 安全存储，执行子进程仍须使用最小环境。 | 维护者决策（2026-11-22） |
 | **F13** | 成本可见 | 每次调用回 `{provider, model, units, unit_price_ver, cost}`，UI 实时累计展示。**用户自己出钱，必须让他知道烧了多少** | 由 D4 决定 |
 
 ### P1（v1.1）
