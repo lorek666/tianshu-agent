@@ -503,6 +503,7 @@ class Dispatcher(
             raise DispatchError("args 与 request.args_hash 不符（请求被改过）")
 
         isolation: dict[str, Any] | None = None
+        execution_subject_digest: str | None = None
         command: dict[str, Any] | None = None
         try:
             auth = self._authority(request, claim, args=args)
@@ -523,7 +524,9 @@ class Dispatcher(
                 pass
             else:
                 if request.action == ACTION_EXEC:
-                    isolation = self._precheck_exec(request, args, target.path)
+                    isolation, execution_subject_digest = self._precheck_exec(
+                        request, args, target.path,
+                    )
                     # 与真正 spawn 使用同一份已校验 argv 和解析后的 cwd；后端取
                     # 当前实际装配，而不是请求字符串或 capability 声明另造来源。
                     command = {
@@ -612,7 +615,8 @@ class Dispatcher(
                 event=DISPATCH_REJECTED,
             )
 
-        if self._consents is not None and isinstance(target, _FileTarget):
+        if (self._consents is not None and isinstance(target, _FileTarget)
+                and execution_subject_digest is None):
             try:
                 consent_id = self._consents.select(request, args=args)
             except ConsentError as exc:
@@ -645,6 +649,14 @@ class Dispatcher(
             self._approvals.expire(approval.approval_id)
             approval = None
 
+        if approval is not None and command is not None:
+            from .execution_admission import command_approval_matches, find_command_approval
+
+            recorded = find_command_approval(self._log, request.run_id, approval.approval_id)
+            if not command_approval_matches(recorded, command["backend"], execution_subject_digest):
+                self._approvals.supersede(approval.approval_id, reason="execution_subject_changed")
+                approval = None
+
         if approval is None:
             if request.tool_id == SUBMIT_TOOL:
                 fields = json.dumps(args["fields"], ensure_ascii=False)
@@ -656,7 +668,8 @@ class Dispatcher(
                 if config is not None and config.url:
                     decision = replace(decision, reason=f"{decision.reason} · 端点：{config.url}")
             approval = self._approvals.request(
-                request, decision, isolation=isolation, command=command
+                request, decision, isolation=isolation, command=command,
+                execution_subject_digest=execution_subject_digest,
             )
 
         state = STATE_WAITING if approval.state == "pending" else STATE_ADMITTED
@@ -840,6 +853,7 @@ class Dispatcher(
                 auth = self._authority(request, claim, args=args)
                 target = self._resolve_target(request, auth)
                 self._check_run_execution(request, target)
+                execution_subject_digest = None
                 if (
                     not isinstance(
                         target,
@@ -852,7 +866,9 @@ class Dispatcher(
                     )
                     and request.action == ACTION_EXEC
                 ):
-                    self._precheck_exec(request, args, target.path)
+                    _, execution_subject_digest = self._precheck_exec(
+                        request, args, target.path, measure_job=False,
+                    )
 
                 if isinstance(target, _MemoryTarget):
                     self._check_memory_preconditions(request, target, args)
@@ -871,7 +887,8 @@ class Dispatcher(
                         raise DispatchDenied(reason, "dispatch.stale_precondition")
 
                 approval_id, grant_id = self._consume_authority(
-                    request, auth, stored, target=target, args=args
+                    request, auth, stored, target=target, args=args,
+                    execution_subject_digest=execution_subject_digest,
                 )
                 dispatch_id = self._dispatch_id(request)
 

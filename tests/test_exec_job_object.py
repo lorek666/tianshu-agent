@@ -86,8 +86,9 @@ class FakeNative:
         assert size == 128
         return 0 if self.failure == "allocate" else HIGH_ATTRIBUTES
 
-    def heap_free(self, memory: int) -> None:
+    def heap_free(self, memory: int) -> bool:
         self.freed_attributes.append(memory)
+        return self.failure != "heap_free"
 
     def update_attributes(self, memory: int, attribute: int, value: int, size: int) -> bool:
         if attribute == job.PROC_THREAD_ATTRIBUTE_JOB_LIST:
@@ -158,6 +159,10 @@ class FakeNative:
         self.active = 0
         return True
 
+    def process_identity(self, process: int) -> tuple[int, int]:
+        assert process == HIGH_PROCESS
+        return 4242, 0x100012345678
+
     def exit_code(self, process: int) -> int | None:
         assert process == HIGH_PROCESS
         if self.failure == "exit_code":
@@ -209,6 +214,177 @@ def fake_windows(monkeypatch):
 def _create(api: FakeNative, tmp_path: Path, **kwargs):
     argv = kwargs.pop("argv", [sys.executable, "-c", "pass"])
     return job.create_managed_process(argv, cwd=tmp_path, env={}, **kwargs)
+
+
+@pytest.mark.parametrize("interrupt", ["cancel", "claim_lost", "fenced"])
+def test_dispatch_stops_job_on_inflight_run_control(
+    tmp_path, monkeypatch, fake_windows, interrupt,
+):
+    from test_isolation_gate import _exec_request, _make_env, _policy
+
+    from tianshu import isolation
+    from tianshu.execution_admission import PreparedExecution
+    from tianshu.permissions import HumanIdentity
+
+    backend = job.WindowsJobObjectExecBackend()
+    measured = isolation.IsolationFinding("process_tree", "enforced", "measured")
+    monkeypatch.setattr(isolation, "_probe_process_tree", lambda *_a: measured)
+    monkeypatch.setattr(PreparedExecution, "_probe_detached_descendant", lambda self: measured)
+    env = _make_env(tmp_path, exec_backend=backend)
+    try:
+        task, run, claim = env.new_run(exec_policy=_policy(env.ws))
+        args = {"argv": [sys.executable, "-c", "pass"]}
+        decision = env.dispatcher.prepare(
+            _exec_request(env, run, claim, args=args, task=task), claim, args=args,
+        )
+        assert decision.is_waiting, decision
+        env.approvals.decide(
+            decision.approval_id, decision="approved", actor=HumanIdentity.local_cli(),
+        )
+        fake_windows.active = 2
+        fake_windows.terminate_active = 0
+        fake_windows.exit_code_value = job.STILL_ACTIVE
+        interrupted = False
+        now = [0.0]
+        monkeypatch.setattr(job, "time", SimpleNamespace(monotonic=lambda: now[0]))
+
+        def wait(handle, milliseconds):
+            nonlocal interrupted
+            assert handle == HIGH_PROCESS
+            if milliseconds == 0:
+                return job.WAIT_TIMEOUT
+            if not interrupted:
+                if interrupt == "cancel":
+                    assert env.tasks.request_cancel(run.run_id).control_requested == "cancel"
+                elif interrupt == "claim_lost":
+                    env.claims.cancel(claim.job_id, reason="claim lost during execution")
+                else:
+                    # Public goal revisions wait for the execution guard. Exercise the
+                    # real fence transition here without going through that outer lock.
+                    with env.log.transaction() as tx:
+                        env.tasks._fence_run(tx, run.run_id, int(time.time() * 1000),
+                                             reason="test in-flight fence")
+                interrupted = True
+                now[0] += 0.1
+                return job.WAIT_TIMEOUT
+            # If cancellation isn't checked, simulate the leader finishing on its own.
+            fake_windows.exit_code_value = 0
+            return job.WAIT_OBJECT_0
+
+        fake_windows.wait = wait
+        result = env.dispatcher.dispatch(decision.request_id, claim)
+
+        assert interrupted
+        assert fake_windows.exit_code_value == job.STILL_ACTIVE
+        assert fake_windows.terminated == [HIGH_JOB]
+        assert result.status == "failed" and result.effect_state == "applied", result
+        assert result.output["interrupted"] is True
+        assert not result.output["timed_out"]
+        history = env.log.read_run(run.run_id)
+        if interrupt == "fenced":
+            assert env.tasks.get_run(run.run_id).state == "fenced"
+            assert next(e.seq for e in history if e.type == "run.fenced") < next(
+                e.seq for e in history if e.type == "execution.ended"
+            )
+        assert [e.payload["process_tree"] for e in history if e.type == "execution.ended"] == [
+            "exited",
+        ]
+    finally:
+        env.log.close()
+
+
+@pytest.mark.parametrize(
+    "failure,authority_write_fails", [("query", False), ("resume", False), ("query", True)],
+)
+def test_unknown_job_completion_blocks_command_and_write_in_workspace(
+    tmp_path, monkeypatch, fake_windows, failure, authority_write_fails,
+):
+    from dataclasses import replace
+
+    from test_isolation_gate import _exec_request, _make_env, _policy
+
+    from tianshu import authority, isolation
+    from tianshu.dispatcher import Dispatcher, build_request
+    from tianshu.exec_backends import exec_backend
+    from tianshu.execution_admission import PreparedExecution, assert_no_unresolved_executions
+    from tianshu.permissions import HumanIdentity, PolicyEngine
+
+    backend = job.WindowsJobObjectExecBackend()
+    measured = isolation.IsolationFinding("process_tree", "enforced", "measured")
+    monkeypatch.setattr(isolation, "_probe_process_tree", lambda *_a: measured)
+    monkeypatch.setattr(PreparedExecution, "_probe_detached_descendant", lambda self: measured)
+    env = _make_env(tmp_path, exec_backend=backend)
+    try:
+        task, run, claim = env.new_run(exec_policy=_policy(env.ws))
+        args = {"argv": [sys.executable, "-c", "pass"]}
+        decision = env.dispatcher.prepare(
+            _exec_request(env, run, claim, args=args, task=task), claim, args=args,
+        )
+        assert decision.is_waiting, decision
+        env.approvals.decide(
+            decision.approval_id, decision="approved", actor=HumanIdentity.local_cli(),
+        )
+        fake_windows.active = 1
+        fake_windows.failure = failure
+        if failure == "resume":
+            # The process was suspended, but its thread handle failed to close.
+            fake_windows.close_failure.add(HIGH_THREAD)
+        if authority_write_fails:
+            def fail_registration(*_args, **_kwargs):
+                raise authority.AuthorityWriteFailed("injected authority write failure")
+
+            monkeypatch.setattr(authority, "register_blocked", fail_registration)
+        result = env.dispatcher.dispatch(decision.request_id, claim)
+        assert result.status == "failed" and result.effect_state == "unknown"
+        history = env.log.read_run(run.run_id)
+        ended = [e.payload for e in history if e.type == "execution.ended"]
+        assert len(ended) == 1 and ended[0]["process_tree"] == "unknown"
+        if failure == "query":
+            assert ended[0]["birth_identity"] == f"windows-filetime:{0x100012345678}"
+        assert result.output["descendants_may_survive"] is True
+        assert len([e for e in history if e.type == "recovery.blocked"]) == 1
+        local = Dispatcher(
+            env.log, env.tasks, env.leases, PolicyEngine(), env.approvals,
+            grants=env.grants, claims=env.claims, snapshots=env.snapshots,
+            data_root=env.data, exec_backend=exec_backend("local"),
+        )
+        for tool, target, inputs in (
+            ("run_command", env.ws, args),
+            ("create_report", env.ws / "report.md", {"name": "report.md", "content": "blocked"}),
+        ):
+            request = build_request(task=task, run=run, claim=claim, call_id=f"next-{tool}",
+                                    tool_id=tool, target=target, args=inputs)
+            refused = local.prepare(request, claim, args=inputs)
+            assert refused.is_rejected and refused.rule_id == "dispatch.workspace_blocked"
+
+        if authority_write_fails:
+            assert "跨数据根阻断未生效" in result.output["error"]
+        else:
+            other_root = tmp_path / "other-data"
+            other_root.mkdir()
+            other = replace(_make_env(other_root), ws=env.ws)
+            try:
+                other_task, other_run, other_claim = other.new_run(exec_policy=None)
+                name = "cross-db.md"
+                inputs = {"name": name, "content": "blocked"}
+                request = build_request(
+                    task=other_task, run=other_run, claim=other_claim, call_id="cross-db",
+                    tool_id="create_report", target=env.ws / name, args=inputs,
+                )
+                refused = other.dispatcher.prepare(request, other_claim, args=inputs)
+                assert refused.is_rejected and refused.rule_id == "dispatch.workspace_blocked"
+                assert not (env.ws / name).exists()
+            finally:
+                other.log.close()
+
+        env.log.append(run.run_id, "execution.ended", {
+            **ended[0], "subject_digest": "a" * 64, "process_tree": "exited",
+            "pid": 9823, "birth_identity": "different",
+        }, task_id=task.task_id)
+        with pytest.raises(PolicyUnsupported, match="整树退出"):
+            assert_no_unresolved_executions(env.log, workspace=env.ws)
+    finally:
+        env.log.close()
 
 
 def test_non_windows_is_unavailable_without_loading_native_api(monkeypatch, tmp_path):
@@ -288,9 +464,9 @@ def test_every_native_api_has_explicit_argtypes_and_restype():
         }
     )
     job._declare_prototypes(kernel32)
-    for function in vars(kernel32).values():
+    for name, function in vars(kernel32).items():
         assert isinstance(function.argtypes, list)
-        assert function.restype is not None
+        assert (function.restype is None) == (name == "DeleteProcThreadAttributeList")
     assert kernel32.CreateJobObjectW.restype is job._HANDLE
     assert kernel32.GetProcessHeap.restype is job._HANDLE
     assert kernel32.GetProcessId.restype is job._DWORD
@@ -374,7 +550,9 @@ def test_native_process_info_preserves_ctypes_handle_fields():
     ) == (HIGH_PROCESS, HIGH_THREAD, 4242, 4343)
 
 
-@pytest.mark.parametrize("failure", ["job", "limits", "allocate", "initialize", "update"])
+@pytest.mark.parametrize(
+    "failure", ["job", "limits", "allocate", "initialize", "update", "heap_free"],
+)
 def test_availability_faults_fail_closed_before_process_creation(monkeypatch, failure):
     api = FakeNative()
     api.failure = failure
@@ -708,7 +886,7 @@ def test_close_keeps_permanently_failed_handle_for_bounded_retry(fake_windows):
 
     fake_windows.close_failure.clear()
     fake_windows.close_handle = original
-    assert controller.close(0) == job.TREE_UNKNOWN
+    assert controller.close(0) == job.TREE_EXITED
     assert controller._closed
     assert controller._open_handles == set()
     assert fake_windows.closed.count(HIGH_PROCESS) == job._HANDLE_CLOSE_ATTEMPTS + 1
@@ -745,6 +923,26 @@ def test_signaled_leader_may_have_exit_code_259(fake_windows, tmp_path):
         assert process.returncode == 259
     finally:
         process.close(0)
+
+
+def test_poll_rechecks_exit_code_if_leader_signals_after_still_active(fake_windows, tmp_path):
+    codes = iter((job.STILL_ACTIVE, 7))
+    fake_windows.exit_code = lambda _handle: next(codes)
+    process = _create(fake_windows, tmp_path)
+    try:
+        assert process.poll() == 7
+        assert process.returncode == 7
+    finally:
+        process.close(0)
+
+
+def test_close_retry_rechecks_tree_before_confirming_exit(fake_windows, tmp_path):
+    process = _create(fake_windows, tmp_path)
+    fake_windows.close_failure.add(HIGH_JOB)
+    assert process.close(0) == job.TREE_UNKNOWN
+    assert process.controller.query() == job.TREE_UNKNOWN
+    fake_windows.close_failure.clear()
+    assert process.close(0) == job.TREE_EXITED
 
 
 def test_wait_timeout_does_not_terminate_job_or_fake_returncode(
@@ -1104,6 +1302,26 @@ def test_windows_probe_requires_confirmed_tree_and_exact_handle_cleanup(
     assert closed == [0]
 
 
+def test_probe_allows_the_exact_interpreter_it_starts(tmp_path):
+    from tianshu import isolation
+    from tianshu.exec import ExecResult
+    from tianshu.execpolicy import check_spawn
+
+    executable = str(tmp_path / "base-python.exe")
+
+    def spawn(argv, *, cwd, env, policy):
+        assert argv[0] == executable
+        check_spawn(policy, argv, cwd, env)
+        return ExecResult(0, None, False, "READY=1", "", False, None, None, 0)
+
+    result, parsed, problem = isolation._run_child(
+        SimpleNamespace(spawn=spawn), "pass", [], workspace=tmp_path,
+        timeout_ms=1000, env={}, env_allowlist=(), executable=executable,
+    )
+    assert result is not None, problem
+    assert parsed == {"READY": "1"}
+
+
 @pytest.mark.parametrize(
     ("wait_mode", "may_survive", "identity_valid", "close_ok", "expected"),
     [
@@ -1218,6 +1436,66 @@ native_only = pytest.mark.skipif(os.name != "nt", reason="需要真实 Windows J
 _NATIVE_PYTHON = getattr(sys, "_base_executable", sys.executable)
 
 
+# The control process is outside the Job. Load the test-only isolation hook
+# explicitly because -I -S ignores PYTHONPATH and skips automatic startup hooks.
+_JOB_CONTROL_HELPER = """\
+import json, os, runpy, sys, time
+from contextlib import closing
+from pathlib import Path
+
+source, startup, database, control, run_id, job_id, *paths = sys.argv[1:]
+sys.path.insert(0, source)
+expected_lock = Path(os.environ["TIANSHU_TEST_LOCK_ROOT"])
+expected_registry = Path(os.environ["PYTEST_TIANSHU_REGISTRY_HOME"])
+runpy.run_path(startup)
+from tianshu import maintenance, restore_registry
+from tianshu.events import EventLog
+from tianshu.jobs import JobStore
+from tianshu.tasks import TaskStore
+assert maintenance._lock_root() == expected_lock
+assert restore_registry._user_home() == expected_registry
+
+deadline = time.monotonic() + 25
+while True:
+    try:
+        records = [json.loads(Path(path).read_bytes()) for path in paths]
+    except (OSError, ValueError):
+        if time.monotonic() >= deadline:
+            raise
+        time.sleep(0.02)
+    else:
+        break
+with closing(EventLog(Path(database))) as log:
+    claims = JobStore(log)
+    tasks = TaskStore(log)
+    if control == "cancel":
+        assert tasks.request_cancel(run_id).control_requested == "cancel"
+    elif control == "claim_lost":
+        assert claims.cancel(job_id, reason="test claim lost").state == "cancelled"
+    else:
+        assert control == "fenced"
+        # Public goal revisions wait for the execution guard; drive the same
+        # fence transition directly to exercise a fence while the Job is live.
+        with log.transaction() as tx:
+            tasks._fence_run(tx, run_id, int(time.time() * 1000), reason="test in-flight fence")
+        assert tasks.get_run(run_id).state == "fenced"
+"""
+
+
+def _existing_process_records(paths: list[Path]) -> list[dict[str, int]]:
+    records = []
+    for path in paths:
+        try:
+            record = json.loads(path.read_bytes())
+        except (OSError, ValueError):
+            continue
+        if isinstance(record, dict) and all(
+            type(record.get(key)) is int and record[key] > 0 for key in ("pid", "birth")
+        ):
+            records.append(record)
+    return records
+
+
 @native_only
 class TestWindowsNative:
     @pytest.mark.parametrize(
@@ -1296,20 +1574,79 @@ class TestWindowsNative:
             assert process.close() == job.TREE_EXITED
         assert all(stream.closed for stream in (process.stdin, process.stdout, process.stderr))
 
-    def test_child_and_grandchild_timeout_kills_real_tree(self, tmp_path):
-        identities = self._spawn_tree(tmp_path, detached=False)
-        process = identities.pop("process")
+    @pytest.mark.parametrize("control", ["cancel", "claim_lost", "fenced"])
+    def test_dispatch_job_run_control_clears_native_tree(self, tmp_path, control):
+        from test_isolation_gate import _exec_request, _make_env, _policy
+
+        from tianshu.permissions import HumanIdentity
+
+        env = _make_env(tmp_path, exec_backend=job.WindowsJobObjectExecBackend())
+        helper = None
         records = []
+        record_paths = [env.ws / f"tree{index}.json" for index in range(3)]
         try:
-            records = _wait_records([identities[f"level{index}"] for index in range(3)])
-            with pytest.raises(subprocess.TimeoutExpired):
-                process.wait(0.2)
-            assert process.controller.state == job.TREE_RUNNING
-            assert process.controller.stop(10) == job.TREE_EXITED
+            scripts = self._tree_scripts(env.ws, detached=True, generations=3)
+            args = {"argv": [_NATIVE_PYTHON, "-I", "-S", str(scripts[0])]}
+            task, run, claim = env.new_run(exec_policy=_policy(
+                env.ws, argv_allowlist=(_NATIVE_PYTHON,), timeout_ms=30_000,
+            ))
+            decision = env.dispatcher.prepare(
+                _exec_request(env, run, claim, args=args, task=task), claim, args=args,
+            )
+            assert decision.is_waiting, decision
+            env.approvals.decide(
+                decision.approval_id, decision="approved", actor=HumanIdentity.local_cli(),
+            )
+            control_script = tmp_path / "request-control.py"
+            control_script.write_bytes(_JOB_CONTROL_HELPER.encode("utf-8"))
+            helper = subprocess.Popen(
+                [_NATIVE_PYTHON, "-I", "-S", str(control_script),
+                 str(Path(job.__file__).resolve().parents[1]),
+                 str(Path(__file__).resolve().parent / "_startup" / "sitecustomize.py"),
+                 str(tmp_path / "events.db"), control, run.run_id, claim.job_id,
+                 *map(str, record_paths)],
+                cwd=tmp_path, stderr=subprocess.PIPE,
+            )
+            result = env.dispatcher.dispatch(decision.request_id, claim)
+            _, stderr = helper.communicate(timeout=10)
+            assert helper.returncode == 0, stderr.decode(errors="replace")
+            records = _wait_records(record_paths)
+            assert result.status == "failed" and result.effect_state == "applied", result
+            assert result.output["interrupted"] and not result.output["timed_out"]
+            history = env.log.read_run(run.run_id)
+            ended = [row for row in history if row.type == "execution.ended"]
+            assert [row.payload["process_tree"] for row in ended] == ["exited"]
+            if control == "fenced":
+                assert next(row.seq for row in history if row.type == "run.fenced") < ended[0].seq
             _assert_dead(records)
         finally:
-            process.close()
-            _cleanup_records(records)
+            if helper is not None:
+                if helper.poll() is None:
+                    helper.kill()
+                    helper.wait(10)
+                helper.stderr.close()
+            _cleanup_records(records or _existing_process_records(record_paths))
+            env.log.close()
+
+    def test_child_and_grandchild_timeout_kills_real_tree(self, tmp_path):
+        scripts = self._tree_scripts(tmp_path, detached=False, generations=3)
+        paths = [tmp_path / f"tree{index}.json" for index in range(3)]
+        backend = job.WindowsJobObjectExecBackend()
+        policy = ExecPolicy(
+            argv_allowlist=(_NATIVE_PYTHON,), cwd_roots=(tmp_path,),
+            timeout_ms=8000, max_output_bytes=4096,
+        )
+        try:
+            result = backend.spawn(
+                [_NATIVE_PYTHON, "-I", "-S", str(scripts[0])], cwd=tmp_path,
+                env={}, policy=policy,
+            )
+            records = _existing_process_records(paths)
+            assert len(records) == len(paths), "子进程树未在超时前全部启动"
+            assert result.timed_out and not result.descendants_may_survive, result
+            _assert_dead(records)
+        finally:
+            _cleanup_records(_existing_process_records(paths))
 
     def test_multigeneration_detached_processes_stay_in_job(self, tmp_path):
         identities = self._spawn_tree(tmp_path, detached=True, generations=4)

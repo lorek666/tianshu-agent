@@ -29,7 +29,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from . import toolschema
+from . import authority, toolschema
+from ._tasks_types import CONTROL_REQUESTS, RUN_RUNNING
 from .browser_forms import FIELD_LIMIT, FORM_LIMIT, SUBMIT_TOOL
 from .crashpoint import failpoint
 from .disk_admission import DiskAdmissionError
@@ -60,7 +61,8 @@ from .isolation import (
     probe_backend_cached,
     require_isolation_requirements,
 )
-from .jobs import JobClaim
+from .jobs import JobClaim, JobLost
+from .leases import LeaseLost
 from .permissions import (
     ACTION_CREATE,
     ACTION_DELEGATE,
@@ -204,6 +206,7 @@ class ToolContext:
     blob_dir: Path | None = None
     #: 已确认验收命令的执行前绑定核验；只减少执行资格，不授予权限。
     execution_check: Callable[[], None] | None = None
+    execution_should_stop: Callable[[], bool] | None = None
 
     @property
     def io(self) -> FileBackend:
@@ -587,7 +590,11 @@ def _run_command(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
     # 凭据/密钥不进入子进程：只传策略白名单里的变量（后端内部还会再过滤一次）。
     child_env = filtered_env(policy, dict(os.environ))
 
+    from .exec_job_object import JobObjectError
+
     isolation_report = None
+    unknown_job_tree = False
+    authority_error = None
     try:
         # 顺序必须与 `exec.spawn()` 内部逐条一致，否则同一条非法请求会因
         # "预检走 tools、执行走 spawn" 得到不同规则 id：
@@ -620,7 +627,12 @@ def _run_command(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
                 backend, workspace=target, data_root=ctx.data_root
             )
         if policy.isolation_requires:
-            from .execution_admission import PreparedExecution, assert_no_unresolved_executions
+            from .execution_admission import (
+                PreparedExecution,
+                assert_no_unresolved_executions,
+                command_approval_matches,
+                find_command_approval,
+            )
 
             request = None if ctx.admitted is None else ctx.admitted.request
             task_id = "" if request is None else request.task_id
@@ -628,8 +640,28 @@ def _run_command(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
                 assert_no_unresolved_executions(ctx.log, workspace=target, run_id=ctx.run_id)
 
             def record_execution(event_type, payload):
-                if ctx.log is not None:
-                    ctx.log.append(ctx.run_id, event_type, payload, task_id=task_id)
+                nonlocal unknown_job_tree, authority_error
+                if ctx.log is None:
+                    return
+                block = (capabilities.name == "windows_job_object" and ctx.admitted is not None
+                         and event_type == "execution.ended"
+                         and payload["process_tree"] == "unknown")
+                workspace_root = ctx.admitted.workspace_root if block else None
+                reason = "Windows Job 进程树退出尚未确认"
+                with ctx.log.transaction() as tx:
+                    tx.append(ctx.run_id, event_type, payload, task_id=task_id)
+                    if workspace_root is not None:
+                        tx.append(ctx.run_id, "recovery.blocked", {
+                            "workspace": workspace_root,
+                            "call_ids": [ctx.call_id],
+                            "reason": reason,
+                        }, task_id=task_id, actor_kind="system")
+                if workspace_root is not None:
+                    unknown_job_tree = True
+                    try:
+                        authority.register_blocked(workspace_root, run_id=ctx.run_id, reason=reason)
+                    except (authority.AuthorityWriteFailed, authority.AuthorityUnavailable) as exc:
+                        authority_error = f"跨数据根阻断未生效（{exc}）"
 
             with PreparedExecution(
                 backend, kind="command", task_id=task_id, run_id=ctx.run_id,
@@ -638,9 +670,23 @@ def _run_command(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
             ) as execution:
                 execution.admit(policy.isolation_requires)
                 isolation_report = execution.report
+                if capabilities.name == "windows_job_object" and ctx.admitted is not None:
+                    approval = find_command_approval(
+                        ctx.log, ctx.run_id, ctx.admitted.approval_id or "",
+                    )
+                    if not command_approval_matches(
+                        approval, capabilities.name, execution.subject.digest(),
+                    ):
+                        raise PolicyDenied(
+                            "审批绑定的执行对象已改变", rule_id="c4.approval_mismatch",
+                        )
                 if ctx.execution_check is not None:
                     ctx.execution_check()
-                result = execution.run(blob_dir=ctx.blob_dir, pty=pty)
+                result = execution.run(
+                    blob_dir=ctx.blob_dir, pty=pty,
+                    should_stop=(ctx.execution_should_stop
+                                 if capabilities.name == "windows_job_object" else None),
+                )
         else:
             if ctx.execution_check is not None:
                 ctx.execution_check()
@@ -676,11 +722,21 @@ def _run_command(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
                 "isolation": isolation_view(backend),
             },
         )
+    except JobObjectError as exc:
+        if not unknown_job_tree:
+            raise
+        # The unknown lifecycle and its workspace block already committed together.
+        return ToolResult("failed", "unknown", {
+            "error": f"{exc}；{authority_error}" if authority_error else str(exc),
+            "descendants_may_survive": True,
+            "isolation": isolation_view(backend, isolation_report),
+        })
 
     unknown_tree = bool(policy.isolation_requires and result.descendants_may_survive)
     status = (
-        "succeeded" if result.exit_code == 0 and not result.timed_out and not unknown_tree
-        else "failed"
+        "succeeded" if result.exit_code == 0 and not (
+            result.timed_out or result.interrupted or unknown_tree
+        ) else "failed"
     )
     digest = _sha(
         "\x00".join(
@@ -704,6 +760,9 @@ def _run_command(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
             "exit_code": result.exit_code,
             "signal": result.signal,
             "timed_out": result.timed_out,
+            **({"interrupted": True} if result.interrupted else {}),
+            **({"descendants_may_survive": True} if unknown_job_tree else {}),
+            **({"error": authority_error} if authority_error else {}),
             "duration_ms": result.duration_ms,
             "stdout": result.stdout,
             "stderr": result.stderr,
@@ -1625,6 +1684,16 @@ class FileExecutor:
 
     # ---- 执行 ----
 
+    def _execution_should_stop(self, admitted: AdmittedCall) -> bool:
+        request = admitted.request
+        try:
+            run = self._tasks.assert_current(request.run_id)
+            self._claims.assert_claim(admitted.claim)
+            self._leases.assert_covers(admitted.resources, request.run_id)
+        except (RunFenced, JobLost, LeaseLost):
+            return True
+        return run.state != RUN_RUNNING or run.control_requested in CONTROL_REQUESTS
+
     def execute(
         self, admitted: AdmittedCall, permit: ExecutionPermit | None
     ) -> ToolResult:
@@ -1672,6 +1741,7 @@ class FileExecutor:
             blob_dir=self._snapshots.blob_dir if self._snapshots is not None else None,
             execution_check=(None if self._execution_check is None else
                              lambda: self._execution_check(admitted)),
+            execution_should_stop=lambda: self._execution_should_stop(admitted),
         )
 
         # 复审 中-1：贴着落盘的最后一次阻断核验。派发 phase-1 查过一遍，但查完

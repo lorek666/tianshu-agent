@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from . import exec_job_object
-from .events import canonical_bytes, sha256_hex
+from .events import Event, canonical_bytes, sha256_hex
 from .exec import (
     BOUNDARY_ENFORCED,
     BOUNDARY_NOT_ENFORCED,
@@ -39,6 +39,7 @@ from .exec import (
 from .execpolicy import (
     ISOLATION_BOUNDARIES,
     ExecPolicy,
+    PolicyDenied,
     PolicyUnsupported,
     check_spawn,
 )
@@ -163,6 +164,23 @@ def build_execution_subject(
     return ExecutionSubjectV1(subject_id=_digest(facts), **facts)
 
 
+
+def find_command_approval(log, run_id: str, approval_id: str) -> Mapping[str, Any]:
+    """读取最初向人展示的执行对象，不能用重新预检得到的视图替换。"""
+    return next((event.payload for event in log.read_run(
+        run_id, event_types=("approval.requested",),
+    ) if event.payload["approval_id"] == approval_id), {})
+
+
+def command_approval_matches(approval, backend: str, subject_digest: str | None) -> bool:
+    approved_backend = approval.get("command", {}).get("backend")
+    approved_digest = approval.get("execution_subject_digest")
+    if (backend == "windows_job_object" or approved_backend == "windows_job_object"
+            or approved_digest is not None):
+        return bool(subject_digest and approved_backend == backend
+                    and approved_digest == subject_digest)
+    return True
+
 def _backend_identity(backend: Any) -> str:
     return f"{_RUNTIME_ID}:{type(backend).__module__}.{type(backend).__qualname__}:{id(backend)}"
 
@@ -272,10 +290,23 @@ def reconcile_lifecycle(
     return {**lifecycle, "process_tree": state}
 
 
+def execution_terminal_matches(admitted: Event, terminal: Event) -> bool:
+    """执行端和 Goal 协调端使用同一套终态身份核对。"""
+    lifecycle, payload = admitted.payload["lifecycle"], terminal.payload
+    return (
+        terminal.run_id == admitted.run_id
+        and terminal.task_id == admitted.task_id
+        and payload["lifecycle_id"] == lifecycle["lifecycle_id"]
+        and payload["subject_digest"] == _digest(admitted.payload["subject"])
+        and payload["pid"] == lifecycle["pid"]
+        and payload["birth_identity"] == lifecycle["birth_identity"]
+    )
+
+
 def assert_no_unresolved_executions(log, *, workspace, run_id: str = "") -> None:
     """历史未知调用/进程树阻止同资源自动重启；完成事实也不能清洗未知调用。"""
     root = Path(workspace).resolve()
-    sessions: dict[str, dict[str, Any]] = {}
+    sessions: dict[tuple[str, str], dict[str, Any]] = {}
     for event in log.read_types(("execution.admitted", "execution.ended")):
         payload = event.payload
         if event.type == "execution.admitted":
@@ -283,7 +314,7 @@ def assert_no_unresolved_executions(log, *, workspace, run_id: str = "") -> None
             other = Path(admission["workspace"]).resolve()
             if not (root.is_relative_to(other) or other.is_relative_to(root)):
                 continue
-            identity = admission["lifecycle_id"]
+            identity = (event.run_id, admission["lifecycle_id"])
             row = sessions.setdefault(identity, {"pending": set(), "ended": False})
             row.update(lifecycle=payload["lifecycle"], event=event)
             if payload["stage"] == "call_pending":
@@ -291,10 +322,10 @@ def assert_no_unresolved_executions(log, *, workspace, run_id: str = "") -> None
             elif payload["stage"] == "call_completed":
                 row["pending"].discard(payload.get("request_id", 0))
         else:
-            row = sessions.get(payload["lifecycle_id"])
-            if row is not None:
+            row = sessions.get((event.run_id, payload["lifecycle_id"]))
+            if row is not None and execution_terminal_matches(row["event"], event):
                 row["ended"] = payload["process_tree"] == "exited"
-    for identity, row in sessions.items():
+    for (_, identity), row in sessions.items():
         if row["pending"]:
             raise PolicyUnsupported(
                 "旧 MCP 调用结果未知，禁止新调用或自动重发",
@@ -306,6 +337,11 @@ def assert_no_unresolved_executions(log, *, workspace, run_id: str = "") -> None
         ):
             continue
         admission = row["event"].payload["admission"]
+        if admission["backend"] == "windows_job_object":
+            raise PolicyUnsupported(
+                "旧 Job 的整树退出不可由 PID 证明，禁止同资源自动启动",
+                backend="execution-recovery", feature="recovery_required",
+            )
         state = reconcile_lifecycle(
             row["lifecycle"],
             process_tree_enforced=(
@@ -532,7 +568,9 @@ class PreparedExecution:
             return "unknown"
         return self._process_tree_state(proc)
 
-    def _collect_process(self, proc, *, policy, blob_dir=None) -> tuple[ExecResult, str | None]:
+    def _collect_process(
+        self, proc, *, policy, blob_dir=None, should_stop=None,
+    ) -> tuple[ExecResult, str | None]:
         if self._job_backend:
             try:
                 result, state = _run_managed_pipes(
@@ -541,6 +579,7 @@ class PreparedExecution:
                     blob_dir=blob_dir,
                     finalize_tree=lambda _timed_out: proc.controller.stop(2),
                     close_stdin=True,
+                    should_stop=should_stop,
                 )
             finally:
                 close_state = proc.close(0)
@@ -914,10 +953,14 @@ class PreparedExecution:
             )
         validate_admission(self.admission, current, self.backend)
 
-    def run(self, *, blob_dir=None, pty=False) -> ExecResult:
+    def run(self, *, blob_dir=None, pty=False, should_stop=None) -> ExecResult:
         self._require_pipes(pty)
+        if should_stop is not None and should_stop():
+            raise PolicyDenied("命令启动前 Run 已停止", rule_id="dispatch.not_running")
         proc = self.open_stdio()
-        result, state = self._collect_process(proc, policy=self.policy, blob_dir=blob_dir)
+        result, state = self._collect_process(
+            proc, policy=self.policy, blob_dir=blob_dir, should_stop=should_stop,
+        )
         self._stop_attempted = True
         if not self._tree_enforced():
             state = "unknown"
@@ -930,11 +973,14 @@ class PreparedExecution:
         self._before_start()
         try:
             self._proc = self._launch_process(self.argv, cwd=self.cwd, env=self.env)
-        except OSError:
-            # Popen did not return a child. This known rejection has no live lifecycle.
+        except (PolicyUnsupported, OSError):
             self._emit_end("exited")
             raise
-        self._birth = process_birth_identity(self._proc.pid)
+        except exec_job_object.JobObjectError:
+            self._emit_end("unknown")
+            raise
+        self._birth = (self._proc.birth_identity() if self._job_backend
+                       else process_birth_identity(self._proc.pid))
         _ACTIVE_LIFECYCLES.add(self.lifecycle_id)
         self.record_stage("started")
         return self._proc

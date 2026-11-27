@@ -241,7 +241,7 @@ def _declare_prototypes(kernel32: ctypes.CDLL) -> None:
             ],
             _BOOL,
         ),
-        "DeleteProcThreadAttributeList": ([_LPVOID], _BOOL),
+        "DeleteProcThreadAttributeList": ([_LPVOID], None),
         "CreateProcessW": (
             [
                 _LPCWSTR,
@@ -345,8 +345,8 @@ class _NativeAPI:
         heap = self.kernel32.GetProcessHeap()
         return self.kernel32.HeapAlloc(heap, 0, size) or 0
 
-    def heap_free(self, memory: int) -> None:
-        self.kernel32.HeapFree(self.kernel32.GetProcessHeap(), 0, memory)
+    def heap_free(self, memory: int) -> bool:
+        return bool(self.kernel32.HeapFree(self.kernel32.GetProcessHeap(), 0, memory))
 
     def initialize_attributes(self, memory: int, count: int, size: int) -> tuple[bool, int]:
         required = ctypes.c_size_t(size)
@@ -490,9 +490,12 @@ def _attribute_list(
                 raise JobObjectError("PROC_THREAD_ATTRIBUTE_HANDLE_LIST 更新失败")
         yield memory
     finally:
-        if initialized:
-            api.delete_attributes(memory)
-        api.heap_free(memory)
+        try:
+            if initialized:
+                api.delete_attributes(memory)
+        finally:
+            if not api.heap_free(memory):
+                raise JobObjectError("属性列表 HeapFree 失败")
 
 
 def _attribute_probe(api) -> bool:
@@ -636,6 +639,7 @@ class JobController:
         self._close_failed = False
         self._open_handles = {job, process, thread}
         self._state: TreeState = TREE_RUNNING
+        self._empty_observed = False
 
     @property
     def state(self) -> TreeState:
@@ -645,6 +649,7 @@ class JobController:
     def mark_unknown(self) -> None:
         if not self._closed:
             self._state = TREE_UNKNOWN
+            self._empty_observed = False
 
     def query(self) -> TreeState:
         if self._closed:
@@ -655,9 +660,10 @@ class JobController:
         try:
             active = self._api.query_job(self._job)
         except (JobObjectError, OSError):
-            self._state = TREE_UNKNOWN
+            self.mark_unknown()
         else:
-            self._state = TREE_EXITED if active == 0 else TREE_RUNNING
+            self._empty_observed = active == 0
+            self._state = TREE_EXITED if self._empty_observed else TREE_RUNNING
         return self._state
 
     def _query_until(self, timeout: float) -> TreeState:
@@ -699,7 +705,18 @@ class JobController:
         if self._closed:
             return TREE_CLOSED
         state = self._state
-        if state in (TREE_RUNNING, TREE_UNKNOWN) and self._job in self._open_handles:
+        if self._close_failed:
+            if self._job in self._open_handles:
+                # Keep query() fail-closed until the retry, while the original Job
+                # handle still lets us observe and stop the same tree.
+                self._close_failed = False
+                try:
+                    state = self.stop(timeout)
+                finally:
+                    self._close_failed = True
+            elif self._empty_observed:
+                state = TREE_EXITED
+        elif state in (TREE_RUNNING, TREE_UNKNOWN) and self._job in self._open_handles:
             state = self.stop(timeout)
         elif state == TREE_EXITED:
             pass
@@ -757,6 +774,12 @@ class ManagedProcess:
         self._closed = False
         self._close_state: TreeState | None = None
 
+    def birth_identity(self) -> str:
+        pid, birth = self.controller._api.process_identity(self.controller._process)
+        if pid != self.pid or birth <= 0:
+            raise JobObjectError("Windows Job leader HANDLE 身份与启动记录不符")
+        return f"windows-filetime:{birth}"
+
     @property
     def returncode(self) -> int | None:
         """已确认的 leader 退出码；非 None 本身不代表整树已经退出。"""
@@ -769,8 +792,9 @@ class ManagedProcess:
         if code == STILL_ACTIVE:
             result = self.controller._api.wait(self.controller._process, 0)
             if result == WAIT_OBJECT_0:
-                self._returncode = code
-                return code
+                # The leader can exit after the first GetExitCodeProcess.
+                self._returncode = self.controller._api.exit_code(self.controller._process)
+                return self._returncode
             if result == WAIT_TIMEOUT:
                 return None
             raise JobObjectError(f"WaitForSingleObject 返回未知状态 {result:#x}")

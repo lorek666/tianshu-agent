@@ -275,6 +275,7 @@ class ExecResult:
     duration_ms: int
     stderr_merged: bool = False
     descendants_may_survive: bool = False
+    interrupted: bool = False
 
 
 @dataclass(frozen=True)
@@ -436,6 +437,7 @@ def _run_managed_pipes(
     blob_dir: Path | None,
     finalize_tree: Callable[[bool], str | None],
     close_stdin: bool = False,
+    should_stop: Callable[[], bool] | None = None,
 ) -> tuple[ExecResult, str | None]:
     """共享双流收集；后端决定 leader 退出后如何确认并清理整树。"""
     started = time.monotonic()
@@ -443,6 +445,7 @@ def _run_managed_pipes(
     stop_reading = threading.Event()
     threads: list[threading.Thread] = []
     timed_out = False
+    interrupted = False
     failed = False
     try:
         if close_stdin:
@@ -458,16 +461,33 @@ def _run_managed_pipes(
         ):
             thread = _start_pump(pump, stream, collector, stop_reading)
             threads.append(thread)
-        try:
-            proc.wait(timeout=policy.timeout_ms / 1000)
-        except subprocess.TimeoutExpired:
-            timed_out = True
+        if should_stop is None:
+            try:
+                proc.wait(timeout=policy.timeout_ms / 1000)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+        else:
+            deadline = time.monotonic() + policy.timeout_ms / 1000
+            while True:
+                if should_stop():
+                    interrupted = True
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    timed_out = True
+                    break
+                try:
+                    proc.wait(timeout=min(0.1, remaining))
+                except subprocess.TimeoutExpired:
+                    continue
+                interrupted = should_stop()
+                break
     except BaseException:
         failed = True
         raise
     finally:
         try:
-            state = finalize_tree(timed_out or failed)
+            state = finalize_tree(timed_out or interrupted or failed)
         finally:
             stopped = _join_pumps(
                 threads, stop_reading, streams=(proc.stdout, proc.stderr)
@@ -491,6 +511,7 @@ def _run_managed_pipes(
         duration_ms=_elapsed_ms(started),
         stderr_merged=False,
         tree_state=state,
+        interrupted=interrupted,
     )
     return result, state
 
@@ -684,6 +705,7 @@ def _build_result(
     duration_ms: int,
     stderr_merged: bool,
     tree_state: str | None = None,
+    interrupted: bool = False,
 ) -> ExecResult:
     stdout, out_truncated, stdout_ref = out.finish()
     if stderr_merged or err is None:
@@ -717,6 +739,7 @@ def _build_result(
         stderr_ref=stderr_ref,
         duration_ms=duration_ms,
         stderr_merged=stderr_merged,
+        interrupted=interrupted,
         descendants_may_survive=(
             tree_state != "exited" if tree_state is not None
             else timed_out and not tree_killed

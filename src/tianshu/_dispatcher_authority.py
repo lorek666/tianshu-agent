@@ -55,6 +55,7 @@ from .mcp import McpClients
 from .memory_exec import MEMORY_TOOL_IDS, memory_scope_allowed
 from .permissions import (
     ACTION_CREATE,
+    ACTION_EXEC,
     ACTION_OVERWRITE,
     APPROVAL_ACTIONS,
     ActionRequest,
@@ -170,8 +171,9 @@ class _DispatcherAuthorityMixin:
     # ---- 内部：核验 ----
 
     def _precheck_exec(
-        self, request: ActionRequest, args: dict[str, Any], target: Path
-    ) -> dict[str, Any] | None:
+        self, request: ActionRequest, args: dict[str, Any], target: Path,
+        *, measure_job: bool = True,
+    ) -> tuple[dict[str, Any] | None, str | None]:
         """在发起审批**之前**跑一遍 F2 的判定。
 
         两件事必须在审批前知道，否则用户会为一条注定跑不了的命令签字：
@@ -186,7 +188,7 @@ class _DispatcherAuthorityMixin:
         policy = task.exec_policy if task is not None else None
         if policy is None:
             # 没配置策略：交给 classify 报 c4.exec_not_configured。
-            return None
+            return None, None
 
         policy = exec_policy_for_backend(policy, self._exec_backend)
         require_isolation_requirements = (
@@ -194,11 +196,12 @@ class _DispatcherAuthorityMixin:
         )
         argv = args.get("argv")
         try:
+            child_env = filtered_env(policy, dict(os.environ))
             check_spawn(
                 policy,
                 argv,
                 target,
-                filtered_env(policy, dict(os.environ)),
+                child_env,
             )
             if args.get("pty"):
                 if not policy.allow_pty:
@@ -220,6 +223,23 @@ class _DispatcherAuthorityMixin:
                 raise DispatchDenied(
                     f"执行目录不可用：{exc}", "c4.outside_workspace"
                 ) from exc
+            if self._exec_backend.capabilities.name == "windows_job_object":
+                from .execution_admission import PreparedExecution
+
+                if self._data_root is None:
+                    raise PolicyUnsupported(
+                        "Windows Job 审批缺少数据根", backend="windows_job_object",
+                        feature="subject_admission",
+                    )
+                with PreparedExecution(
+                    self._exec_backend, kind="command", task_id=request.task_id,
+                    run_id=request.run_id, argv=argv, cwd=probe_workspace, env=child_env,
+                    policy=policy, workspace=probe_workspace, data_root=self._data_root,
+                ) as execution:
+                    if measure_job:
+                        execution.admit(policy.isolation_requires)
+                    return (isolation_view(self._exec_backend, execution.report),
+                            execution.subject.digest())
             report = require_isolation_requirements(
                 policy,
                 self._exec_backend,
@@ -245,7 +265,11 @@ class _DispatcherAuthorityMixin:
             raise DispatchDenied(
                 f"exec 后端不支持：{exc}", "c4.exec_unsupported"
             ) from exc
-        return isolation_view(self._exec_backend, report)
+        except OSError as exc:
+            raise DispatchDenied(
+                f"执行对象不可用：{exc}", "c4.exec_unsupported",
+            ) from exc
+        return isolation_view(self._exec_backend, report), None
 
     def _verify_verification_command(self, request, args):
         if request.tool_id != "run_command":
@@ -1192,6 +1216,7 @@ class _DispatcherAuthorityMixin:
         *,
         target: _Target,
         args: dict[str, Any],
+        execution_subject_digest: str | None = None,
     ) -> tuple[str | None, str]:
         """消费审批（如果有）并签发+消费一次性 grant。必须在派发事务内调用。"""
         digest = request.digest()
@@ -1203,6 +1228,8 @@ class _DispatcherAuthorityMixin:
             if self._approvals.rejected_for(request) is not None:
                 raise DispatchDenied("具体动作已被人否决", "c4.approval_rejected")
             consent_id = self._consents.selected(request) if self._consents else None
+            if consent_id is not None and execution_subject_digest is not None:
+                raise DispatchDenied("该命令需要绑定执行对象的逐次审批", "c4.no_approval")
             if consent_id is not None:
                 decision = self._policy.classify(
                     request.action, list(request.resources), auth.bindings,
@@ -1252,6 +1279,14 @@ class _DispatcherAuthorityMixin:
                 raise DispatchDenied(
                     "审批已过期（请重新发起）", "c4.approval_expired"
                 )
+            if request.action == ACTION_EXEC and isinstance(target, _FileTarget):
+                from .execution_admission import command_approval_matches, find_command_approval
+
+                recorded = find_command_approval(self._log, request.run_id, approval.approval_id)
+                if not command_approval_matches(
+                    recorded, self._exec_backend.capabilities.name, execution_subject_digest,
+                ):
+                    raise DispatchDenied("审批绑定的执行对象已改变", "c4.approval_mismatch")
             self._approvals.consume(
                 approval.approval_id, action_digest=action, request_digest=digest
             )

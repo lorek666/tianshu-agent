@@ -560,10 +560,11 @@ def _probe_policy(
     *,
     env_allowlist: tuple[str, ...],
     timeout_ms: int,
+    executable: str = sys.executable,
 ) -> ExecPolicy:
     """探针用的最小策略：只允许本解释器、只允许 workspace 作为 cwd。"""
     return ExecPolicy(
-        argv_allowlist=(sys.executable,),
+        argv_allowlist=(executable,),
         cwd_roots=(workspace,),
         env_allowlist=env_allowlist,
         max_output_bytes=64 * 1024,
@@ -597,7 +598,7 @@ def _run_child(
     # workspace, PYTHONPATH or site directories. Business argv is unaffected.
     argv = [executable, "-I", "-S", "-c", script, *[str(arg) for arg in args]]
     policy = _probe_policy(
-        workspace, env_allowlist=env_allowlist, timeout_ms=timeout_ms
+        workspace, env_allowlist=env_allowlist, timeout_ms=timeout_ms, executable=executable,
     )
     try:
         result = backend.spawn(
