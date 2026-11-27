@@ -171,7 +171,7 @@ RunView      {run_id, task_id, state, outcome, effect_state, control_requested,
               goal_revision, lease_epoch, started_at, ended_at,
               n_applied, n_unknown, undoable}
 ApprovalView {approval_id, run_id, task_id, action, resources, reason, rule_id,
-              isolation, state, created_at, expires_at}
+              isolation, command, state, created_at, expires_at}
 EventView    {seq, type, run_id, task_id, ts, actor_kind, payload}
 ```
 
@@ -185,6 +185,15 @@ enforced_boundaries}`，非 exec 动作为 `null`。它是"批不批这条命令
 不是执行后的通知——执行结果里的同一份视图在 `tool.result.output.isolation`。
 映射优先级（contradicted > unverified > 部分边界 > none）见
 `ui/src/lib/humanize.ts::isolationSentence`。
+
+`ApprovalView.command` 是 `run_command` 审批的只读展示详情：
+`{argv: string[], cwd: string, backend: string}`。历史缺字段的命令审批和无需该字段的审批为 `null`。
+argv 来自派发侧已校验的 `args["argv"]`，cwd 来自解析后的实际请求目标，backend
+来自当前装配的 `ExecBackend.capabilities.name`，与隔离视图同源。字段只供审批人
+核对，不替代 `args_hash` / `action_digest`，也不参与授权。审批卡默认展开并逐项
+完整展示（JSON 字符串保留空参数、空白和参数边界），使用等宽纯文本换行，不截断、
+不使用 `innerHTML`。旧命令审批或畸形详情显示无法完整审查的告警，不从 resource
+猜测或拼接命令。规则为 `c4.mcp_call` 的 MCP 审批照常显示调用目标和审批操作。
 
 `RunView.started_at` 是 `run.start` 落库时间（`runs.created_at`），回答的是"这个 Run
 什么时候被要求开始"，**不声称**"第一轮模型调用发生在那一刻"——投影里没有后者这个

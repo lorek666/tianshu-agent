@@ -13,10 +13,11 @@
 详见[实施记录](changelog/2026-11-23-agent-loop-implementation.md)与
 [#227 入队证据](changelog/2026-11-26-pr227-stack-refresh.md)。
 
-**[#228](https://github.com/lorek666/tianshu-agent/pull/228) 候选**补充显式 macOS 单根隔离和
+**[#228](https://github.com/lorek666/tianshu-agent/pull/228) 已合入 `main` 的 `34a6844`**，补充显式 macOS 单根隔离、
 Host 进程身份与收尾验收，并包含 #227 的真实入队回归。
 [#227 单独验证](https://github.com/lorek666/tianshu-agent/actions/runs/45855743069) 的 Windows 重启恢复
-SLO 超阈值，组合候选需通过自己的完整跨平台 CI。详见[本机与独立复审记录](changelog/2026-11-26-pr228-main-refresh.md)。
+SLO 超阈值；后续组合 [PR CI 45858956842](https://github.com/lorek666/tianshu-agent/actions/runs/45858956842)
+与 [main CI 45862348807](https://github.com/lorek666/tianshu-agent/actions/runs/45862348807) 均成功。详见[本机与独立复审记录](changelog/2026-11-26-pr228-main-refresh.md)。
 普通 `local` 默认没有物理隔离，`auto` 不自动启用 `seatbelt_leaf`。
 
 **形态**：M0–M4 是命令行内核；M5 交付 Daemon、Python Host 与 React UI 的三进程闭环；
@@ -30,7 +31,12 @@ R0–R3 是 Tauri 桌面壳与发行构建链。
 | **M3** 可替换 | 第二个 chat provider + 内存文件后端（不提供进程隔离） | ✅ 完成 |
 | **M4** 可评估 | 固定案例套件，`replay` 与 `evaluate` 分离 | ✅ 完成 |
 | **M5** 桌面闭环 | Daemon/Host/UI 三进程打通 + 权限审批 UI | ✅ 完成（PR #49） |
-| **R0–R3（拆分）** | R1 Tauri 薄壳；R2 锁定 Python/UI bundle 与构建；R3 安装/卸载与发行草稿 | 🟡 四目标基线已并入 `main`（PR #170 / #175 / #186）；已接入 `macos-arm64` 单目标手动草稿。合入后正式 workflow 实跑、安装/升级/回退与 G3 候选实测待完成 |
+| **R0–R3（拆分）** | R1 Tauri 薄壳；R2 锁定 Python/UI bundle 与构建；R3 安装/卸载与发行草稿 | 🟡 四目标基线已并入 `main`（PR #170 / #175 / #186）；`e87a38c` 的单目标预览 workflow 已成功生成未公开的 `v0.1.1` prerelease 草稿，但不是当前主干候选。真机安装/升级/回退、候选 SLO、真实模型 UI 与四目标正式发行仍待验收 |
+
+**预览草稿与主干证据**：`e87a38c` 的 [release run 44892061206](https://github.com/lorek666/tianshu-agent/actions/runs/44892061206) 生成未公开的 `v0.1.1` prerelease 草稿，
+含六项资产；`runtime_smoke=pass`、`device_verification=unknown`、`signed=false`。
+历史 `c5fcff0` 的 CI 曾因 Windows 分片超时而取消。后续主干检查见上文和发行对账。该草稿只绑定 `e87a38c`，
+仍需对待发行提交单独验收。详见[发行对账](changelog/2026-11-24-release-status-reconciliation.md)。
 
 W9 网络校验与分页、W14 macOS 和 Linux 子进程沙箱、SLO/Soak 测量工具已随 [PR #196](https://github.com/lorek666/tianshu-agent/pull/196) 合入。首发 `macos-arm64` 限定预览的最终候选 SLO、资源采样和用户设备验收仍待执行；按 [PRD §10.6 / §11.1](PRD-v1.md)，**已取消强制 ≥10h soak，无替代时长**，现有工具/测试/阈值仅为可选、非阻断诊断，长时稳定性未验证。四目标正式发行的长时 Soak 要求不变；Windows 系统凭据后端尚待交付。
 

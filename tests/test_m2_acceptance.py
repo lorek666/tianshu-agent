@@ -10,14 +10,15 @@
 
 第 1、2、3 条用**真子进程**：进程内构造的"重启"共享同一个 pid，而
 `is_live` / `pid_alive` 判的正是 pid，"在同一个进程里模拟重启"证明不了任何事。
-第 5 条用真实短 TTL + 真实阻塞：心跳循环的意义就是"宿主线程卡住时还有别人在跑"，
-把它换成假时钟或假线程，测出来的只是幻觉。
+第 5 条使用真实的阻塞模型调用、后台线程与竞争进程。逐步推进作业时钟，
+使调度间隙不会在读到 deadline 与实际接管之间改变预期。
 """
 
 from __future__ import annotations
 
 import json
 import os
+import queue
 import sqlite3
 import subprocess
 import sys
@@ -295,23 +296,6 @@ def _child(argv, *, model=None, env_extra=None, timeout=180) -> subprocess.Compl
 
 def _cli_args(env: Env) -> list[str]:
     return ["--db", str(env.db), "--data-root", str(env.data)]
-
-
-class _SlowModel:
-    """`complete()` 先睡一会儿再回答——用来造"宿主线程被阻塞"。"""
-
-    def __init__(self, seconds: float) -> None:
-        self._seconds = seconds
-        self.calls = 0
-
-    def capability_profile(self):
-        # F9a 准入要求每个模型如实声明能力（未声明 = 不支持，会被拒绝）。
-        return tool_capable_profile("test-double", type(self).__name__)
-
-    def complete(self, _messages, _tools) -> ModelResponse:
-        self.calls += 1
-        time.sleep(self._seconds)
-        return ModelResponse("end_turn", content="慢慢想好了")
 
 
 def _dead_pid() -> int:
@@ -927,89 +911,100 @@ def _diagnose_worker_failure(test):
     return diagnosed
 
 
-def _steal_attempt(env: Env) -> bool:
-    """从**另一条连接**（相当于另一个进程）试着认领一次：抢得到就是 True。"""
-    log = EventLog(env.db, blob_dir=env.data / "blobs")
-    try:
-        return JobStore(
-            log, identity=ProcessIdentity.mint()
-        ).claim_next() is not None
-    finally:
-        log.close()
+_HEARTBEAT_CONTENDER = """
+import json
+import os
+import sys
+from contextlib import closing
+from pathlib import Path
+
+from tianshu.events import EventLog
+from tianshu.jobs import JobStore
+
+root, now = Path(sys.argv[1]), int(sys.argv[2])
+with closing(EventLog(root / "events.db", data_root=root)) as log:
+    claim = JobStore(log, clock=lambda: now).claim_next()
+    print(json.dumps({"pid": os.getpid(), "epoch": claim.claim_epoch if claim else None}))
+"""
 
 
-class _ProbeModel(_SlowModel):
-    """阻塞期间探一次"别人现在能不能抢走这个作业"，并记下当时的 deadline。"""
+@pytest.mark.parametrize("enabled", [True, False])
+def test_heartbeat_loop_renews_while_the_host_thread_blocks(env, monkeypatch, enabled):
+    """Advance job time beyond the original TTL while the real model call blocks."""
+    start, ttl = 10_000, 400
+    now = start
 
-    def __init__(self, seconds: float, env: Env) -> None:
-        super().__init__(seconds)
-        self._env = env
-        self.probes: list[bool] = []
-        self.deadline_slack: list[int] = []
+    def clock():
+        return now
 
-    def complete(self, messages, tools):  # noqa: ARG002
-        result = super().complete(messages, tools)  # 先阻塞一段，再探
-        log = EventLog(self._env.db, blob_dir=self._env.data / "blobs")
-        try:
-            jobs = JobStore(log, identity=ProcessIdentity.mint()).list_jobs()
-            now = int(time.time() * 1000)
-            if jobs and jobs[-1].deadline_at is not None:
-                self.deadline_slack.append(jobs[-1].deadline_at - now)
-        finally:
-            log.close()
-        self.probes.append(_steal_attempt(self._env))
+    env.stack = build_stack(env.log, data_root=env.data, clock=clock)
+    run_id, _, job_id = env.enqueue(root=env.ws, out="slow.md")
+    requests = queue.Queue()
+    observations = queue.Queue()
+    renewals = []
+    decisions = []
+    model_thread = threading.get_ident()
+    init = worker_module._SideChannel.__init__
+    beat = worker_module._SideChannel.beat
+
+    def side_with_clock(channel, *args, **kwargs):
+        init(channel, *args, **kwargs, clock=clock)
+
+    def step_beat(channel, claim, **kwargs):
+        if requests.get(timeout=30) is None:
+            return False
+        assert threading.get_ident() != model_thread
+        result = beat(channel, claim, **kwargs)
+        current = channel._claims.get(job_id)
+        observations.put((current.claim_epoch, current.deadline_at))
         return result
 
+    monkeypatch.setattr(worker_module._SideChannel, "__init__", side_with_clock)
+    monkeypatch.setattr(worker_module._SideChannel, "beat", step_beat)
 
-def test_heartbeat_loop_renews_while_the_host_thread_blocks(env):
-    """模型调用阻塞超过 TTL 时，心跳线程必须把 owner 保住。
+    class BlockedModel:
+        def capability_profile(self):
+            return tool_capable_profile("test-double", type(self).__name__)
 
-    没有它，任何超过 30 秒的模型请求都会让作业进入"可接管"，而 worker
-    还在正常干活——下一个进程一认领，两边就开始抢同一份游标。
-    这里用真实短 TTL + 真实阻塞来验证，探针走**另一条数据库连接**。
-    """
-    run_id, _, job_id = env.enqueue(root=env.ws, out="slow.md")
-    # TTL 与心跳间隔的比例就是"调度抖动余量"：150/40 只有 3.75 个心跳周期，
-    # Windows runner 上任何一次 ~100ms 的停顿（杀毒扫描、桌面合成、CI agent
-    # 抢占）都会让心跳晚于 TTL，测试就红——那是 runner 的抖动，不是心跳没工作。
-    # 400/40 = 10 个周期，比生产默认（30s TTL / 5s 间隔 = 6 个周期）更保守，
-    # 也仍然满足"阻塞 4×TTL 时没有心跳就一定能被抢走"这个反例。
-    ttl, interval = 400, 40
-    probe = _ProbeModel(ttl / 1000 * 4, env)
+        def complete(self, _messages, _tools) -> ModelResponse:
+            nonlocal now
+            try:
+                assert env.stack.claims.get(job_id).deadline_at == start + ttl
+                if enabled:
+                    for tick in (start + 150, start + 300):
+                        now = tick
+                        requests.put(tick)
+                        renewals.append(observations.get(timeout=30))
+                # Past the initial deadline, before the renewed one. The next
+                # heartbeat waits until the contender has made its decision.
+                now = start + 450
+                child_env = {**os.environ, "PYTHONPATH": SRC}
+                contender = subprocess.run(
+                    [sys.executable, "-c", _HEARTBEAT_CONTENDER, str(env.data), str(now)],
+                    env=child_env, capture_output=True, timeout=30, **CHILD_TEXT,
+                )
+                assert contender.returncode == 0, contender.stderr
+                observed = json.loads(contender.stdout)
+                assert observed["pid"] != os.getpid()
+                decisions.append(observed["epoch"])
+                return ModelResponse("end_turn", content="慢慢想好了")
+            finally:
+                requests.put(None)
 
-    worker = Worker(
-        env.stack, model=probe, ttl_ms=ttl, heartbeat_interval_ms=interval
-    )
-    assert worker.run_once() is True
-    assert probe.probes == [False], (
-        "有心跳时别人不该抢得走"
-        f"（beats={worker.beats}, deadline_slack={probe.deadline_slack},"
-        f" worker.errors={worker.errors}）"
-    )
-    assert worker.beats >= 2, f"心跳次数太少：{worker.beats}"
-    # 心跳必须用**认领时那个 ttl**：把 deadline 续成 30s 的话，"抢不走"是因为
-    # 30 秒太长，而不是因为心跳在工作——那样的断言什么也没测到。
-    assert probe.deadline_slack and probe.deadline_slack[0] <= ttl * 2, (
-        f"心跳没有沿用 ttl={ttl}：deadline 还剩 {probe.deadline_slack}ms"
-    )
-    assert env.stack.tasks.get_run(run_id).state == "succeeded"
-    assert env.stack.claims.get(job_id).state == "done"
-
-    # 反例：关掉心跳，同样的阻塞时长里作业已经可以被别人合法接管
-    run_id2, _, _ = env.enqueue(root=env.ws, out="slow2.md")
-    probe2 = _ProbeModel(ttl / 1000 * 4, env)
-    worker2 = Worker(
-        env.stack, model=probe2, ttl_ms=ttl, heartbeat_interval_ms=None
-    )
-    assert worker2.run_once() is True
-    assert probe2.probes == [True], (
-        "没有心跳就该被抢走——否则这个反例是假的"
-        f"（beats={worker2.beats}, deadline_slack={probe2.deadline_slack},"
-        f" worker.errors={worker2.errors}）"
-    )
-    assert worker2.beats == 0
-    assert env.stack.tasks.get_run(run_id2).state not in ("succeeded",)
-    assert worker2.errors, "被抢走之后必须留下痕迹，不能静默成功"
+    with Worker(env.stack, model=BlockedModel(), ttl_ms=ttl,
+                heartbeat_interval_ms=40 if enabled else None) as worker:
+        assert worker.run_once() is True
+        expected_renewals = [(1, start + 150 + ttl), (1, start + 300 + ttl)] if enabled else []
+        assert renewals == expected_renewals
+        assert decisions == [None if enabled else 2], worker.errors
+        assert worker.beats == (2 if enabled else 0)
+        if enabled:
+            assert not worker.errors
+            assert env.stack.tasks.get_run(run_id).state == "succeeded"
+            assert env.stack.claims.get(job_id).state == "done"
+        else:
+            assert env.stack.tasks.get_run(run_id).state != "succeeded"
+            assert worker.errors, "被抢走之后必须留下痕迹，不能静默成功"
 
 
 @pytest.mark.parametrize("completion", ["finish", "pause"])

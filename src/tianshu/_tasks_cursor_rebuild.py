@@ -130,7 +130,13 @@ class _TaskCursorRebuildMixin:
             "claim_epoch": row["claim_epoch"],
             "updated_at": row["updated_at"],
         }
-        return RunCursor.of(json.loads(row["payload"])), meta
+        from .mcp_results import hydrate_mcp_messages
+
+        cursor = RunCursor.of(json.loads(row["payload"]))
+        cursor.messages = hydrate_mcp_messages(
+            cursor.messages, log=self._log, blob_dir=self._blob_dir,
+        )
+        return cursor, meta
 
     def commit_model_turn(
         self, run_id: str, turn: dict[str, Any], claim: JobClaim

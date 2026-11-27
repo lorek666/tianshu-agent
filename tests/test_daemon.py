@@ -1616,20 +1616,19 @@ def test_state_rpc_survives_adversarial_task_goals(root, start_daemon) -> None:
     EOF 断连（ConnectionClosed"对端在消息结束前关闭"），重试也永远同样失败。
     UI 首屏的 state 永久坏。
     """
-    ws = root / "ws"
-    ws.mkdir()
+    goal = "重写季度报告：" + "这是很长的目标描述文本。" * 8000  # ≈ 313KB
+    # 使用 Daemon 的事件库布局准备任务，让 IPC 验证集中在 state 响应上。
+    log = daemon._open_event_log(root / "events.db", data_root=root)
+    try:
+        tasks = stack_for(log, data_root=root).tasks
+        for _ in range(50):
+            tasks.create_task(goal)
+    finally:
+        log.close()
+
     start_daemon(ScriptedModel([]))
     client = _connect(root)
     try:
-        goal = "重写季度报告：" + "这是很长的目标描述文本。" * 8000  # ≈ 313KB
-        for _ in range(50):
-            client.call(
-                "task.create",
-                {
-                    "goal": goal,
-                    "workspaces": [{"root_path": str(ws), "mode": "writable"}],
-                },
-            )
         state = client.call("state", {}, timeout=20)
         assert state["tasks_truncated"] is True
         assert 0 < len(state["tasks"]) < 50

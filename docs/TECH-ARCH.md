@@ -480,6 +480,8 @@ M3 起一律抛 `ModelError(kind, status_code, retryable)`；主循环原有的
 
 五道版本化契约与十一条红线约束全局。**C1** 模型 I/O，**C2** 工具，**C3** 事件（封闭注册表，写入侧拒未登记类型），**C4** 权限与审批（[封闭规则清单](PRD-v1.md#541-拒绝规则编号payloadrule_id)），**C5** 评测（`SUITE_VERSION = m4.6`）。
 
+C3 的 `approval.requested.command` 是 `run_command` 审批的只读展示投影：派发侧从已校验 args 复制完整 argv、实际 cwd 和后端名，控制面按 approval_id 回读。该对象不参与策略判定、args/action digest 或审批消费；执行侧仍以原请求与 digest 为准。字段只进入 current v1；冻结的 legacy v0 保持原形状并拒绝该字段。历史缺字段不得自动批准或猜测命令。
+
 ```
 src/tianshu/          Python 源码 + eval/ 子包（下面只按职责分组；数量以当前目录实测为准）
 ├─ 事实源与契约 ─────────────────────────────────────────────

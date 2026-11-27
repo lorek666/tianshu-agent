@@ -218,7 +218,8 @@ v0 的构造规则（`event_schema.LEGACY_SCHEMAS`，对每个类型）：
   键时按读取侧默认空元组处理**，语义 = 一个都不许；不是"按 v0 读"（`detect_version`
   只管写入校验，读取不按当前 schema 重校验，旧行版本仍是 v1）。
 - **`tool.intent.args` / `tool.result.output` 仍是开放对象**：MCP 的参数与结果形状由
-  各 server 的 schema 决定，不在 C3 复制第二份契约。
+  各 server 的 schema 决定，不在 C3 复制第二份契约。新的 MCP 正文引用格式
+  见[持久化契约](mcp-result-persistence-contract.md)；它约束工具输出使用的内部表示，不关闭 C3 的通用 output 对象。
 
 ## 6.3 模型缓存用量的逐事件 v2（2026-11-20 决定；2026-11-21 本地实现候选）
 
