@@ -118,7 +118,7 @@ from ._tasks_types import (
     truncate_utf8,
 )
 from .disk_admission import DiskAdmission, DiskAdmissionError
-from .errors import ChatResumeCursorMissing, RunFenced, TianshuError
+from .errors import RunFenced, TianshuError
 from .events import EventLog
 from .execpolicy import ExecPolicy
 from .guard import assert_paths_not_blocked
@@ -1135,20 +1135,13 @@ class TaskStore(_SubtaskStoreMixin, _TaskCursorRebuildMixin):
             effect_state = run.effect_state or "none_applied"
             job = self._claims.job_for_run(run_id) if self._claims is not None else None
             parked = job is not None and job.state == JOB_WAITING
-            if (run.state in safe or parked) and not self._conn.execute(
-                "SELECT 1 FROM run_cursors WHERE run_id=?", (run_id,),
-            ).fetchone():
-                if run.effect_state == "unknown":
-                    raise ChatResumeCursorMissing(effect_state=None)
-                try:
-                    self.check_chat_resume_without_cursor(run_id)
-                except ChatResumeCursorMissing as exc:
-                    if exc.effect_state is None:
-                        raise
-                    effect_state = exc.effect_state
-                    if parked and run.state not in safe:
-                        # 作业已挂起，没有驱动者会确认请求；在同一事务内核对作业和副作用。
-                        safe = (*safe, run.state)
+            if run.state in safe or parked:
+                effect_state = self._cancel_effect_state(
+                    run_id, run, self._log.read_run(run_id),
+                )
+                if parked and run.state not in safe:
+                    # 作业已挂起，没有驱动者会确认请求；在同一事务内核对作业和副作用。
+                    safe = (*safe, run.state)
             immediate = run.state in safe
             marks = ",".join("?" * len(safe))
             tx.append(
@@ -1255,20 +1248,10 @@ class TaskStore(_SubtaskStoreMixin, _TaskCursorRebuildMixin):
                 )
                 return CONTROL_PAUSE
             effect_state = run.effect_state or "none_applied"
-            if action == CONTROL_CANCEL and not self._conn.execute(
-                "SELECT 1 FROM run_cursors WHERE run_id=?", (run_id,),
-            ).fetchone():
-                # 缺游标时 Run 投影里的 effect_state 可能尚未反映已落库的
-                # Receipt/未知副作用。核对与 run.end 必须同事务，且 unknown
-                # 原样阻断，不能退化成 none_applied。
-                if run.effect_state == "unknown":
-                    raise ChatResumeCursorMissing(effect_state=None)
-                try:
-                    self.check_chat_resume_without_cursor(run_id)
-                except ChatResumeCursorMissing as exc:
-                    if exc.effect_state is None:
-                        raise
-                    effect_state = exc.effect_state
+            if action == CONTROL_CANCEL:
+                effect_state = self._cancel_effect_state(
+                    run_id, run, self._log.read_run(run_id),
+                )
             cur = self._conn.execute(
                 "UPDATE runs SET state=?, control_requested=NULL"
                 " WHERE run_id=? AND state=? AND control_requested=?",

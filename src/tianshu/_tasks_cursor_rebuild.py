@@ -200,6 +200,15 @@ class _TaskCursorRebuildMixin:
                 return None
         return "applied" if applied else "none_applied"
 
+    def _cancel_effect_state(self, run_id: str, run: Run, events: list[Event]) -> str:
+        """游标可由 Responses 事件派生，取消结算只认副作用证据。"""
+        if run.effect_state == "unknown":
+            raise ChatResumeCursorMissing(effect_state=None)
+        effect_state = self._chat_cursor_cancel_effect(run_id, events)
+        if effect_state is None:
+            raise ChatResumeCursorMissing(effect_state=None)
+        return effect_state
+
     def has_unsettled_dispatch(self, run_id: str, events: list[Event]) -> bool:
         """是否存在已落 intent 但尚未结算 tool.result 的副作用派发（#145）。"""
         from .dispatcher import DISPATCH_EXECUTING, DISPATCH_INTENT
