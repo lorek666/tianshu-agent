@@ -522,16 +522,28 @@ def probe_backend(
     root = Path(data_root).resolve()
     ws.mkdir(parents=True, exist_ok=True)
     root.mkdir(parents=True, exist_ok=True)
-    probe_dir = Path(tempfile.mkdtemp(prefix="isolation-probe-", dir=str(root)))
-    try:
-        findings = (
-            _probe_files_authority(backend, ws, probe_dir, timeout_ms),
-            _probe_network(backend, ws, timeout_ms),
-            _probe_credentials(backend, ws, timeout_ms),
-            _probe_process_tree(backend, ws, probe_dir, timeout_ms),
-        )
-    finally:
-        shutil.rmtree(probe_dir, ignore_errors=True)
+    name = _backend_name(backend)
+    if name == "windows_job_object":
+        # This Job profile supplies no OS primitive for these three boundaries.
+        # A failed sample (e.g. missing SYSTEMROOT) cannot prove one in its place.
+        findings = tuple(
+            IsolationFinding(boundary, BOUNDARY_NOT_ENFORCED, "Windows Job 仅约束进程树")
+            for boundary in (
+                ISOLATION_BOUNDARY_FILES, ISOLATION_BOUNDARY_NETWORK,
+                ISOLATION_BOUNDARY_CREDENTIALS,
+            )
+        ) + (_probe_process_tree(backend, ws, root, timeout_ms),)
+    else:
+        probe_dir = Path(tempfile.mkdtemp(prefix="isolation-probe-", dir=str(root)))
+        try:
+            findings = (
+                _probe_files_authority(backend, ws, probe_dir, timeout_ms),
+                _probe_network(backend, ws, timeout_ms),
+                _probe_credentials(backend, ws, timeout_ms),
+                _probe_process_tree(backend, ws, probe_dir, timeout_ms),
+            )
+        finally:
+            shutil.rmtree(probe_dir, ignore_errors=True)
     return IsolationReport(
         backend=_backend_name(backend),
         platform=platform_label(),

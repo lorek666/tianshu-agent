@@ -723,6 +723,25 @@ def test_approval_view_shows_measured_report_when_requirement_passes(
     assert view["level"] == "none"
 
 
+def test_job_evidence_cannot_upgrade_non_tree_boundaries(tmp_path, monkeypatch):
+    from tianshu.exec_job_object import WindowsJobObjectExecBackend
+
+    backend = WindowsJobObjectExecBackend()
+    for suffix, boundary in (
+        ("files_authority", "files_authority"), ("network", "network"),
+        ("credentials", "credentials"), ("process_tree", "process_tree"),
+    ):
+        monkeypatch.setattr(
+            isolation, f"_probe_{suffix}",
+            lambda *args, boundary=boundary: IsolationFinding(boundary, "enforced", "measured"),
+        )
+    report = isolation.probe_backend(backend, workspace=tmp_path, data_root=tmp_path)
+
+    assert report.enforced == ("process_tree",)
+    assert isolation.measured_level(report) == "none"
+    assert isolation.enabled_capabilities(backend, report=report) == []
+
+
 def test_explicit_job_backend_requires_tree_evidence_before_approval(env_factory, monkeypatch):
     from tianshu.exec_job_object import WindowsJobObjectExecBackend
 
