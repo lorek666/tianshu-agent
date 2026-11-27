@@ -293,7 +293,7 @@ class _NativeAPI:
         class _JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
             _fields_ = [
                 ("BasicLimitInformation", _JobBasicLimitInformation),
-                ("IoInfo", ctypes.c_longlong * 2),
+                ("IoInfo", ctypes.c_uint64 * 6),
                 ("ProcessMemoryLimit", ctypes.c_size_t),
                 ("JobMemoryLimit", ctypes.c_size_t),
                 ("PeakProcessMemoryUsed", ctypes.c_size_t),
@@ -349,10 +349,13 @@ class _NativeAPI:
         self.kernel32.HeapFree(self.kernel32.GetProcessHeap(), 0, memory)
 
     def initialize_attributes(self, memory: int, count: int, size: int) -> tuple[bool, int]:
-        required = ctypes.c_size_t()
+        required = ctypes.c_size_t(size)
         ok = self.kernel32.InitializeProcThreadAttributeList(
             memory, count, 0, ctypes.byref(required)
         )
+        if not memory:
+            # The documented sizing call fails with ERROR_INSUFFICIENT_BUFFER.
+            ok = not ok and ctypes.get_last_error() == 122
         return bool(ok), int(required.value)
 
     def update_attributes(self, memory: int, attribute: int, value: int, size: int) -> bool:
@@ -395,8 +398,8 @@ class _NativeAPI:
         ):
             raise _error("CreateProcessW")
         return (
-            info.hProcess.value or 0,
-            info.hThread.value or 0,
+            info.hProcess or 0,
+            info.hThread or 0,
             int(info.dwProcessId),
             int(info.dwThreadId),
         )
@@ -497,15 +500,18 @@ def _attribute_probe(api) -> bool:
     job = api.create_job()
     if not job:
         return False
+    handles = _Handles(api)
+    handles.add(job)
+    supported = False
     try:
-        if not api.set_job_limits(job, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE):
-            return False
-        with _attribute_list(api, job):
-            return True
+        if api.set_job_limits(job, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE):
+            with _attribute_list(api, job):
+                supported = True
     except (JobObjectError, OSError):
-        return False
+        supported = False
     finally:
-        api.close_handle(job)
+        closed = handles.close_all()
+    return closed and supported
 
 
 def availability() -> bool:
@@ -539,13 +545,16 @@ class _Handles:
     def close_all(self) -> bool:
         closed = True
         for handle in tuple(self.values):
-            try:
-                if self.api.close_handle(handle):
-                    self.values.discard(handle)
-                else:
-                    closed = False
-            except (JobObjectError, OSError):
+            for attempt in range(_HANDLE_CLOSE_ATTEMPTS):
+                try:
+                    self.close(handle)
+                except (JobObjectError, OSError):
+                    pass
+                if handle not in self.values:
+                    break
                 closed = False
+                if attempt + 1 < _HANDLE_CLOSE_ATTEMPTS:
+                    time.sleep(_HANDLE_CLOSE_RETRY_S)
         return closed
 
 
@@ -624,6 +633,7 @@ class JobController:
         self._clock = clock
         self._sleep = sleep
         self._closed = False
+        self._close_failed = False
         self._open_handles = {job, process, thread}
         self._state: TreeState = TREE_RUNNING
 
@@ -639,7 +649,7 @@ class JobController:
     def query(self) -> TreeState:
         if self._closed:
             return TREE_CLOSED
-        if self._job not in self._open_handles:
+        if self._close_failed or self._job not in self._open_handles:
             self._state = TREE_UNKNOWN
             return self._state
         try:
@@ -713,6 +723,7 @@ class JobController:
             if handle in self._open_handles:
                 state = TREE_UNKNOWN
         if self._open_handles:
+            self._close_failed = True
             self._state = TREE_UNKNOWN
             return TREE_UNKNOWN
         self._closed = True
@@ -898,35 +909,40 @@ def _create_with_api(
         )
     except BaseException as exc:
         # 已绑定但未恢复的 leader 也在 Job 内；Terminate + 原句柄等待，不按 PID 猜。
-        if "job" in locals() and job in handles.values:
+        leader_exited = tree_exited = not process
+        if process and process in handles.values:
             try:
                 api.terminate_job(job)
             except (JobObjectError, OSError):
                 pass
-            if process in handles.values:
-                try:
-                    api.terminate_process(process, 1)
-                except (JobObjectError, OSError):
-                    pass
-                try:
-                    api.wait(process, int(_TREE_JOIN_TIMEOUT_S * 1000))
-                except (JobObjectError, OSError):
-                    pass
+            try:
+                api.terminate_process(process, 1)
+            except (JobObjectError, OSError):
+                pass
+            try:
+                leader_exited = api.wait(process, int(_TREE_JOIN_TIMEOUT_S * 1000)) == WAIT_OBJECT_0
+            except (JobObjectError, OSError):
+                pass
             try:
                 deadline = time.monotonic() + _TREE_JOIN_TIMEOUT_S
-                while time.monotonic() < deadline:
+                while True:
                     if api.query_job(job) == 0:
+                        tree_exited = True
+                        break
+                    if time.monotonic() >= deadline:
                         break
                     time.sleep(0.01)
             except (JobObjectError, OSError):
                 pass
-        handles.close_all()
+        closed = handles.close_all()
         for stream in streams:
             try:
                 stream.close()
             except OSError:
-                pass
-        raise exc
+                closed = False
+        if isinstance(exc, Exception) and not (leader_exited and tree_exited and closed):
+            raise JobObjectError("Windows Job 启动失败，进程树或句柄清理未确认") from exc
+        raise
 
 
 def create_managed_process(

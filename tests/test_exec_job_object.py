@@ -303,6 +303,77 @@ def test_every_native_api_has_explicit_argtypes_and_restype():
     assert kernel32.CloseHandle.argtypes == [job._HANDLE]
 
 
+def test_native_api_accepts_ctypes_handle_returns_and_the_real_job_limits_buffer(monkeypatch):
+    if ctypes.sizeof(job._HANDLE) != 8:
+        pytest.skip("该用例核对 Windows 64 位扩展 Job 结构")
+    handle_fn = ctypes.CFUNCTYPE(job._HANDLE)
+    allocation_sizes = []
+    attribute_sizes = []
+
+    def set_limits(handle, kind, contents, size):
+        assert handle.value == HIGH_JOB
+        assert kind == 9
+        assert size == 144
+        flags = ctypes.cast(contents, ctypes.POINTER(job._JobBasicLimitInformation))
+        assert flags.contents.LimitFlags == job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+        return 1
+
+    def initialize_attribute_list(memory, count, flags, size_pointer):
+        assert count == 2 and flags == 0
+        size = ctypes.cast(size_pointer, ctypes.POINTER(ctypes.c_size_t))
+        attribute_sizes.append(size.contents.value)
+        if not memory:
+            size.contents.value = 128
+            return 0  # ERROR_INSUFFICIENT_BUFFER: the documented sizing call
+        assert memory == HIGH_ATTRIBUTES and size.contents.value == 128
+        return 1
+
+    def heap_alloc(heap, flags, size):
+        assert heap == HIGH_JOB and flags == 0
+        allocation_sizes.append(size)
+        return HIGH_ATTRIBUTES
+
+    api = object.__new__(job._NativeAPI)
+    api.kernel32 = SimpleNamespace(
+        CreateJobObjectW=ctypes.CFUNCTYPE(job._HANDLE, job._LPVOID, job._LPCWSTR)(
+            lambda _attrs, _name: HIGH_JOB,
+        ),
+        GetProcessHeap=handle_fn(lambda: HIGH_JOB),
+        HeapAlloc=ctypes.CFUNCTYPE(job._HANDLE, job._HANDLE, job._DWORD, ctypes.c_size_t)(
+            heap_alloc,
+        ),
+        SetInformationJobObject=set_limits,
+        InitializeProcThreadAttributeList=initialize_attribute_list,
+    )
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 122, raising=False)
+    assert api.create_job() == HIGH_JOB
+    assert api.set_job_limits(HIGH_JOB, job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)
+    assert api.initialize_attributes(0, 2, 0) == (True, 128)
+    memory = api.heap_allocate(128)
+    assert memory == HIGH_ATTRIBUTES
+    assert allocation_sizes == [128]
+    assert api.initialize_attributes(memory, 2, 128) == (True, 128)
+    assert attribute_sizes == [0, 128]
+
+
+def test_native_process_info_preserves_ctypes_handle_fields():
+    def create_process(_application, _args, _pa, _ta, _inherit, _flags,
+                       _env, _cwd, _startup, information):
+        info = ctypes.cast(information, ctypes.POINTER(job._ProcessInformation)).contents
+        info.hProcess = HIGH_PROCESS
+        info.hThread = HIGH_THREAD
+        info.dwProcessId = 4242
+        info.dwThreadId = 4343
+        return 1
+
+    api = object.__new__(job._NativeAPI)
+    api.kernel32 = SimpleNamespace(CreateProcessW=create_process)
+    assert api.create_process(
+        sys.executable, ctypes.create_unicode_buffer(sys.executable),
+        os.getcwd(), job._environment_block({}), job._StartupInfoExW(), (),
+    ) == (HIGH_PROCESS, HIGH_THREAD, 4242, 4343)
+
+
 @pytest.mark.parametrize("failure", ["job", "limits", "allocate", "initialize", "update"])
 def test_availability_faults_fail_closed_before_process_creation(monkeypatch, failure):
     api = FakeNative()
@@ -317,6 +388,16 @@ def test_availability_faults_fail_closed_before_process_creation(monkeypatch, fa
     if failure == "update":
         assert api.deleted_attributes == [HIGH_ATTRIBUTES]
         assert api.freed_attributes == [HIGH_ATTRIBUTES]
+
+
+def test_availability_rejects_an_unconfirmed_probe_close(monkeypatch):
+    api = FakeNative()
+    api.close_failure.add(HIGH_JOB)
+    monkeypatch.setattr(job, "_WINDOWS", True)
+    monkeypatch.setattr(job, "_load_native_api", lambda: api)
+
+    assert job.availability() is False
+    assert api.create_calls == []
 
 
 def test_create_uses_atomic_suspended_unicode_process_and_native_pipes(fake_windows, tmp_path):
@@ -420,8 +501,8 @@ def test_creation_failures_cleanup_every_allocated_resource(
         assert HIGH_PROCESS in fake_windows.closed
         assert HIGH_THREAD in fake_windows.closed
         assert fake_windows.resume_calls == ([HIGH_THREAD] if failure == "resume" else [])
-    elif failure in {"handle_list", "create"}:
-        assert fake_windows.terminated == [HIGH_JOB]
+    else:
+        assert fake_windows.terminated == []
     if failure != "job":
         assert HIGH_JOB in fake_windows.closed
 
@@ -462,33 +543,49 @@ def test_child_handle_close_failure_is_fail_closed(fake_windows, tmp_path):
     assert HIGH_JOB in fake_windows.closed
 
 
-def test_fdopen_failure_does_not_double_close_transferred_handle(
-    fake_windows, monkeypatch,
-):
-    raw_read, raw_write = os.pipe()
-    fake_windows.pipe_handles.update((raw_read, raw_write))
-    handles = job._Handles(fake_windows)
+def test_creation_cleanup_failure_is_reported_as_unknown(fake_windows, tmp_path):
+    fake_windows.failure = "resume"
+    fake_windows.close_failure.add(HIGH_JOB)
+    with pytest.raises(job.JobObjectError, match="清理未确认") as error:
+        _create(fake_windows, tmp_path)
+    assert isinstance(error.value.__cause__, job.JobObjectError)
+    assert "ResumeThread" in str(error.value.__cause__)
+    assert fake_windows.pipe_handles == set()
+
+
+def test_fdopen_failure_does_not_double_close_transferred_handle(monkeypatch):
+    api = FakeNative()
+    raw_read, raw_write = api.create_pipe()
+    handles = job._Handles(api)
     handles.add(raw_read)
+    adopted = []
 
     def open_osfhandle(handle, flags):
         fd = os.dup(handle)
         os.close(handle)
-        fake_windows.pipe_handles.discard(handle)
+        api.pipe_handles.discard(handle)
+        adopted.append(fd)
         return fd
+
+    def cannot_open(*_args, **_kwargs):
+        raise OSError("fdopen")
 
     monkeypatch.setitem(
         sys.modules, "msvcrt", SimpleNamespace(open_osfhandle=open_osfhandle)
     )
-    monkeypatch.setattr(
-        job.os, "fdopen", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("fdopen"))
-    )
+    monkeypatch.setattr(job.os, "O_BINARY", getattr(os, "O_BINARY", 0), raising=False)
+    monkeypatch.setattr(job.os, "fdopen", cannot_open)
     try:
         with pytest.raises(OSError, match="fdopen"):
             job._adopt_stream(handles, raw_read, "rb")
-        assert raw_read not in fake_windows.closed
+        assert len(adopted) == 1
+        with pytest.raises(OSError):
+            os.fstat(adopted[0])
+        assert raw_read not in api.closed
         assert raw_read not in handles.values
-        assert fake_windows.pipe_handles == {raw_write}
+        assert api.pipe_handles == {raw_write}
     finally:
+        handles.close_all()
         os.close(raw_write)
 
 
@@ -583,6 +680,19 @@ def test_close_automatically_retries_transient_handle_failure(fake_windows):
     assert fake_windows.closed.count(HIGH_JOB) == 1
     assert controller.query() == job.TREE_CLOSED
     assert controller.close() == job.TREE_CLOSED
+
+
+def test_failed_job_close_cannot_be_reconciled_as_exited(fake_windows, tmp_path):
+    from tianshu.execution_admission import PreparedExecution
+
+    proc = _create(fake_windows, tmp_path)
+    fake_windows.close_failure.add(HIGH_JOB)
+    assert proc.close(0) == job.TREE_UNKNOWN
+    execution = object.__new__(PreparedExecution)
+    execution._job_backend = True
+    assert execution._process_tree_state(proc) == job.TREE_UNKNOWN
+    fake_windows.close_failure.clear()
+    proc.close(0)
 
 
 def test_close_keeps_permanently_failed_handle_for_bounded_retry(fake_windows):
@@ -827,7 +937,7 @@ def test_subject_admission_uses_native_job_without_popen_fallback(
 @pytest.mark.parametrize(
     ("generic", "detached", "expected"),
     [
-        ("unknown", "enforced", "enforced"),
+        ("unknown", "enforced", "unknown"),
         ("not_enforced", "enforced", "not_enforced"),
         ("enforced", "not_enforced", "not_enforced"),
         ("enforced", "unknown", "unknown"),
@@ -836,7 +946,7 @@ def test_subject_admission_uses_native_job_without_popen_fallback(
         ("enforced", "enforced", "enforced"),
     ],
 )
-def test_detached_probe_cannot_launder_generic_not_enforced(
+def test_admission_requires_both_process_tree_probes_to_pass(
     tmp_path, monkeypatch, generic, detached, expected,
 ):
     from tianshu import execution_admission
@@ -928,7 +1038,7 @@ def test_probe_cleanup_does_not_terminate_mismatched_exact_handle(monkeypatch):
     assert confirmed is False
     assert survivors == []
     assert terminated == []
-    assert closed == [99]
+    assert closed == []
 
 
 @pytest.mark.parametrize(
@@ -955,7 +1065,8 @@ def test_windows_probe_requires_confirmed_tree_and_exact_handle_cleanup(
     proc = SimpleNamespace(close=lambda timeout: closed.append(timeout) or "exited")
 
     def launch(argv, *, cwd, env):
-        Path(argv[-2]).write_text(json.dumps({"pid": 10, "birth": 20}))
+        assert argv[-1] == str(os.getpid())
+        Path(argv[-3]).write_text(json.dumps({"pid": 10, "birth": 20}))
         return proc
 
     facts = {"descendant_pid": 10, "descendant_handle": 99, "denied_winerror": 5}
@@ -1054,6 +1165,7 @@ def test_windows_generic_probe_uses_exact_handle_and_never_pid_kill(
     )
 
     def run_child(_backend, _script, args, **_kwargs):
+        assert args[1] == os.getpid()
         Path(args[0]).write_bytes(json.dumps({"pid": 10, "birth": 20}).encode("utf-8"))
         return result, {"GRANDCHILD_HANDLE": "99"}, "probe-timeout"
 
@@ -1062,9 +1174,11 @@ def test_windows_generic_probe_uses_exact_handle_and_never_pid_kill(
 
     assert finding.status == expected
     assert killed == []
-    assert closed and set(closed) == {99}
     assert list(tmp_path.iterdir()) == []
-    if not identity_valid:
+    if identity_valid:
+        assert closed and set(closed) == {99}
+    else:
+        assert closed == []
         assert waits == []
         assert terminated == []
     if wait_mode == "alive":
@@ -1100,6 +1214,10 @@ def test_windows_generic_probe_missing_identity_is_unknown_without_pid_cleanup(
 native_only = pytest.mark.skipif(os.name != "nt", reason="需要真实 Windows Job Object")
 
 
+# Run the actual executable; the Windows venv redirector uses its own Job.
+_NATIVE_PYTHON = getattr(sys, "_base_executable", sys.executable)
+
+
 @native_only
 class TestWindowsNative:
     @pytest.mark.parametrize(
@@ -1126,7 +1244,7 @@ class TestWindowsNative:
 
         fixture = Path(__file__).parent / "fixtures" / "fake_mcp_server.py"
         config = McpServerConfig(
-            name="native-job", command=(sys.executable, str(fixture)),
+            name="native-job", command=(_NATIVE_PYTHON, str(fixture)),
         )
         server = StdioServer(
             config, default_cwd=tmp_path,
@@ -1161,7 +1279,7 @@ class TestWindowsNative:
             encoding="utf-8",
         )
         process = job.create_managed_process(
-            [sys.executable, "-I", "-S", str(script)], cwd=tmp_path, env={}
+            [_NATIVE_PYTHON, "-I", "-S", str(script)], cwd=tmp_path, env={}
         )
         try:
             assert process.pid > 0
@@ -1183,7 +1301,7 @@ class TestWindowsNative:
         process = identities.pop("process")
         records = []
         try:
-            records = _wait_records([identities[name] for name in ("root", "child", "grandchild")])
+            records = _wait_records([identities[f"level{index}"] for index in range(3)])
             with pytest.raises(subprocess.TimeoutExpired):
                 process.wait(0.2)
             assert process.controller.state == job.TREE_RUNNING
@@ -1191,7 +1309,7 @@ class TestWindowsNative:
             _assert_dead(records)
         finally:
             process.close()
-            _cleanup_records(records.values())
+            _cleanup_records(records)
 
     def test_multigeneration_detached_processes_stay_in_job(self, tmp_path):
         identities = self._spawn_tree(tmp_path, detached=True, generations=4)
@@ -1205,7 +1323,7 @@ class TestWindowsNative:
             _assert_dead(records)
         finally:
             process.close()
-            _cleanup_records(records.values())
+            _cleanup_records(records)
 
     def test_leader_normal_exit_still_queries_and_kills_descendants(self, tmp_path):
         child_script = tmp_path / "child.py"
@@ -1218,14 +1336,14 @@ class TestWindowsNative:
         root_script.write_text(
             "import subprocess,sys\n"
             + f"p=subprocess.Popen([sys.executable,'-I','-S',{str(child_script)!r}],"
-            "creationflags=0x00000008|0x00000200,"
+            "creationflags=0x00000008,"
             "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
             # leader 先退，不 wait 后代。
             "",
             encoding="utf-8",
         )
         process = job.create_managed_process(
-            [sys.executable, "-I", "-S", str(root_script)], cwd=tmp_path, env={}
+            [_NATIVE_PYTHON, "-I", "-S", str(root_script)], cwd=tmp_path, env={}
         )
         records = []
         try:
@@ -1247,12 +1365,12 @@ class TestWindowsNative:
         workspace.mkdir()
         data_root.mkdir()
         policy = ExecPolicy(
-            argv_allowlist=(sys.executable,), cwd_roots=(workspace,),
+            argv_allowlist=(_NATIVE_PYTHON,), cwd_roots=(workspace,),
             env_allowlist=("PATH",), timeout_ms=15_000, max_output_bytes=64 * 1024,
         )
         with PreparedExecution(
             job.WindowsJobObjectExecBackend(), kind="command", task_id="native-task",
-            run_id="native-run", argv=(sys.executable, "-c", "pass"),
+            run_id="native-run", argv=(_NATIVE_PYTHON, "-c", "pass"),
             cwd=workspace, env={"PATH": os.defpath}, policy=policy,
             workspace=workspace, data_root=data_root,
         ) as execution:
@@ -1296,12 +1414,11 @@ class TestWindowsNative:
             encoding="utf-8",
         )
         process = job.create_managed_process(
-            [sys.executable, "-I", "-S", str(script)], cwd=tmp_path, env={}
+            [_NATIVE_PYTHON, "-I", "-S", str(script)], cwd=tmp_path, env={}
         )
         records = []
         try:
-            _wait_records([denied])
-            assert json.loads(denied.read_text(encoding="utf-8"))["winerror"] == 5
+            assert _wait_records([denied], key="winerror")[0]["winerror"] == 5
             records = _wait_records([child_record])
             assert process.controller.stop(10) == job.TREE_EXITED
             _assert_dead(records)
@@ -1309,7 +1426,8 @@ class TestWindowsNative:
             process.close()
             _cleanup_records(records)
 
-    def test_os_closing_parent_job_handle_kills_tree(self, tmp_path):
+    @pytest.mark.parametrize("kill_on_close", [True, False], ids=["enabled", "negative-control"])
+    def test_os_closing_parent_job_handle(self, tmp_path, kill_on_close):
         # helper 自己创建 Job；helper 硬退后由 OS 关闭其最后一个 Job 句柄。
         helper = tmp_path / "close_parent.py"
         root_script = tmp_path / "root.py"
@@ -1322,24 +1440,37 @@ class TestWindowsNative:
         root_script.write_text(
             "import subprocess,sys,time\n"
             f"p=subprocess.Popen([sys.executable,'-I','-S',{str(child_script)!r}],"
-            "creationflags=0x00000008|0x00000200,"
+            "creationflags=0x00000008,"
             "stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
             "time.sleep(120)\n",
             encoding="utf-8",
         )
         helper.write_text(
-            "import os,sys,time\n"
+            "import json,os,sys,time\n"
             f"sys.path.insert(0,{str(Path(job.__file__).resolve().parents[1])!r})\n"
-            "from tianshu.exec_job_object import create_managed_process\n"
-            "p=create_managed_process([sys.executable,'-I','-S',"
+            "from tianshu.exec_job_object import _NativeAPI, create_managed_process\n"
+            + ("" if kill_on_close else (
+                "set_limits=_NativeAPI.set_job_limits\n"
+                "_NativeAPI.set_job_limits=lambda self, handle, flags: "
+                "set_limits(self, handle, 0)\n"
+            ))
+            + "p=create_managed_process([sys.executable,'-I','-S',"
             f"{str(root_script)!r}],cwd={str(tmp_path)!r},env={{}})\n"
-            f"while not os.path.exists({str(child_record)!r}): time.sleep(0.01)\n"
+            f"leader={str(tmp_path / 'leader.json')!r}\n"
+            "pid,birth=p.controller._api.process_identity(p.controller._process)\n"
+            "with open(leader,'w',encoding='utf-8') as record:\n"
+            " json.dump({'pid':pid,'birth':birth},record)\n"
+            "while True:\n"
+            " try:\n"
+            f"  with open({str(child_record)!r},encoding='utf-8') as record: json.load(record)\n"
+            " except (FileNotFoundError,json.JSONDecodeError): time.sleep(0.01)\n"
+            " else: break\n"
             # 不调用 close/finalizer；os._exit 让 Windows 关闭父进程全部 HANDLE。
             "os._exit(0)\n",
             encoding="utf-8",
         )
         helper_process = subprocess.Popen(
-            [sys.executable, "-I", "-S", str(helper)],
+            [_NATIVE_PYTHON, "-I", "-S", str(helper)],
             cwd=tmp_path,
             env=os.environ.copy(),
             stdin=subprocess.DEVNULL,
@@ -1348,9 +1479,13 @@ class TestWindowsNative:
         )
         records = []
         try:
+            records = _wait_records([tmp_path / "leader.json", child_record])
             assert helper_process.wait(20) == 0
-            records = _wait_records([child_record])
-            _assert_dead(records)
+            if kill_on_close:
+                _assert_dead(records, timeout_ms=5000)
+            else:
+                for record in records:
+                    _assert_alive(record)
         finally:
             if helper_process.poll() is None:
                 helper_process.kill()
@@ -1361,13 +1496,11 @@ class TestWindowsNative:
         outsider_script = tmp_path / "outsider.py"
         outsider_ready = tmp_path / "outsider.ready"
         outsider_script.write_text(
-            "import os,time\n"
-            f"open({str(outsider_ready)!r},'w').write(str(os.getpid()))\n"
-            "time.sleep(120)\n",
+            _PROCESS_IDENTITY_SOURCE + f"_record({str(outsider_ready)!r})\ntime.sleep(120)\n",
             encoding="utf-8",
         )
         outsider = subprocess.Popen(
-            [sys.executable, "-I", "-S", str(outsider_script)],
+            [_NATIVE_PYTHON, "-I", "-S", str(outsider_script)],
             cwd=tmp_path,
             env=os.environ.copy(),
             stdin=subprocess.DEVNULL,
@@ -1379,7 +1512,7 @@ class TestWindowsNative:
             _wait_records([outsider_ready])
             outsider_identity = _handle_identity(outsider._handle)
             process = job.create_managed_process(
-                [sys.executable, "-I", "-S", "-c", "import time; time.sleep(120)"],
+                [_NATIVE_PYTHON, "-I", "-S", "-c", "import time; time.sleep(120)"],
                 cwd=tmp_path,
                 env={},
             )
@@ -1396,9 +1529,9 @@ class TestWindowsNative:
         from tianshu.execution_admission import PreparedExecution
 
         ready = tmp_path / "outsider.ready"
+        script = _PROCESS_IDENTITY_SOURCE + f"_record({str(ready)!r})\ntime.sleep(120)\n"
         outsider = subprocess.Popen(
-            [sys.executable, "-I", "-S", "-c",
-             f"import os,time;open({str(ready)!r},'w').write(str(os.getpid()));time.sleep(120)"],
+            [_NATIVE_PYTHON, "-I", "-S", "-c", script],
             cwd=tmp_path, env=os.environ.copy(), stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
@@ -1418,13 +1551,12 @@ class TestWindowsNative:
             duplicate = wintypes.HANDLE()
             assert kernel32.DuplicateHandle(
                 kernel32.GetCurrentProcess(), outsider._handle,
-                kernel32.GetCurrentProcess(), ctypes.byref(duplicate), 0, False, 0,
+                kernel32.GetCurrentProcess(), ctypes.byref(duplicate), 0, False, 2,
             )
             confirmed, survivors = PreparedExecution._cleanup_windows_probe_records([
                 {"pid": identity["pid"], "birth": original["birth"] + 1,
                  "handle": duplicate.value},
             ])
-            duplicate.value = None
             assert confirmed is False
             assert survivors == []
             _assert_alive(original)
@@ -1459,7 +1591,7 @@ class TestWindowsNative:
     def _spawn_tree(cls, tmp_path: Path, *, detached: bool, generations: int = 3):
         scripts = cls._tree_scripts(tmp_path, detached=detached, generations=generations)
         process = job.create_managed_process(
-            [sys.executable, "-I", "-S", str(scripts[0])], cwd=tmp_path, env={}
+            [_NATIVE_PYTHON, "-I", "-S", str(scripts[0])], cwd=tmp_path, env={}
         )
         identities = {"process": process}
         identities.update(
@@ -1511,7 +1643,9 @@ def _read_available(stream) -> bytes:
     raise AssertionError("stdout/stderr 管道未在有界期限内排空")
 
 
-def _wait_records(paths: list[Path], timeout: float = 20) -> list[dict[str, int]]:
+def _wait_records(
+    paths: list[Path], timeout: float = 20, *, key: str = "pid",
+) -> list[dict[str, int]]:
     deadline = time.monotonic() + timeout
     records = []
     for path in paths:
@@ -1521,8 +1655,8 @@ def _wait_records(paths: list[Path], timeout: float = 20) -> list[dict[str, int]
             except (FileNotFoundError, json.JSONDecodeError):
                 threading.Event().wait(0.01)
                 continue
-            if not isinstance(value.get("pid"), int):
-                raise AssertionError(f"无效 PID 屏障：{path}: {value}")
+            if not isinstance(value, dict) or type(value.get(key)) is not int:
+                raise AssertionError(f"无效 {key} 屏障：{path}: {value}")
             records.append(value)
             break
         else:
@@ -1568,7 +1702,9 @@ def _handle_identity(handle: int) -> dict[str, int]:
     }
 
 
-def _assert_dead(records: list[dict[str, int]], *, require_birth: bool = True) -> None:
+def _assert_dead(
+    records: list[dict[str, int]], *, require_birth: bool = True, timeout_ms: int = 0,
+) -> None:
     kernel32 = _identity_api()
     for record in records:
         if require_birth:
@@ -1583,7 +1719,7 @@ def _assert_dead(records: list[dict[str, int]], *, require_birth: bool = True) -
                 current = _handle_identity(handle)
                 if current["birth"] != record["birth"]:
                     continue  # 原进程已退出；当前 PID 属于后来复用的身份。
-            result = kernel32.WaitForSingleObject(handle, 0)
+            result = kernel32.WaitForSingleObject(handle, timeout_ms)
             assert result == job.WAIT_OBJECT_0, f"PID {record['pid']} 仍存活：{result}"
         finally:
             kernel32.CloseHandle(handle)

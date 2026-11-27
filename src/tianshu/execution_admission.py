@@ -17,6 +17,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import asdict, dataclass, replace
@@ -574,10 +575,6 @@ class PreparedExecution:
                             detached.status != BOUNDARY_ENFORCED
                             and finding.status != BOUNDARY_NOT_ENFORCED
                         )
-                        or (
-                            finding.status == BOUNDARY_UNKNOWN
-                            and detached.status == BOUNDARY_ENFORCED
-                        )
                     ) else finding
                     for finding in self.report.findings
                 ),
@@ -639,8 +636,10 @@ class PreparedExecution:
             return False, [record["pid"] for record in records]
         for record in records:
             handle = record["handle"]
+            identity_checked = False
             try:
-                if api.process_identity(handle) != (record["pid"], record["birth"]):
+                identity_checked = api.process_identity(handle) == (record["pid"], record["birth"])
+                if not identity_checked:
                     confirmed = False
                     continue
                 state = api.wait(handle, 0)
@@ -654,11 +653,17 @@ class PreparedExecution:
             except (exec_job_object.JobObjectError, OSError):
                 confirmed = False
             finally:
-                try:
-                    if not api.close_handle(handle):
+                if identity_checked:
+                    for attempt in range(3):
+                        try:
+                            if api.close_handle(handle):
+                                break
+                        except (exec_job_object.JobObjectError, OSError):
+                            pass
+                        if attempt < 2:
+                            time.sleep(0.01)
+                    else:
                         confirmed = False
-                except (exec_job_object.JobObjectError, OSError):
-                    confirmed = False
         return confirmed, survivors
 
     def _probe_windows_descendant(self) -> IsolationFinding:
@@ -695,12 +700,12 @@ class PreparedExecution:
             "k.CloseHandle.argtypes=[wintypes.HANDLE]\n"
             "k.CloseHandle.restype=wintypes.BOOL\n"
             "def duplicate(p):\n"
-            " parent=k.OpenProcess(0x40,False,os.getppid())\n"
+            " parent=k.OpenProcess(0x40,False,int(sys.argv[3]))\n"
             " if not parent: raise ctypes.WinError(ctypes.get_last_error())\n"
             " try:\n"
             "  out=wintypes.HANDLE()\n"
             "  if not k.DuplicateHandle(k.GetCurrentProcess(),p._handle,parent,"
-            "ctypes.byref(out),0,False,0): raise ctypes.WinError(ctypes.get_last_error())\n"
+            "ctypes.byref(out),0,False,2): raise ctypes.WinError(ctypes.get_last_error())\n"
             "  return out.value\n"
             " finally: k.CloseHandle(parent)\n"
             "facts={}\n"
@@ -736,9 +741,11 @@ class PreparedExecution:
                 argv_allowlist=(sys.executable,), cwd_roots=(self.workspace,),
                 env_allowlist=("PATH",), timeout_ms=5000, max_output_bytes=4096,
             )
+            # Probe a real interpreter, without the Windows venv redirector's Job.
+            executable = getattr(sys, "_base_executable", sys.executable)
             proc = self._launch_process(
-                (sys.executable, "-I", "-S", "-c", payload,
-                 str(descendant_file), str(breakaway_file)),
+                (executable, "-I", "-S", "-c", payload,
+                 str(descendant_file), str(breakaway_file), str(os.getpid())),
                 cwd=self.workspace, env={"PATH": os.defpath},
             )
             result, tree_state = self._collect_process(proc, policy=policy)

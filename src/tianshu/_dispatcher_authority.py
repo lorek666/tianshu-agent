@@ -38,7 +38,7 @@ from .errors import (
     WorkspaceViolation,
 )
 from .events import EventLog, canonical_bytes, sha256_hex
-from .exec_backends import ExecBackend
+from .exec_backends import ExecBackend, exec_policy_for_backend
 from .execpolicy import (
     ISOLATION_NONE,
     PolicyDenied,
@@ -188,6 +188,7 @@ class _DispatcherAuthorityMixin:
             # 没配置策略：交给 classify 报 c4.exec_not_configured。
             return None
 
+        policy = exec_policy_for_backend(policy, self._exec_backend)
         require_isolation_requirements = (
             sys.modules["tianshu.dispatcher"].require_isolation_requirements
         )

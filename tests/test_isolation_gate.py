@@ -723,6 +723,42 @@ def test_approval_view_shows_measured_report_when_requirement_passes(
     assert view["level"] == "none"
 
 
+def test_explicit_job_backend_requires_tree_evidence_before_approval(env_factory, monkeypatch):
+    from tianshu.exec_job_object import WindowsJobObjectExecBackend
+
+    backend = WindowsJobObjectExecBackend()
+    env = env_factory(exec_backend=backend)
+    report = _report(env.ws, env.data, backend=backend.capabilities.name)
+    monkeypatch.setattr(isolation, "probe_backend_cached", lambda *_args, **_kwargs: report)
+    task, run, claim = env.new_run(exec_policy=_policy(env.ws))
+    args = {"argv": [PY, "-c", "print(1)"]}
+
+    decision = env.dispatcher.prepare(
+        _exec_request(env, run, claim, args=args, task=task), claim, args=args
+    )
+
+    assert decision.is_waiting, decision
+    view = next(row.payload["isolation"] for row in env.log.read_run(run.run_id)
+                if row.type == "approval.requested")
+    assert view["enforced_boundaries"] == ["process_tree"]
+    assert view["level"] == "none"
+
+
+def test_explicit_job_backend_does_not_run_without_tree_proof(tmp_path, monkeypatch):
+    from tianshu.exec_job_object import WindowsJobObjectExecBackend
+
+    backend = WindowsJobObjectExecBackend()
+    report = _report(tmp_path, tmp_path, tree="unknown", backend=backend.capabilities.name)
+    monkeypatch.setattr(isolation, "probe_backend_cached", lambda *_args, **_kwargs: report)
+    monkeypatch.setattr(backend, "spawn", lambda *_args, **_kwargs: pytest.fail("没有树证据"))
+    ctx = tools.ToolContext(exec_policy=_policy(tmp_path), exec_backend=backend, data_root=tmp_path)
+
+    result = tools._run_command(Workspace(tmp_path), {"argv": [PY, "-c", "print(1)"]}, ctx)
+
+    assert result.status == "rejected"
+    assert result.effect_state == "none_applied"
+
+
 def test_control_approval_view_carries_isolation(tmp_path):
     """控制面 approvals.list 的视图里能读到审批时的隔离视图（PRD §8.1）。"""
     from support import stack_for

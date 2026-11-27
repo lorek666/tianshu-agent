@@ -43,7 +43,7 @@ from .errors import (
 )
 from .events import canonical_bytes, sha256_hex
 from .exec import RULE_PTY_NOT_ALLOWED
-from .exec_backends import ExecBackend
+from .exec_backends import ExecBackend, exec_policy_for_backend
 from .exec_backends import exec_backend as resolve_exec_backend
 from .execpolicy import (
     ISOLATION_NONE,
@@ -581,6 +581,7 @@ def _run_command(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
     target, rel = _write_target(ws, ctx, args.get("cwd", "."))
     backend = ctx.exec_backend if ctx.exec_backend is not None else resolve_exec_backend()
     capabilities = backend.capabilities
+    policy = exec_policy_for_backend(policy, backend)
     argv = args["argv"]
     pty = bool(args.get("pty", False))
     # 凭据/密钥不进入子进程：只传策略白名单里的变量（后端内部还会再过滤一次）。

@@ -197,11 +197,12 @@ Windows 实机验收，而不是直接复用本轮代码。
 
 ## 9. 显式单进程增量（2026-11-23，候选）
 
-上节保留 W14 的历史版本。当前探针升级为 `v4`，旧报告和 subject admission 不复用。
-`v3` 的受限 `os.fork()` 拒绝证明继续保留；`v4` 同时修正 Windows 通用进程树探针：
-根通过 `DuplicateHandle` 把孙进程精确句柄交给父进程，文件记录 PID 与原始
-FILETIME，父进程核验身份后用 `WaitForSingleObject` 观察、精确终止并关闭句柄。
-身份不符或句柄不可核实时保持 `unknown`，禁止按裸 PID 清理。
+上节保留 W14 的历史版本。当前探针升级为 `v5`，旧报告和 subject admission 不复用。
+`v3` 的受限 `os.fork()` 拒绝证明继续保留。Windows 进程树探针使用实际解释器，
+避免虚拟环境的 Windows 启动器创建额外的 Job；探针通过 `DuplicateHandle` 把孙进程的
+精确句柄交给指定的宿主。宿主核对 PID 和原始 FILETIME，再用 `WaitForSingleObject`
+观察是否退出，必要时按句柄终止并关闭句柄。身份或终态无法确认时保留 `unknown`，
+禁止按裸 PID 清理。Windows Job 准入要求通用超时与 detached/breakaway 探针都通过。
 进程边界增加一条受限证明路径：直接 `os.fork()` 被内核以 `EPERM` / `EACCES` 拒绝，
 根继续阻塞，实际超时后经受管等待确认被 `SIGKILL` 终止，且无清理未知标记。
 启动或导入失败、无输出、异常 errno、未超时、根退出证据不足均为 `unknown`。
@@ -237,11 +238,11 @@ PID/PGID 发信号，以免误伤复用身份。该结论不推广到允许后�
 
 ### 10.2 创建与生命周期
 
-1. 使用 `CREATE_SUSPENDED` 创建根进程并保留线程句柄；优先用 `PROC_THREAD_ATTRIBUTE_JOB_LIST` 在创建时原子绑定 Job。若目标 Windows 不支持该属性，只能在所有线程恢复前用 `AssignProcessToJobObject` 绑定，失败则终止暂停进程并拒绝执行。
+1. 使用 `CREATE_SUSPENDED` 创建根进程并保留线程句柄；用 `PROC_THREAD_ATTRIBUTE_JOB_LIST` 在创建时原子绑定 Job；系统不支持该属性时拒绝启动，不回落到其他后端。
 2. Job handle 不可继承，设置 `KILL_ON_JOB_CLOSE`，禁止 breakaway。父进程崩溃、正常退出或句柄关闭都应由内核终止 Job 内进程；测试必须证明这一点。
-3. `Popen.wait()` 只证明 leader 被回收，不证明 Job 为空。leader 正常退出后也必须查询 Job；仍有活跃进程时执行终止并有界等待。超时、取消、fence 与宿主退出调用 `TerminateJobObject`，随后查询 `QueryInformationJobObject` 的 `ActiveProcesses`。
+3. 受管等待只证明 leader 已退出，不证明 Job 为空。leader 正常退出后仍须查询 Job；超时、受管取消或仍有活跃进程时调用 `TerminateJobObject`，有界等待 `QueryInformationJobObject` 的 `ActiveProcesses` 归零。宿主硬退由内核在关闭最后一个 Job 句柄时触发清理。
 4. 只有活跃进程集合归零才可确认 `exited`。查询失败、仍有进程或身份不确定时保持 `unknown`，设置 `descendants_may_survive=true`，阻断冲突恢复；不得自动重放未知副作用。
-5. `ExecutionSubject` 记录实际后端、Job/profile 身份与创建证据；审批和结果视图只显示已经实测的边界，不把 Job Object 描述成完整沙箱。
+5. `ExecutionSubject` 记录实际后端、Job/profile 身份与创建证据；显式 Job 后端的命令在审批前至少要求 `process_tree` 实测报告；执行前再绑定 subject 并重测。审批和结果视图只显示已经实测的边界，不把 Job Object 描述成完整沙箱。
 
 6. 新建显式 Job 命令审批时，`approval.requested` 必须记录实际的 `command.backend` 和准入后的 `execution_subject_digest`。已有的逐次人工决定、动作摘要和 Grant 仍然必需。有限授权不代替显式 Job 的逐次审批。
 7. 兑现时，若审批或当前执行选择 Job，执行侧必须核对同一审批记录中的后端和 subject 摘要；执行前的现场复核须与该记录一致。缺证据、后端变更、程序或可识别脚本内容变更、环境或隔离 profile 变更均拒绝原批准。下一次发起请求时按新对象生成审批，旧事件保留。对正在使用其他后端的既有审批不增设字段要求；仍执行原权限校验。

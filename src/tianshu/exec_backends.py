@@ -27,6 +27,7 @@ from __future__ import annotations
 import inspect
 import os
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -320,6 +321,14 @@ def _populate_builtin_backends() -> None:
 def reset_exec_backends() -> None:  # pragma: no cover - 只给测试
     """恢复到当前平台的初始内建状态（`local` + 当前平台已实现沙箱 + 剩余未实现清单）。"""
     _populate_builtin_backends()
+
+
+def exec_policy_for_backend(policy: ExecPolicy, backend: ExecBackend) -> ExecPolicy:
+    """An explicit Job Object selection always requires process-tree evidence."""
+    required = policy.isolation_requires
+    if backend.capabilities.name == "windows_job_object" and "process_tree" not in required:
+        return replace(policy, isolation_requires=(*required, "process_tree"))
+    return policy
 
 
 def preferred_exec_backend() -> str:

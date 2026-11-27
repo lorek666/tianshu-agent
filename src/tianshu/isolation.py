@@ -63,7 +63,7 @@ from .execpolicy import (
 )
 
 #: 探测逻辑版本。缓存键与报告都带它：探针语义变了，旧证据不能继续给新代码用。
-PROBE_VERSION = "v4"
+PROBE_VERSION = "v5"
 
 #: 非杀树探针的子进程超时上限。真实子进程出问题时宁可 unknown，不挂住调用方。
 PROBE_TIMEOUT_MS = 5_000
@@ -573,6 +573,7 @@ def _run_child(
     timeout_ms: int,
     env: dict[str, str],
     env_allowlist: tuple[str, ...],
+    executable: str = sys.executable,
 ) -> tuple[ExecResult | None, dict[str, str], str]:
     """spawn 一个探针子进程并解析 `KEY=VALUE` 行。
 
@@ -582,7 +583,7 @@ def _run_child(
     """
     # Probe evidence must not depend on modules or startup hooks in the subject
     # workspace, PYTHONPATH or site directories. Business argv is unaffected.
-    argv = [sys.executable, "-I", "-S", "-c", script, *[str(arg) for arg in args]]
+    argv = [executable, "-I", "-S", "-c", script, *[str(arg) for arg in args]]
     policy = _probe_policy(
         workspace, env_allowlist=env_allowlist, timeout_ms=timeout_ms
     )
@@ -811,8 +812,10 @@ elif os.name == "nt":
         ctypes.POINTER(wintypes.HANDLE), wintypes.DWORD, wintypes.BOOL, wintypes.DWORD,
     ]
     kernel32.DuplicateHandle.restype = wintypes.BOOL
-    kernel32.GetProcessId.argtypes = [wintypes.HANDLE]
-    kernel32.GetProcessId.restype = wintypes.DWORD
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
     kernel32.GetProcessTimes.argtypes = [
         wintypes.HANDLE, ctypes.POINTER(FileTime), ctypes.POINTER(FileTime),
         ctypes.POINTER(FileTime), ctypes.POINTER(FileTime),
@@ -831,13 +834,23 @@ elif os.name == "nt":
         raise ctypes.WinError(ctypes.get_last_error())
     birth = (int(created.high) << 32) | int(created.low)
     duplicate = wintypes.HANDLE()
-    current = kernel32.GetCurrentProcess()
-    if not kernel32.DuplicateHandle(
-        current, grandchild._handle, current, ctypes.byref(duplicate), 0, False, 2,
-    ):
+    try:
+        # Duplicate into the actual probing host, not the short-lived leader.
+        host = kernel32.OpenProcess(0x40, False, int(sys.argv[2]))  # PROCESS_DUP_HANDLE
+        if not host:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            if not kernel32.DuplicateHandle(
+                kernel32.GetCurrentProcess(), grandchild._handle, host,
+                ctypes.byref(duplicate), 0, False, 2,  # DUPLICATE_SAME_ACCESS
+            ):
+                raise ctypes.WinError(ctypes.get_last_error())
+        finally:
+            kernel32.CloseHandle(host)
+    except OSError:
         grandchild.kill()
         grandchild.wait()
-        raise ctypes.WinError(ctypes.get_last_error())
+        raise
     pathlib.Path(sys.argv[1]).write_bytes(json.dumps({
         "pid": grandchild.pid, "birth": birth,
     }).encode("utf-8"))
@@ -957,9 +970,11 @@ def _probe_windows_process_tree(
     )
     try:
         result, parsed, problem = _run_child(
-            backend, _PROBE_PROCESS_TREE, [pid_file], workspace=workspace,
+            backend, _PROBE_PROCESS_TREE, [pid_file, os.getpid()], workspace=workspace,
             timeout_ms=min(PROBE_KILL_WINDOW_MS, timeout_ms), env=_base_env(),
             env_allowlist=("PATH",),
+            # A Windows venv redirector may create its own Job and hide escapes.
+            executable=getattr(sys, "_base_executable", sys.executable),
         )
         record = _read_windows_probe_record(pid_file, parsed)
         if record is not None:
@@ -1037,7 +1052,7 @@ def _probe_windows_process_tree(
                         cleanup_confirmed = False
                     elif alive and not _terminate_windows_process(handle, kernel32):
                         cleanup_confirmed = False
-                if not _close_windows_process_handle(handle, kernel32):
+                if identity_checked and not _close_windows_process_handle(handle, kernel32):
                     cleanup_confirmed = False
             except Exception:  # noqa: BLE001 - Windows API 不可用：判不了
                 cleanup_confirmed = False
