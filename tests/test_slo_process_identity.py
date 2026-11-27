@@ -211,22 +211,22 @@ def test_native_python_child_bypasses_only_the_windows_launcher(
     executable = tmp_path / "venv" / "python.exe"
     base_executable = tmp_path / "base" / "python.exe"
     argv = [str(executable), "worker.py"]
+    inherited_path = os.pathsep.join(("test-startup", "project-src"))
     with monkeypatch.context() as patch:
         patch.setattr(slo.os, "name", "nt" if windows else "posix")
         patch.setattr(sys, "executable", str(executable))
         patch.setattr(sys, "_base_executable", str(base_executable))
         command, env = slo._native_python_child(
-            argv,
-            env={"KEEP": "yes", "PYTHONPATH": os.pathsep.join(["startup", "src"])},
+            argv, env={"KEEP": "yes", "PYTHONPATH": inherited_path},
         )
     assert command == ([str(base_executable), "worker.py"] if windows else argv)
     assert env["KEEP"] == "yes"
     if windows:
-        assert env["PYTHONPATH"] == os.pathsep.join([
-            "startup", "src", *sys.path,
-        ])
+        assert env["PYTHONPATH"].split(os.pathsep) == [
+            "test-startup", "project-src", *sys.path,
+        ]
     else:
-        assert env["PYTHONPATH"] == os.pathsep.join(["startup", "src"])
+        assert env["PYTHONPATH"] == inherited_path
 
 
 def test_native_python_child_prefers_explicit_child_source(tmp_path, monkeypatch):
@@ -251,6 +251,41 @@ def test_native_python_child_prefers_explicit_child_source(tmp_path, monkeypatch
         argv, cwd=tmp_path, env=env, capture_output=True, text=True, timeout=10, check=True,
     )
     assert result.stdout.strip() == "candidate"
+
+
+def test_native_python_child_preserves_test_startup_in_real_process(tmp_path, monkeypatch):
+    startup = Path(__file__).resolve().parent / "_startup"
+    source = Path(__file__).resolve().parents[1] / "src"
+    lock_root = tmp_path / "locks"
+    lock_root.mkdir()
+    native_executable = sys.executable
+    launcher = tmp_path / "python-launcher"
+    code = (
+        "from pathlib import Path; "
+        "from tianshu import maintenance; "
+        "print(Path(maintenance._lock_root()).resolve())"
+    )
+    with monkeypatch.context() as patch:
+        patch.setattr(slo.os, "name", "nt")
+        patch.setattr(sys, "executable", str(launcher))
+        patch.setattr(sys, "_base_executable", native_executable)
+        command, child_env = slo._native_python_child(
+            [str(launcher), "-c", code],
+            env={
+                "PYTHONPATH": os.pathsep.join((str(startup), str(source))),
+                "TIANSHU_TEST_LOCK_ROOT": str(lock_root),
+            },
+        )
+    result = subprocess.run(
+        command,
+        env={**os.environ, **child_env},
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert Path(result.stdout.strip()).resolve() == lock_root.resolve()
 
 
 def test_native_python_child_leaves_non_python_commands_unchanged(monkeypatch):

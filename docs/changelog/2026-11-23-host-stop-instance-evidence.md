@@ -221,6 +221,58 @@ v36 首次裸全量在系统盘低于产品 2 GiB 准入时实际退出 1，失�
 - 文档回填只改文档；须重新核对非文档清单不变。最终提交及新完整 hosted CI 的
   head/base/合成 merge、全部 job 与原始报告验收以 PR #228 对精确对象的记录为准。
 
+## v37 hosted Windows 拒绝与 v38 测试路径修复（2026-11-25）
+
+v37 head `c1feb4185bec29d64cbaa7b4624c7ea4ccd086fb` 的 run
+[45545260925](https://github.com/lorek666/tianshu-agent/actions/runs/45545260925)
+最终为 `completed/failure`：十项 job 中七项成功，Ubuntu 单分片、Windows shard 0
+与 Windows required 汇总失败；四项 required 中 macOS 与 UI 成功，Ubuntu 与
+Windows 失败。测试对象为合成 merge `169c099160d0ece098ef5e60b69a5f75e3af8167`，
+父提交精确绑定上述 head 与 base `a755e2abf7d75b6baf36a1e47f47646142f0bc8d`。
+五份 pytest/restore ZIP 均核 GitHub `digest`，ZIP member 与解压报告逐字节一致；
+六份阶段 JSON 覆盖 macOS 两片和 Windows 四片。完整拒绝回执 SHA256 为
+`4740c108a9d23df063143800b6f79d0e0ed02ebd0a0deea74b97c72cddd4fef9`。
+
+Windows worker 1 的三项阶段失败是
+`test_state_diagnostic_uses_live_pressure_in_real_children`、
+`test_state_after_same_sender_watchdog_drop_is_not_a_sample` 和
+`test_state_measurement_uses_existing_backlog_before_another_large_write`。三项均在
+真实 Host 启动前由锁根隔离 guard 拒绝：`state 背压诊断的测试锁根未生效；不启动子进程`。
+此前 v37 已修复的三项 Host 清理 `WinError 32` 不再出现。两个 worker 共用 stdout，
+`-vv` 进度行会交叉拼接，甚至出现同一 SLO 节点的 `PASSED` 与最终失败段；结论只取
+GitHub digest 绑定的阶段 JSON 与 `FAILURES`，不采信交叉进度行。
+
+Ubuntu 单独失败于
+`test_post_readiness_bridge_bind_failure_reaps_only_owned_root[False]`。该用例由 pytest
+直接启动附着 Daemon；Linux 子进程退出后、父进程 `wait/poll` 回收前仍保留
+`/proc/<pid>/stat`，原 helper 因而把僵尸状态误判为原 OS 进程仍存活。v38 为清理
+helper 增加可选 `reap`，等待循环每次先回收已知子进程，再核原 birth identity；
+真实用例传入 `daemon_proc.poll`，没有放宽 birth identity、锁快照或强制终止门禁。
+新增红测日志 SHA256
+`138ea16795e14f160a8969f35c2ed4565a4a0d1087a400f008a2c470cf0e649d`，绿灯日志
+SHA256 `d1f603dc61b2d70b05b33bb5865465f03efc1a447d0d4eed32491b6dfe8310ee`。
+
+Windows 根因不在 guard，而在 `scripts/measure_slo.py::_native_python_child()`：Windows
+原生解释器分支用父进程 `sys.path` 覆盖了子进程继承的 `PYTHONPATH`。测试 fixture
+只把 `tests/_startup` 放入环境路径，真实子进程因此未加载
+`sitecustomize.py`，`maintenance._lock_root()` 仍是生产锁根，guard 按设计失败关闭。
+v38 保留继承路径并在其后追加 `sys.path`，同时补参数化单测与真实子进程回归。
+旧行为在私有副本使两项回归实际失败，真实子进程返回生产锁根；修复后均通过。
+负控回执 SHA256 为
+`73cf10c2201844c442e6a69ecc13c065cace09641de5ea64dba6f3a182787204`；
+最终四文件受影响域回归为 `163 passed, 1 skipped`，日志 SHA256
+`bb0accf6cb462e0ecfe8a2409d323712133bc670788da9b10700890321c05168`。
+两项修复均不降低隔离或清理要求，也不证明 hosted Windows 或用户设备已通过。
+
+v38 独立 Host 复审发现一项 P2：初始 birth identity 可读、后续读取返回 `None` 时，
+清理 helper 仍把“身份不可读”当作“进程已退出”。该分支在 Linux `/proc` 读取错误时
+会 fail-open。v39 增加 `readable -> unreadable + pid_alive` 与
+`readable -> unreadable + not pid_alive` 双分支回归；前者必须超时失败且不强制终止，
+后者才可按进程消失返回。修复后在身份为 `None` 时调用现有跨平台 `pid_alive()`，仍保持
+初始身份不可读失败关闭、PID 复用不终止、强制终止前复核锁快照与原身份。旧行为红测
+日志 SHA256 为 `0ec6670435dd3ae54dd4048a2cf11caf2dc4c261ba24310f7a281d34ec3fd90e`，修复绿灯日志 SHA256 为
+`1ccafd8e67328198f09639d51973b1537731591146acaca71578cfcbe74b267b`。该修复只涉及测试清理，不放宽任何产品权限或隔离边界。
+
 250ms 孤儿检查宽限和零孤儿门槛不变，不更改 workflow、权限来源或 C1–C5 契约。
 PID 存活与创建身份分别查询，明确不是原子句柄观察；锁内容也不是认证父链证明。
 owned launcher 的退出不证明任意后代已退出，附着端点检查不冒充拥有 OS 句柄。
@@ -414,3 +466,33 @@ SHA256 为 `82bcbb83570a10c24d9f2e62b4b3c7806c97c6d74bcc62958c3f5b729f6f9492`；
 `51820e400cf705d8fff48663f379bca642d1b2fda2b6154e9d6bcd7b827d8ba0`。lock、Ruff、
 diff 与变更文档链接检查也均退出 0。fresh hosted required CI 仍待完成；已停止的 v42
 全量运行不充当这套变更代码树的最终证据，macOS 复审也不冒充原生 Windows 验证。
+
+## v44 归档复审与失败收尾修复（2026-11-28）
+
+native 工作树在清理前已由另一会话 rebase 到 `b6200f9`，旧 `c1feb41` 归档不再代表
+当前状态。新 bundle、commit/tree 恢复读回与校验和已保存；工作树空闲后删除，内置盘
+实际释放 70,934,528 字节。独立读者从该提交的只读源码副本发现两项中危失败路径：
+
+- 附着 Daemon 拒绝 shutdown 时，清理把只接受 `Popen` 的 `_terminate` 当作
+  `(pid, timeout)` 回调，真实触发 `TypeError`，且旧代码没有最终 wait/kill/wait 兜底。
+- Daemon 先删锁时，helper 可能直接返回或跳过终止；锁被替换时还可能向新实例发请求。
+
+修复在启动时同时冻结锁快照与 `(pid, birth)`；附着进程使用原生解释器并断言锁 PID
+等于精确 `Popen.pid`。shutdown 仍绑定原 instance_id；持有精确 `Popen` 的测试显式 opt-in
+后，锁缺失但冻结 birth 仍匹配才进入有界终止，终止后重新等待原 OS 进程。
+新增真实子进程参数覆盖正常、拒绝 shutdown、锁缺失且拒绝 shutdown 四条路径。
+
+恢复旧回调签名后，拒绝 shutdown 用例实际因 `TypeError` 失败；恢复旧的“锁缺失拒绝
+终止”门禁后，锁缺失用例实际因 helper 未回收原 Daemon 而失败，且未被测试兜底掩盖。
+第二轮独立复审还发现测试吞掉 helper 失败并在 finally 自行回收，可造成假绿；现已删除
+吞错，直接断言 helper 调用了精确终止回调且原进程已经退出。紧急兜底只负责失败测试的
+资源清理，不改变 helper 失败的红色结论。恢复修复后四条参数回归与新增 helper 门禁均通过，`uv lock --check` 与全仓 Ruff 通过。
+
+本轮从远端 main `b5bf2b8f63a285f2e1344b386699201ed868a90c` 独立重放，避免把
+Windows Job 候选夹带进 native PR。首次三文件受影响域运行未在十分钟内结束；静态
+门禁定位到合并遗漏了 `wait_until_exited()` 的截止时间判断，失败路径会无限等待。
+主控停止该无效运行，补回边界后，截止时间负控与两项清理回归先转绿，完整受影响域
+随后实际退出 0；这不是靠延长超时掩盖失败。旧复审虽确认两项技术修复，但因复审期间
+原工作树被外部换树并删除，只能判 `partial_fixed`，其全量日志不绑定当前独立树。
+当前冻结 head `c1d90e3f80d43d5df7ac22d7fd15f6affd2331de` 的新独立复审、裸全量与
+hosted required CI 仍待完成；不沿用 `b6200f9`、`0d1c15e` 或外部移动 main 的旧证据。

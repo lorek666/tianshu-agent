@@ -61,6 +61,8 @@ def shutdown_daemon_and_wait(
     terminate: Callable[..., object] | None = None,
     snapshot: bytes | None = None,
     process_identity: tuple[int, str | None] | None = None,
+    reap: Callable[[], object] | None = None,
+    allow_missing_lock: bool = False,
 ) -> None:
     """等待原 Daemon OS 进程退出，避免 Windows 日志句柄阻止临时目录清理。"""
     from tianshu import daemon
@@ -68,6 +70,8 @@ def shutdown_daemon_and_wait(
     from tianshu.leases import pid_alive
 
     lock_path = daemon.lock_path(data_root)
+    frozen_snapshot = snapshot is not None
+    frozen_identity = process_identity is not None
     if snapshot is None:
         try:
             snapshot = lock_path.read_bytes()
@@ -103,13 +107,16 @@ def shutdown_daemon_and_wait(
             )
         return False
 
-    def wait_until_exited() -> bool:
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
+    def wait_until_exited(wait_timeout: float | None = None) -> bool:
+        deadline = time.monotonic() + (timeout if wait_timeout is None else wait_timeout)
+        while True:
+            if reap is not None:
+                reap()
             if exited():
                 return True
+            if time.monotonic() >= deadline:
+                return False
             threading.Event().wait(0.02)
-        return exited()
 
     daemon.request_shutdown(
         data_root,
@@ -124,9 +131,16 @@ def shutdown_daemon_and_wait(
             unchanged = lock_path.read_bytes()
         except FileNotFoundError:
             unchanged = None
-        if unchanged == snapshot and same_process():
+        may_terminate = same_process() and (
+            unchanged == snapshot
+            or (
+                allow_missing_lock and unchanged is None
+                and frozen_snapshot and frozen_identity
+            )
+        )
+        if may_terminate:
             terminate(pid, timeout=3)
-            if wait_until_exited():
+            if wait_until_exited(3):
                 return
     raise AssertionError("原 Daemon OS 进程未退出，测试数据根仍可能被占用")
 
