@@ -113,6 +113,8 @@ def shutdown_daemon_and_wait(
             if reap is not None:
                 reap()
             if exited():
+                if reap is not None:
+                    reap()
                 return True
             if time.monotonic() >= deadline:
                 return False
