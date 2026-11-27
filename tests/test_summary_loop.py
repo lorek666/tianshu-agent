@@ -178,7 +178,9 @@ def test_missing_cursor_cancel_settles_summary_usage_once(tmp_path, summary_usag
     """暂停后删游标再取消：主调用与已结算摘要都必须进入 run.end。"""
     workspace = tmp_path / "ws"
     workspace.mkdir()
-    (workspace / "large").write_text("context requirement\n" + "large note。" * 300)
+    (workspace / "large").write_text(
+        "context requirement\n" + "large note。" * 300, encoding="utf-8",
+    )
     with closing(EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs",
                           data_root=tmp_path)) as log:
         stack = build_stack(log, data_root=tmp_path)

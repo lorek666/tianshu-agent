@@ -1837,6 +1837,7 @@ from tianshu.model import ScriptedModel
 from tianshu.restore_access import default_material_paths
 from tianshu.worker import Worker
 
+sys.stdout.reconfigure(encoding="utf-8", newline="\\n")
 root = Path(sys.argv[1])
 db = root / "events.db"
 def db_for():
@@ -1866,7 +1867,7 @@ with closing(db_for()) as log:
 """
     model = ScriptedModel([])
     with subprocess.Popen(
-        [sys.executable, "-c", worker_code, str(root)], text=True,
+        [sys.executable, "-c", worker_code, str(root)], text=True, encoding="utf-8",
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     ) as worker:
         marker = queue.Queue()
