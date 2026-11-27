@@ -432,6 +432,14 @@
 
 ## 5. 踩坑教训（别再踩）
 
+- **可重建游标不等于副作用已核清**：Responses 能从模型结果派生 resume 游标，但取消与
+  `confirm_control` 必须始终从持久化 intent、result、Receipt 和 block 证据判断效果。
+  派生游标重新出现不能把未知或未结算写入洗成 `none_applied`。
+- **挂起父 Run 的取消不能跳过 Worker 安全点**：只有缺游标的挂起 Run 才在同事务内
+  核清后就地终结；有有效游标的父 Run 保留取消请求并等待 Worker 交接。判断游标是否存在
+  只查行，不加载内容，避免损坏的 MCP 引用阻断取消。见
+  [取消交接修复](changelog/2026-11-27-chat-cursor-cancel-handoff.md)。
+
 - **显式续跑不能用认领前的游标快照**：上一位持有人可能在交还作业前保存了新游标。
   最终读取、校验和认领应在同一笔写事务完成，心跳和模型请求在提交之后开始。
   旧账本的尝试数下限应跨重启保持未知。见[恢复计数说明](changelog/2026-11-27-recovery-attempt-knownness.md)。

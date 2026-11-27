@@ -22,5 +22,15 @@
 Worker/Daemon 子进程与 stdin 屏障，覆盖取消先到、park 先到、unknown 阻断和 `run.end`
 写失败回滚。
 
-最终本机裸全量证据由本次候选验证日志记录；独立第二读者复审与 GitHub required CI
-由主控后续绑定，本文不宣称独立复审或 CI 已完成。
+- Responses 可从已持久化模型结果派生 resume 游标，但派生游标不代表副作用已核清。
+  取消请求与 Worker 安全点的 `confirm_control` 都从持久化 intent、result、Receipt 和
+  block 证据重算效果，不能因游标重新出现而绕过核清。
+- 已挂起且缺游标的 Run 才在同一事务内核清后就地终结；有有效游标的挂起父 Run 保留
+  `running + control_requested=cancel`，继续向子任务传播并等待 Worker 安全点交接。
+  游标存在性只查询 SQLite 行，不加载或水合游标内容。
+- Windows 的中文测试夹具与子进程 IPC 显式使用 UTF-8；超时用例继续断言“超时不重试”，
+  不把重试或重跑当成修复。
+
+最终代码树 `ca3881b` 的本机裸全量已通过，原始日志与隔离环境记录随候选验证证据保留。
+独立第二读者以 `483d9c9..ca3881b` 的精确增量完成复审，结论为“已修”；Responses 直接绕过
+核清与 parked 提前终结两类负控均有效复现后转绿。GitHub required CI 由主控后续绑定。
