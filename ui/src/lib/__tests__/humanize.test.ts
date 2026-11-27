@@ -118,6 +118,7 @@ describe("枚举 → 人话", () => {
       reason: "删除不可逆",
       rule_id: "c4.delete",
       isolation: null,
+      command: null,
       state: "pending",
       created_at: 1,
       expires_at: 2,

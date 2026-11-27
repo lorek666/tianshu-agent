@@ -67,6 +67,8 @@ APPROVAL_FIELDS = {
     "rule_id",
     # F2：审批前可见的隔离视图（非 exec 动作为 None）。
     "isolation",
+    # exec 审批的只读 argv/cwd/backend 详情。
+    "command",
     "state",
     "created_at",
     "expires_at",
@@ -127,6 +129,8 @@ class Env:
         call_id: str = "call_1",
         args_hash: str | None = None,
         rule_id: str = "c4.overwrite",
+        isolation: dict[str, object] | None = None,
+        command: dict[str, object] | None = None,
     ) -> str:
         run = self.stack.tasks.get_run(run_id)
         assert run is not None
@@ -150,7 +154,10 @@ class Env:
             preconditions={"target": "present"},
         )
         approval = self.stack.approvals.request(
-            request, PolicyDecision("approve", "覆盖已有文件需要确认", rule_id)
+            request,
+            PolicyDecision("approve", "覆盖已有文件需要确认", rule_id),
+            isolation=isolation,
+            command=command,
         )
         return approval.approval_id
 
@@ -516,7 +523,29 @@ def test_approvals_list_has_exact_shape_and_rule_id(env: Env) -> None:
     # 事件补出来。非 exec 动作没有执行隔离语义 → isolation 显式 None。
     assert view["rule_id"] == "c4.overwrite"
     assert view["isolation"] is None
+    assert view["command"] is None
     assert "digest" not in repr(view).lower()
+
+
+def test_approval_command_survives_list_and_decide(env: Env) -> None:
+    """命令详情从 approval.requested 原样回读，不因审批决定或列表投影丢失。"""
+    task = env.create_task()
+    run = env.start_run(task["task_id"])
+    command = {
+        "argv": ["/usr/bin/python3", "-c", "print('review me')", ""],
+        "cwd": str(env.ws / "nested"),
+        "backend": "local-posix",
+    }
+    approval_id = env.approval(run["run_id"], command=command)
+    listed = env.plane.handle("approvals.list", {"run_id": run["run_id"]})[
+        "approvals"
+    ][0]
+    assert listed["command"] == command
+
+    decided = env.plane.handle(
+        "approvals.decide", {"approval_id": approval_id, "decision": "approve"}
+    )
+    assert decided["approval"]["command"] == command
 
 
 def test_approvals_decide_enqueues_once_per_run(env: Env) -> None:

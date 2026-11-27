@@ -110,6 +110,90 @@ def test_schema_json_mirrors_python_contract():
     assert doc["$defs"]["networkReceiptPayload"] == event_schema.schema_for("receipt", 2)
 
 
+@pytest.mark.parametrize("version", [0, 1])
+def test_approval_command_is_optional_but_closed_and_complete(version):
+    """v0/v1 均可缺 command；v0 保持冻结，v1 的 command 必须完整且封闭。"""
+    assert event_schema.known_versions("approval.requested") == frozenset({0, 1})
+    payload = event_schema.minimal_payload("approval.requested")
+    event_schema.validate_payload("approval.requested", payload, version)
+    payload["command"] = {
+        "argv": ["/usr/bin/python3", "-c", "print(1)", ""],
+        "cwd": "/work/project",
+        "backend": "CustomBackend",
+    }
+    if version == 0:
+        with pytest.raises(event_schema.PayloadContractError, match="command"):
+            event_schema.validate_payload("approval.requested", payload, version)
+        return
+    event_schema.validate_payload("approval.requested", payload, version)
+
+    for command in (
+        {},
+        {"argv": [], "cwd": "/work", "backend": "local"},
+        {"argv": ["/bin/echo", 1], "cwd": "/work", "backend": "local"},
+        {"argv": ["/bin/echo"], "cwd": "", "backend": "local"},
+        {"argv": ["/bin/echo"], "cwd": "/work"},
+        {"argv": ["/bin/echo"], "cwd": "/work", "backend": ""},
+        {"argv": ["/bin/echo"], "cwd": "/work", "backend": "local", "extra": 1},
+    ):
+        bad = {**payload, "command": command}
+        with pytest.raises(event_schema.PayloadContractError, match="command"):
+            event_schema.validate_payload("approval.requested", bad, version)
+
+    with pytest.raises(event_schema.PayloadContractError) as exc:
+        event_schema.validate_payload(
+            "approval.requested", {**payload, "extra": True}, version
+        )
+    assert exc.value.path == "$.extra"
+
+
+def test_approval_command_rejects_future_version_and_legacy_fallback():
+    with pytest.raises(event_schema.UnknownPayloadVersion, match="版本 2"):
+        event_schema.schema_for("approval.requested", 2)
+
+    payload = event_schema.minimal_payload("approval.requested")
+    payload["command"] = {"argv": [], "cwd": "/work", "backend": "local"}
+    # v0 的 required 虽为空，command 子契约仍严格；不能借 legacy 回落写入畸形详情。
+    with pytest.raises(event_schema.PayloadContractError, match="command"):
+        event_schema.detect_version("approval.requested", payload, allow_legacy=True)
+
+
+def test_approval_command_v1_round_trips_with_version_and_rejects_malformed(tmp_path):
+    db = tmp_path / "events.db"
+    payload = event_schema.minimal_payload("approval.requested")
+    payload["command"] = {
+        "argv": ["/bin/echo", "", "  padded  "],
+        "cwd": "/work/project",
+        "backend": "local-posix",
+    }
+    log = _log(tmp_path)
+    try:
+        seq = log.append("run_x", "approval.requested", payload)
+        row = log.conn.execute(
+            "SELECT type, version FROM event_versions WHERE seq=?", (seq,)
+        ).fetchone()
+        assert (row["type"], row["version"]) == ("approval.requested", 1)
+    finally:
+        log.close()
+
+    reopened = EventLog(db, blob_dir=tmp_path / "blobs")
+    try:
+        (event,) = reopened.read_run("run_x")
+        assert event.payload == payload
+        assert event.payload_version == 1
+        before = reopened.seq_head()
+        malformed = {**payload, "command": {**payload["command"], "extra": True}}
+        with pytest.raises(event_schema.PayloadContractError, match="extra"):
+            reopened.append("run_x", "approval.requested", malformed)
+        assert reopened.seq_head() == before
+        assert reopened.read_run("run_x") == [event]
+        assert reopened.conn.execute(
+            "SELECT COUNT(*) FROM event_versions"
+        ).fetchone()[0] == 1
+    finally:
+        reopened.close()
+
+
 def test_registry_is_complete_and_bidirectional():
     event_schema.ensure_registry(EVENT_TYPES)  # 不抛
     with pytest.raises(event_schema.UnsupportedSchemaKeyword, match="缺少 schema"):
