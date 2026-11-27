@@ -61,6 +61,29 @@ def _first_host_start_failure(root: Path, proc: subprocess.Popen[bytes]) -> str:
     return "\n".join(lines)
 
 
+def test_host_snapshot_helper_does_not_load_execution_backend():
+    # Reject the expensive import inside a fresh interpreter, where the parent
+    # pytest session's already-imported modules cannot mask the dependency.
+    script = """
+import importlib.abc
+import sys
+
+class NoExecutionAdmission(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == 'tianshu.execution_admission':
+            raise AssertionError('snapshot helper loaded execution admission')
+
+sys.meta_path.insert(0, NoExecutionAdmission())
+from tianshu.host import _daemon_helper
+assert callable(_daemon_helper)
+"""
+    proc = subprocess.run(
+        [_test_interpreter(), "-c", script], env=_child_env(),
+        capture_output=True, text=True, encoding="utf-8", timeout=10, check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+
+
 def test_native_windows_test_interpreter_keeps_project_imports(monkeypatch):
     with monkeypatch.context() as patch:
         patch.setattr(os, "name", "nt")
