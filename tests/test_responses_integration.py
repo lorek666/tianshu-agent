@@ -318,7 +318,9 @@ def test_responses_missing_cursor_unknown_write_cannot_be_cancelled(
         evidence_before = log.read_run(run_id, event_types=evidence_types)
         with Worker(stack, model=model_instance, heartbeat_interval_ms=None) as worker:
             assert worker.run_once()
+            assert worker.errors == [], worker.errors
             assert not worker.run_once()
+            assert worker.errors == [], worker.errors
         assert log.read_run(run_id, event_types=evidence_types) == evidence_before
         assert JobStore(log).job_for_run(run_id).state == "waiting"
         run = stack.tasks.get_run(run_id)
