@@ -133,9 +133,15 @@ class _ResumePlan:
     adopted: list[int] = field(default_factory=list)
 
 
+def snapshot_blob_dir(root: Path) -> Path:
+    from .pathkeys import overlap_key
+
+    return root / ("blobs" if overlap_key(root.name) == overlap_key("artifacts")
+                   else "preimage_blobs")
+
+
 class SnapshotStore:
     def __init__(self, root: Path, *, owner_log: Any = None) -> None:
-        from .pathkeys import overlap_key
         from .restore_access import (
             RestoreAccessError,
             RestoreScopeBusy,
@@ -146,11 +152,7 @@ class SnapshotStore:
         ensure_path_not_held(root)
         self.root = root
         self._owner_log = owner_log
-        self.blob_dir = (
-            root / "blobs"
-            if overlap_key(Path(root).name) == overlap_key("artifacts")
-            else root / "preimage_blobs"
-        )
+        self.blob_dir = snapshot_blob_dir(root)
         self.manifest_dir = root / "snapshots"
         self.journal = undo_journal.JournalStore(root, owner_log=owner_log)
         try:

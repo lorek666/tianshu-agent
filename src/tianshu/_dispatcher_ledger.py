@@ -798,6 +798,13 @@ class _DispatcherLedgerMixin:
         is_subtask = isinstance(target, _SubtaskTarget)
         is_mcp = isinstance(target, _McpTarget)
         projection = self._memory_projection() if is_memory else None
+        mcp_body: bytes | None = None
+        if is_mcp:
+            from .mcp_results import is_ref_output, read_mcp_result
+
+            if is_ref_output(result.output):
+                # 文件读取在 SQLite 事务外；登记仍在结果/Receipt 同一事务内。
+                _envelope, mcp_body = read_mcp_result(result.output, log=self._log)
 
         result_event = {
             "run_id": request.run_id,
@@ -896,10 +903,8 @@ class _DispatcherLedgerMixin:
             # （凭据回答"改了什么文件"；"发了什么 / 派了什么"在 tool.result 里。）
             receipt = None
         elif is_mcp:
-            # MCP 的副作用在 server 那边，但我们知道"它跑了"：凭据把
-            # server/tool/请求 id 与执行摘要绑在一起（after_state=mcp:<sha256>），
-            # `verify_receipts()` 对 `backend=="mcp"` 只核事件引用与结果字段，
-            # **不比较磁盘**（与 exec 同一口径，见 receipt.build_mcp_receipt）。
+            # MCP 的副作用在 server 那边；新 ref 凭据核对 canonical blob，
+            # 旧 inline 凭据继续只核事件引用与结果字段。
             receipt = build_mcp_receipt(
                 run_id=request.run_id,
                 call_id=request.call_id,
@@ -972,8 +977,16 @@ class _DispatcherLedgerMixin:
                 self._set_request_state(request.request_id, STATE_DONE)
             return
 
-        # 结果、凭据与派发状态同一事务落库：杜绝"事件已写、派发行仍停在 intent"的半提交窗口。
+        # 结果、内容对象/授权、凭据与派发状态同一事务落库：
+        # 杜绝"事件已写、派发行仍停在 intent"的半提交窗口。
+        if mcp_body is not None:
+            sys.modules["tianshu.dispatcher"].failpoint("mcp_before_result_commit")
         with self._log.transaction():
+            if mcp_body is not None and self._contents is not None:
+                mcp = result.output["mcp"]
+                self._contents.record(
+                    mcp["sha256"], mcp_body, task_id=request.task_id, run_id=request.run_id,
+                )
             self._log.append_many(batch)
             self._conn.execute(
                 "UPDATE dispatches SET state=?, updated_at=? WHERE dispatch_id=?",

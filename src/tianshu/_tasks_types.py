@@ -430,7 +430,9 @@ class RunCursor:
         return "model_attempts" in ledger and known
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        from .mcp_results import sanitize_cursor_payload
+
+        return sanitize_cursor_payload({
             "messages": self.messages,
             "message_seqs": self.message_seqs,
             "pending_proposals": self.pending_proposals,
@@ -440,7 +442,7 @@ class RunCursor:
             "budget_ledger": self.budget_ledger,
             "resource_epochs": self.resource_epochs,
             "output_ref": self.output_ref,
-        }
+        })
 
     @classmethod
     def of(cls, raw: dict[str, Any] | None) -> RunCursor:
