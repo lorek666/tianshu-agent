@@ -3249,6 +3249,11 @@ pre,
   max-width: 440px;
 }
 
+.control-state-note {
+  flex-basis: 100%;
+  margin: 0;
+}
+
 .canvas-header-actions {
   display: flex;
   align-items: center;

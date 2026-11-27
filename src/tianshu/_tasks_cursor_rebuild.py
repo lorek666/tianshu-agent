@@ -31,14 +31,23 @@ from ._tasks_types import (
     RunCursor,
     _now,
 )
-from .errors import RunFenced, TianshuError
-from .events import EventLog, canonical_bytes, sha256_hex
+from .errors import ChatResumeCursorMissing, RunFenced, TianshuError
+from .events import Event, EventLog, canonical_bytes, sha256_hex
+from .guard import scan_blocked, scan_blocked_objects
 from .jobs import JobClaim, JobStore
 from .leases import LeaseStore
+from .summary_telemetry import read_calls
 from .workspace import parse_bindings
 
 if TYPE_CHECKING:  # pragma: no cover - 只为类型标注，运行期不导入
     from .permissions import ApprovalStore
+
+
+def persisted_effect_counts(events: list[Event]) -> tuple[int, int, int]:
+    """按 tool.result 归集已生效、部分生效、未知。"""
+    states = [event.payload.get("effect_state") for event in events
+              if event.type == "tool.result"]
+    return states.count("applied"), states.count("partial"), states.count("unknown")
 
 
 class _TaskCursorRebuildMixin:
@@ -137,6 +146,110 @@ class _TaskCursorRebuildMixin:
             cursor.messages, log=self._log, blob_dir=self._blob_dir,
         )
         return cursor, meta
+
+    def check_chat_resume_without_cursor(
+        self, run_id: str, *, events: list[Event] | None = None,
+    ) -> None:
+        """普通 Chat 没有游标且已有模型调用时禁止按首轮输入重启。"""
+        from ._responses_rebuild import has_responses_progress
+
+        if events is None:
+            events = self._log.read_run(run_id)
+        workflows = [event for event in events if event.type == "run.workflow"]
+        if not workflows and not any(event.type == RUN_CURSOR_SAVED for event in events):
+            return
+        if any(
+            event.type in ("goal.round_started", "goal.v2_phase_started")
+            or (
+                event.type == "run.workflow"
+                and event.payload.get("mode") in ("plan", "compact")
+            )
+            for event in events
+        ):
+            return
+        if (
+            any(event.type == "model.intent" for event in events)
+            and not has_responses_progress(events)
+        ):
+            raise ChatResumeCursorMissing(
+                effect_state=self._chat_cursor_cancel_effect(run_id, events),
+            )
+
+    def _chat_cursor_cancel_effect(self, run_id: str, events: list[Event]) -> str | None:
+        """只从已有副作用证据判定是否可取消，保留未核对的派发。"""
+        applied, partial, unknown = persisted_effect_counts(events)
+        if (partial or unknown or self.has_unsettled_dispatch(run_id, events)
+                or self.has_active_own_workspace_block(events)):
+            return None
+        own_objects = {e.payload.get("object") for e in events
+                       if e.type == "recovery.object_blocked"}
+        if own_objects:
+            scan = scan_blocked_objects(self._log)
+            if scan.malformed or own_objects & scan.blocked:
+                return None
+        receipt_calls = {e.payload.get("call_id") for e in events if e.type == "receipt"}
+        intent_calls = {e.payload.get("call_id") for e in events if e.type == "tool.intent"}
+        for event in events:
+            if event.type != "tool.result":
+                continue
+            call_id = event.payload.get("call_id")
+            effect = event.payload.get("effect_state")
+            if effect == "applied" and call_id not in receipt_calls:
+                return None
+            if call_id in intent_calls and effect not in ("applied", "none_applied"):
+                return None
+        return "applied" if applied else "none_applied"
+
+    def _cancel_effect_state(self, run_id: str, run: Run, events: list[Event]) -> str:
+        """游标可由 Responses 事件派生，取消结算只认副作用证据。"""
+        if run.effect_state == "unknown":
+            raise ChatResumeCursorMissing(effect_state=None)
+        effect_state = self._chat_cursor_cancel_effect(run_id, events)
+        if effect_state is None:
+            raise ChatResumeCursorMissing(effect_state=None)
+        return effect_state
+
+    def has_unsettled_dispatch(self, run_id: str, events: list[Event]) -> bool:
+        """是否存在已落 intent 但尚未结算 tool.result 的副作用派发（#145）。"""
+        from .dispatcher import DISPATCH_EXECUTING, DISPATCH_INTENT
+
+        intents = {
+            e.payload.get("call_id")
+            for e in events
+            if e.type == "tool.intent" and e.payload.get("call_id")
+        }
+        results = {
+            e.payload.get("call_id")
+            for e in events
+            if e.type == "tool.result" and e.payload.get("call_id")
+        }
+        if intents - results:
+            return True
+        if self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='dispatches'"
+        ).fetchone() is None:
+            return False
+        rows = self._conn.execute(
+            "SELECT call_id FROM dispatches WHERE run_id=? AND state IN (?, ?)",
+            (run_id, DISPATCH_INTENT, DISPATCH_EXECUTING),
+        ).fetchall()
+        return any(row["call_id"] not in results for row in rows)
+
+    def has_active_own_workspace_block(self, events: list[Event]) -> bool:
+        """本 Run 是否发出了尚未解除的本地目录阻断（`recovery.blocked`）。"""
+        own_workspaces = {
+            ev.payload.get("workspace")
+            for ev in events
+            if ev.type == "recovery.blocked"
+            and isinstance(ev.payload.get("workspace"), str)
+            and ev.payload.get("workspace")
+        }
+        if not own_workspaces:
+            return False
+        scan = scan_blocked(self._log)
+        if scan.malformed:
+            return True
+        return bool(own_workspaces & scan.blocked)
 
     def commit_model_turn(
         self, run_id: str, turn: dict[str, Any], claim: JobClaim
@@ -390,21 +503,52 @@ class _TaskCursorRebuildMixin:
                     for k in ("path", "sha256", "bytes", "before_state", "after_state")
                 }
         intent_count = sum(1 for e in events if e.type == "model.intent")
-        result_count = sum(1 for e in events if e.type == "model.result")
+        model_results = [e.payload for e in events if e.type == "model.result"]
+        result_count = len(model_results)
         # 按**事件条数**算，不按 request_id 去重：崩溃后重发的那一轮用的是
         # 同一个 request_id，去重会把"已经付过一次钱、没记进账"抹成 0。
         unbilled = max(0, intent_count - result_count)
         stored = self.load_cursor(run_id)
-        ledger = (stored[0].budget_ledger if stored is not None else {}) or {}
-        unknown_usage = int(ledger.get("unknown_usage_calls", 0) or 0)
-        unknown_cost = int(ledger.get("unknown_cost_calls", 0) or 0)
-        known_cost_sum = int(ledger.get("cost_total_micros", 0) or 0)
-        has_known_price_call = known_cost_sum > 0 or any(
-            isinstance((ev.payload.get("cost") or {}).get("cost"), int)
-            and not isinstance((ev.payload.get("cost") or {}).get("cost"), bool)
-            for ev in events
-            if ev.type == "model.result"
-        )
+        reported_costs = ((payload.get("cost") or {}).get("cost") for payload in model_results)
+        known_costs = [cost for cost in reported_costs if type(cost) is int]
+        if stored is None:
+            # Missing progress must not erase usage already committed in model.result.
+            turns = result_count
+            tokens = unknown_usage = 0
+            for payload in model_results:
+                usage = payload.get("usage") or {}
+                inp, out = usage.get("input_tokens"), usage.get("output_tokens")
+                tokens += (inp or 0) + (out or 0)
+                unknown_usage += int(inp is None or out is None)
+            unknown_cost = result_count - len(known_costs)
+            # 摘要调用不是 model.result，但已是独立的持久化真实调用。游标丢失
+            # 时只从主结果算会漏账；有游标时预算账本已含摘要，绝不重复相加。
+            for call in read_calls(self._log):
+                if call["request"]["run_id"] != run_id:
+                    continue
+                response = call["response"]
+                if response is None:
+                    unknown_usage += 1
+                    unknown_cost += 1
+                    continue
+                usage = response["usage"]
+                inp, out = usage.get("input_tokens"), usage.get("output_tokens")
+                tokens += (inp or 0) + (out or 0)
+                unknown_usage += int(inp is None or out is None)
+                cost = response["cost"]["cost"]
+                if type(cost) is int:
+                    known_costs.append(cost)
+                else:
+                    unknown_cost += 1
+            known_cost_sum = sum(known_costs)
+        else:
+            ledger = stored[0].budget_ledger or {}
+            turns = int(ledger.get("turns", 0) or 0)
+            tokens = int(ledger.get("tokens", 0) or 0)
+            unknown_usage = int(ledger.get("unknown_usage_calls", 0) or 0)
+            unknown_cost = int(ledger.get("unknown_cost_calls", 0) or 0)
+            known_cost_sum = int(ledger.get("cost_total_micros", 0) or 0)
+        has_known_price_call = known_cost_sum > 0 or bool(known_costs)
         had_any_model_call = result_count > 0 or unknown_cost > 0 or unbilled > 0
         cost_total_micros: int | None = (
             known_cost_sum
@@ -415,8 +559,8 @@ class _TaskCursorRebuildMixin:
             "outcome": outcome,
             "effect_state": effect_state,
             "artifact": artifact,
-            "turns": int(ledger.get("turns", 0) or 0),
-            "tokens": int(ledger.get("tokens", 0) or 0),
+            "turns": turns,
+            "tokens": tokens,
             "tokens_unknown_calls": unknown_usage,
             "cost_total_micros": cost_total_micros,
             "cost_unknown_calls": unknown_cost,

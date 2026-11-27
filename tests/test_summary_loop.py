@@ -21,6 +21,7 @@ import os
 import subprocess
 import sys
 import time
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -30,10 +31,11 @@ from test_model_contract import VENDORS, FakeTransport, _model, _payload
 from tianshu.capability import CapabilityProfile
 from tianshu.context import ContextBudget, compile_context
 from tianshu.events import EventLog
-from tianshu.loop import build_stack
-from tianshu.model import ModelIdentity, ModelResponse, ToolCall
+from tianshu.loop import Limits, build_stack
+from tianshu.model import ModelIdentity, ModelResponse, ScriptedModel, ToolCall
 from tianshu.replay import replay
 from tianshu.summaries import SUMMARY_MAX_BYTES, SummaryStore
+from tianshu.worker import Worker
 
 CONSTRAINT = "硬约束：报告只用中文。"
 ROUNDS = 6
@@ -163,6 +165,100 @@ def test_default_off_makes_no_summary_calls(tmp_path):
         for payload in _intent_payloads(log, result.run_id)
     )
     log.close()
+
+
+# ---------------------------------------------------------------- 缺游标终态结算
+
+
+@pytest.mark.parametrize("summary_usage,priced", [
+    ({"input_tokens": 120, "output_tokens": 20}, True),
+    ({"input_tokens": None, "output_tokens": None}, False),
+])
+def test_missing_cursor_cancel_settles_summary_usage_once(tmp_path, summary_usage, priced):
+    """暂停后删游标再取消：主调用与已结算摘要都必须进入 run.end。"""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "large").write_text(
+        "context requirement\n" + "large note。" * 300, encoding="utf-8",
+    )
+    with closing(EventLog(tmp_path / "events.db", blob_dir=tmp_path / "blobs",
+                          data_root=tmp_path)) as log:
+        stack = build_stack(log, data_root=tmp_path)
+        task = stack.tasks.create_task("summarize notes", [str(workspace)])
+        run = stack.tasks.start_run(task.task_id, payload={"task": task.goal, "out": ""})
+        run_id = run.run_id
+        stack.claims.enqueue(run_id)
+
+        class SummaryModel(ScriptedModel):
+            def __init__(self):
+                super().__init__([])
+                self.turn = 0
+                self.calls = 0
+
+            def price_identity(self):
+                if priced:
+                    return ModelIdentity("probe", "openai", "gpt-4.1-mini")
+                return super().price_identity()
+
+            def complete(self, messages, tools):
+                self.calls += 1
+                if not tools:
+                    return ModelResponse(
+                        "end_turn", content="context requirement",
+                        usage=summary_usage,
+                    )
+                self.turn += 1
+                if self.turn <= 6:
+                    return ModelResponse(
+                        "tool_use", tool_calls=[ToolCall(
+                            f"read-{self.turn}", "read_text", {"path": "large"},
+                        )], usage={"input_tokens": 40, "output_tokens": 8},
+                    )
+                stack.tasks.request_pause(run_id)
+                return ModelResponse(
+                    "end_turn", content="done",
+                    usage={"input_tokens": 30, "output_tokens": 6},
+                )
+
+        model = SummaryModel()
+        with Worker(
+            stack, model=model,
+            limits=Limits(max_turns=9, context_budget_bytes=BUDGET_BYTES,
+                          summary_mode="model"),
+            heartbeat_interval_ms=None,
+        ) as worker:
+            assert worker.run_once()
+            assert not worker.errors, worker.errors
+        assert stack.tasks.get_run(run_id).state == "paused"
+        cursor, _ = stack.tasks.load_cursor(run_id)
+        assert cursor is not None
+        ledger = cursor.budget_ledger
+        expected = (
+            ledger["tokens"],
+            ledger["cost_total_micros"] if priced else None,
+            ledger["unknown_usage_calls"],
+            ledger["unknown_cost_calls"],
+        )
+        if priced:
+            assert expected == (744, 436, 0, 0)
+        else:
+            assert expected == (324, None, 3, 10)
+        calls = model.calls
+        with log.transaction():
+            assert log.conn.execute(
+                "DELETE FROM run_cursors WHERE run_id=?", (run_id,),
+            ).rowcount == 1
+        cancelled = stack.tasks.request_cancel(run_id)
+        assert cancelled.state == "cancelled"
+        end, = log.read_run(run_id, event_types=("run.end",))
+        assert (
+            end.payload["tokens"],
+            end.payload["cost_total_micros"],
+            end.payload["tokens_unknown_calls"],
+            end.payload["cost_unknown_calls"],
+        ) == expected
+        assert end.payload["budget_enforced"] is priced
+        assert model.calls == calls
 
 
 # ---------------------------------------------------------------- 生成与复用

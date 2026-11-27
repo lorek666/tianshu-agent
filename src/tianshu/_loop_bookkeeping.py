@@ -11,19 +11,17 @@ import sqlite3
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from ._tasks_cursor_rebuild import persisted_effect_counts
 from .contents import ContentStore
 from .context import RUN_START_SEQ
 from .conversation import GUIDANCE_APPLIED, conversation_fact
 from .dispatcher import (
     APPROVAL_REJECTED,
-    DISPATCH_EXECUTING,
-    DISPATCH_INTENT,
     Dispatcher,
 )
 from .errors import RunFenced, RunFinishPersistenceError, TianshuError, ToolArgumentError
 from .events import Event, EventLog
 from .fsutil import atomic_write_bytes
-from .guard import scan_blocked
 from .jobs import (
     JOB_CLAIMED,
     JOB_PENDING,
@@ -615,68 +613,12 @@ class _LoopBookkeepingMixin:
         self, events: list[Event], progress: _Progress
     ) -> str:
         """按已落库 tool.result 对齐 progress 计数，防止绕过 _absorb 误报 none_applied。"""
-        n_applied = 0
-        n_unknown = 0
-        has_partial = False
-        has_unknown = False
-        for ev in events:
-            if ev.type != "tool.result":
-                continue
-            state = ev.payload.get("effect_state")
-            if state == "applied":
-                n_applied += 1
-            elif state == "partial":
-                n_unknown += 1
-                has_partial = True
-            elif state == "unknown":
-                n_unknown += 1
-                has_unknown = True
+        n_applied, n_partial, n_unknown = persisted_effect_counts(events)
         progress.n_applied = max(progress.n_applied, n_applied)
-        progress.n_unknown = max(progress.n_unknown, n_unknown)
-        if progress.n_applied == 0 and has_partial and not has_unknown:
+        progress.n_unknown = max(progress.n_unknown, n_partial + n_unknown)
+        if progress.n_applied == 0 and n_partial and not n_unknown:
             return "partial"
         return progress.effect_state
-
-    def _has_unsettled_dispatch(
-        self, run_id: str, events: list[Event] | None = None
-    ) -> bool:
-        """是否存在已落 intent 但尚未结算 tool.result 的副作用派发（#145）。"""
-        run_events = (
-            self._log.read_run(run_id, verify=False) if events is None else events
-        )
-        intents = {
-            e.payload.get("call_id")
-            for e in run_events
-            if e.type == "tool.intent" and e.payload.get("call_id")
-        }
-        results = {
-            e.payload.get("call_id")
-            for e in run_events
-            if e.type == "tool.result" and e.payload.get("call_id")
-        }
-        if intents - results:
-            return True
-        rows = self._log.conn.execute(
-            "SELECT call_id FROM dispatches WHERE run_id=? AND state IN (?, ?)",
-            (run_id, DISPATCH_INTENT, DISPATCH_EXECUTING),
-        ).fetchall()
-        return any(row["call_id"] not in results for row in rows)
-
-    def _has_active_own_workspace_block(self, events: list[Event]) -> bool:
-        """本 Run 是否发出了尚未解除的本地目录阻断（`recovery.blocked`）。"""
-        own_workspaces = {
-            ev.payload.get("workspace")
-            for ev in events
-            if ev.type == "recovery.blocked"
-            and isinstance(ev.payload.get("workspace"), str)
-            and ev.payload.get("workspace")
-        }
-        if not own_workspaces:
-            return False
-        scan = scan_blocked(self._log)
-        if scan.malformed:
-            return True
-        return bool(own_workspaces & scan.blocked)
 
     def _finish(
         self,
@@ -691,9 +633,8 @@ class _LoopBookkeepingMixin:
         self._dispatcher.close_run_mcp(run_id)
         events = self._log.read_run(run_id, verify=False)
         effect = self._sync_persisted_effects(events, progress)
-        if self._has_unsettled_dispatch(
-            run_id, events
-        ) or self._has_active_own_workspace_block(events):
+        if (self._tasks.has_unsettled_dispatch(run_id, events)
+                or self._tasks.has_active_own_workspace_block(events)):
             # 存在未结算 intent，或 `_fail_unknown` 已落库本地目录阻断但尚未转入
             # reconciling 就被异常打断：绝不能写终态 run.end 或释放目录租约（红线
             # 2/5/11）。转入 reconciling 保留租约交给 recover/人工核查；若此处仍遇

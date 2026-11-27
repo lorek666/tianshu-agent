@@ -129,6 +129,21 @@ describe("枚举 → 人话", () => {
     expect(display.ruleText).toBe("删除文件");
     expect(display.resourceCount).toBe(3);
   });
+
+  it("提示用户核对缺失游标的运行并另开运行", () => {
+    const blocked = new HostRpcError("conflict", "对话游标缺失", {
+      details: { reason: "chat_resume_cursor_missing" },
+    });
+    expect(humanizeHostError(blocked)).toMatch(/核对.*取消.*新运行/);
+    expect(humanizeHostError(new HostRpcError("conflict", "stale"))).toContain("刷新后再试");
+  });
+
+  it("工具操作未核清时给出桌面运行的核查步骤", () => {
+    const blocked = new HostRpcError("conflict", "对话游标缺失", {
+      details: { reason: "chat_resume_cursor_missing", recovery_required: true },
+    });
+    expect(humanizeHostError(blocked)).toMatch(/尚未核清.*tianshu recover.*--desktop.*再取消/);
+  });
 });
 
 describe("事件 → 时间线句子", () => {

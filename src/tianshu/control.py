@@ -58,6 +58,7 @@ from .conversation import (
 from .credentials import redact
 from .disk_admission import DiskAdmissionError
 from .errors import (
+    ChatResumeCursorMissing,
     CredentialUnsupported,
     RunFenced,
     TianshuError,
@@ -66,6 +67,7 @@ from .errors import (
 )
 from .execpolicy import ISOLATION_BOUNDARIES, ExecPolicy
 from .ipc import MAX_MESSAGE_BYTES
+from .jobs import JOB_WAITING
 from .loop import Limits, Stack
 from .model_route import RUN_MODEL_ROUTE
 from .permissions import ApprovalError, HumanIdentity
@@ -472,6 +474,11 @@ class ControlPlane:
             return handler(params)
         except ControlError:
             raise
+        except ChatResumeCursorMissing as exc:
+            raise ControlError("conflict", str(exc), {
+                "reason": "chat_resume_cursor_missing",
+                "recovery_required": exc.effect_state is None,
+            }) from exc
         except CredentialUnsupported as exc:
             raise ControlError("unsupported", redact(str(exc))) from exc
         except RunFenced as exc:
@@ -1014,16 +1021,22 @@ class ControlPlane:
         `resumed` 语义与 `approvals.decide` 一致：它只表示"已交给驱动线程"，
         不表示"已经跑起来了"。控制请求与生效状态本来就是两件事（PRD §4.3）。
         """
-        run = self._require_run(_require_str(params, "run_id"))
-        if run.state in TERMINAL_STATES or run.state == RUN_FENCED:
-            raise ControlError(
-                "conflict",
-                f"run 已终结（{run.state}），不能 resume；需要重试请 start 新 run",
-            )
-        if run.state in RUN_PENDING_RESUME_STATES:
+        run_id = _require_str(params, "run_id")
+        with self._tasks.transaction():
+            run = self._require_run(run_id)
+            if run.state in TERMINAL_STATES or run.state == RUN_FENCED:
+                raise ControlError(
+                    "conflict",
+                    f"run 已终结（{run.state}），不能 resume；需要重试请 start 新 run",
+                )
+            pending_resume = run.state in RUN_PENDING_RESUME_STATES
+            # 缺游标的作业可能已经挂起，Run 却仍为 running。
+            job = self._claims.job_for_run(run_id) if run.state == RUN_RUNNING else None
+            parked_running = job is not None and job.state == JOB_WAITING
+            if (pending_resume or parked_running) and self._tasks.load_cursor(run.run_id) is None:
+                self._tasks.check_chat_resume_without_cursor(run.run_id)
+        if pending_resume:
             self._enqueue_resume(run.run_id)
-        # `created` / `queued` / `running` / `cancelling`：作业已经在队里或正在跑，
-        # 再塞一条 resume 只会跟正在跑的 owner 抢 claim。什么都不做。
         return {"run": self._run_view(run)}
 
     def _run_cancel(self, params: dict[str, Any]) -> dict[str, Any]:

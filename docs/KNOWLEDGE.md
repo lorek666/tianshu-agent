@@ -432,6 +432,14 @@
 
 ## 5. 踩坑教训（别再踩）
 
+- **可重建游标不等于副作用已核清**：Responses 能从模型结果派生 resume 游标，但取消与
+  `confirm_control` 必须始终从持久化 intent、result、Receipt 和 block 证据判断效果。
+  派生游标重新出现不能把未知或未结算写入洗成 `none_applied`。
+- **挂起父 Run 的取消不能跳过 Worker 安全点**：只有缺游标的挂起 Run 才在同事务内
+  核清后就地终结；有有效游标的父 Run 保留取消请求并等待 Worker 交接。判断游标是否存在
+  只查行，不加载内容，避免损坏的 MCP 引用阻断取消。见
+  [取消交接修复](changelog/2026-11-27-chat-cursor-cancel-handoff.md)。
+
 - **显式续跑不能用认领前的游标快照**：上一位持有人可能在交还作业前保存了新游标。
   最终读取、校验和认领应在同一笔写事务完成，心跳和模型请求在提交之后开始。
   旧账本的尝试数下限应跨重启保持未知。见[恢复计数说明](changelog/2026-11-27-recovery-attempt-knownness.md)。
@@ -793,6 +801,10 @@
   恢复后将 `model_attempts_known` 标为 `False`。已核验的主模型结果数与辅助摘要回执数之和可以提高
   下界，但不与保存游标直接相加。发送前记录可能来自尚未进入 adapter 的尝试。RPC 不持 SQLite 写锁，
   最后一次认领核验和远端接收之间仍有时序窗口。见[尝试隔离记录](changelog/2026-11-27-summary-attempt-isolation.md)。
+- **普通 Chat 游标缺失时停止续跑**。普通 Chat 已记录 `model.intent` 却无游标时，续跑拒绝从首轮输入重新开始。
+  已挂起且副作用已核清的普通 Chat 可直接取消。未核清时保留原记录和租约，控制面提示用 `tianshu recover` 核查。
+  对完整历史精确重建消息、预算、工具进度及保存点摘要仍未实现。迟到错误的资源收敛和
+  子任务停止语义仍待处理。适用入口和验证口径见[修复记录](changelog/2026-11-27-chat-cursor-resume.md)。
 
 - **SLO-first 与 macOS count2 已获 #225 hosted 证明，仍不承诺消除宿主抖动（2026-11-26）**：
   本地真子进程测试证明 SLO/soak 在所属分片首位执行、完整 collection 与分组权重不变，

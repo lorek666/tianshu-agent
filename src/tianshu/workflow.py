@@ -92,6 +92,10 @@ class WorkflowV1:
     def is_plan_confirmation(self) -> bool:
         return self.mode == "execute" and self.source_run_id is not None and not self.source_goal
 
+    @property
+    def is_plain_execute_chat(self) -> bool:
+        return self.mode == "execute" and self.source_run_id is None
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 

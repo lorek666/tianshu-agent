@@ -38,7 +38,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 
-from .errors import RunFinishPersistenceError, TianshuError
+from .errors import ChatResumeCursorMissing, RunFenced, RunFinishPersistenceError, TianshuError
 from .events import EventLog
 from .jobs import (
     JOB_CLAIMED,
@@ -62,6 +62,7 @@ from .restore_access import preflight_legacy_material_layout
 from .tasks import (
     RUN_FENCED,
     RUN_PAUSED,
+    RUN_RECONCILING,
     RUN_RUNNING,
     RUN_WAITING_APPROVAL,
     TERMINAL_STATES,
@@ -352,6 +353,25 @@ class Worker:
                 retry_finish = exc.requeue and self._heartbeat is None
                 # 让 Daemon 的连续驱动失败门禁处理持续写库故障。
                 raise
+            except ChatResumeCursorMissing as exc:
+                self.errors.append(f"{type(exc).__name__}: {exc}")
+                try:
+                    with self._tasks.transaction():
+                        run = self._tasks.get_run(claim.run_id)
+                        if (
+                            run is not None
+                            and run.state == RUN_RUNNING
+                            and not self.stack.log.read_run(
+                                run.run_id,
+                                event_types=("model.result", "tool.intent", "tool.result"),
+                            )
+                        ):
+                            self._tasks.transition(
+                                run.run_id, RUN_RECONCILING, claim=claim,
+                                reason="chat_resume_cursor_missing",
+                            )
+                except (JobLost, RunFenced):
+                    self.errors.append("作业已被接管或终结，保留当前 Run 状态")
             except Exception as exc:  # noqa: BLE001 - 单个作业失败不该带走整个循环
                 self.errors.append(f"{type(exc).__name__}: {exc}")
         # 心跳仍持连接或本轮中断时，不能排入更多工作。
@@ -599,7 +619,23 @@ class Worker:
             elif requeue or (retry_finish and state == RUN_RUNNING):
                 self._claims.requeue(claim)
             else:
-                self._claims.park(claim, reason=state)
+                missing_cursor = (
+                    run is not None and self._tasks.load_cursor(claim.run_id) is None
+                )
+                if missing_cursor:
+                    parked = self._claims.park(
+                        claim, reason=state, defer_to_cancel=True,
+                    )
+                else:
+                    parked = self._claims.park(claim, reason=state)
+                if parked.state == JOB_CLAIMED and missing_cursor:
+                    # park 的写事务发现取消先到，保留 claim。缺游标的 Chat
+                    # 不会再到循环安全点，现在由执行侧核对效果并原子收尾；
+                    # 未知效果继续挂起，绝不把请求冒充已取消。
+                    try:
+                        self._tasks.confirm_control(claim.run_id, claim=claim)
+                    except ChatResumeCursorMissing:
+                        self._claims.park(claim, reason=state)
         except TianshuError as exc:
             # 被接管 / 作业已被别处收掉：不是我们的活，也不该让整个循环崩掉
             self.errors.append(f"结算未生效：{exc}")

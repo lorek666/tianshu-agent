@@ -141,7 +141,7 @@ M5 不重新发明一套。
 | `plan.execute` | `{plan_run_id,goal_revision,model_profile?,fallback_profiles?}` | `{run}` | 显式确认当前计划后新建执行 Run；工具仍逐次审批 |
 | `run.list` | `{task_id}` | `{runs}` | 失败不覆盖，历史全在 |
 | `run.status` | `{run_id}` | `{run}` | |
-| `run.pause` / `run.resume` / `run.cancel` | `{run_id}` | `{run}` | 控制请求与生效状态分开（PRD §4.3）。`run.resume` 只对 `paused` / `waiting_approval` / `reconciling` 入队；`created`/`queued`/`running`/`cancelling` 是 no-op（已经在跑或在队里，再塞会和 owner 抢 claim） |
+| `run.pause` / `run.resume` / `run.cancel` | `{run_id}` | `{run}` | 控制请求与生效状态分开（PRD §4.3）。`run.resume` 只对 `paused` / `waiting_approval` / `reconciling` 入队。普通 Chat 已有模型请求记录、缺游标时返回 `conflict`，桌面提示核对原运行后取消并开启新运行。`created`/`queued`/`running`/`cancelling` 已在跑或在队列里，`run.resume` 不操作 |
 | `approvals.list` | `{run_id?}` | `{approvals}` | 过期的先清再列（批了也不会执行的不该留在队列里） |
 | `approvals.decide` | `{approval_id, decision:"approve"\|"reject", reason?}` | `{approval, resumed}` | `resumed=true` 只表示"已交给驱动线程"，**不表示已经跑起来**（续跑可能失败并被丢弃）。`reason` 目前不进库：审批记录没有自由文本字段，改了就要动 `schemas/m2/approval.json`；它只用于 UI 展示 |
 | `events.run` | `{run_id, after_seq?, limit?}` | `{events, seq_head, has_more}` | 事件日志是唯一事实源 |

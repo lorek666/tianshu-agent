@@ -1125,14 +1125,30 @@ class TaskStore(_SubtaskStoreMixin, _TaskCursorRebuildMixin):
         "取消"只保证不再派发新的副作用，不撤销已经发生的那一次：
         已经 applied 的 effect_state 会如实留在 Run 上。
         """
-        safe = tuple(self.SAFE_CONTROL_STATES)
-        marks = ",".join("?" * len(safe))
+        safe = self.SAFE_CONTROL_STATES
         with self._log.transaction() as tx:
             run = self.get_run(run_id)
             if run is None:
                 raise TianshuError(f"run 不存在：{run_id}")
             if run.state in TERMINAL_STATES or run.state == RUN_FENCED:
                 return run
+            effect_state = run.effect_state or "none_applied"
+            job = self._claims.job_for_run(run_id) if self._claims is not None else None
+            parked = job is not None and job.state == JOB_WAITING
+            if run.state in safe:
+                effect_state = self._cancel_effect_state(
+                    run_id, run, self._log.read_run(run_id),
+                )
+            elif parked and self._conn.execute(
+                "SELECT 1 FROM run_cursors WHERE run_id=?", (run_id,),
+            ).fetchone() is None:
+                effect_state = self._cancel_effect_state(
+                    run_id, run, self._log.read_run(run_id),
+                )
+                # 缺游标的作业已挂起，没有驱动者会确认请求；在同一事务内核对作业和副作用。
+                safe = (*safe, run.state)
+            immediate = run.state in safe
+            marks = ",".join("?" * len(safe))
             tx.append(
                 run_id,
                 RUN_CONTROL,
@@ -1140,8 +1156,8 @@ class TaskStore(_SubtaskStoreMixin, _TaskCursorRebuildMixin):
                     "run_id": run_id,
                     "task_id": run.task_id,
                     "action": CONTROL_CANCEL,
-                    "applied_immediately": run.state in safe,
-                    "effect_state": run.effect_state,
+                    "applied_immediately": immediate,
+                    "effect_state": effect_state,
                 },
                 task_id=run.task_id,
                 actor_kind="human",
@@ -1185,7 +1201,7 @@ class TaskStore(_SubtaskStoreMixin, _TaskCursorRebuildMixin):
                 tx,
                 run_id,
                 outcome="cancelled",
-                effect_state=run.effect_state or "none_applied",
+                effect_state=effect_state,
                 reason=CANCEL_REASON,
             )
         return self._must_run(run_id)
@@ -1236,6 +1252,11 @@ class TaskStore(_SubtaskStoreMixin, _TaskCursorRebuildMixin):
                     task_id=run.task_id,
                 )
                 return CONTROL_PAUSE
+            effect_state = run.effect_state or "none_applied"
+            if action == CONTROL_CANCEL:
+                effect_state = self._cancel_effect_state(
+                    run_id, run, self._log.read_run(run_id),
+                )
             cur = self._conn.execute(
                 "UPDATE runs SET state=?, control_requested=NULL"
                 " WHERE run_id=? AND state=? AND control_requested=?",
@@ -1265,7 +1286,7 @@ class TaskStore(_SubtaskStoreMixin, _TaskCursorRebuildMixin):
                 tx,
                 run_id,
                 outcome="cancelled",
-                effect_state=run.effect_state or "none_applied",
+                effect_state=effect_state,
                 reason=CANCEL_REASON,
             )
             return CONTROL_CANCEL

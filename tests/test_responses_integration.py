@@ -3,9 +3,10 @@
 import os
 import subprocess
 import sys
+from contextlib import closing
 
 import pytest
-from support import approve_pending, engine_for, stack_for
+from support import CHILD_TEXT, approve_pending, engine_for, stack_for
 from test_responses_model import Transport, function, message, model, reasoning, response
 
 from tianshu.events import EventLog
@@ -218,6 +219,115 @@ engine = AgentLoop(tasks=stack.tasks, leases=stack.leases, claims=stack.claims,
     summaries=stack.summaries, model=m)
 engine.start(task.task_id, out_name="")
 """
+
+
+_MISSING_CURSOR_CANCEL_CHILD = r"""
+import json
+import sys
+from pathlib import Path
+from tianshu.control import ControlPlane
+from tianshu.events import EventLog
+from tianshu.loop import build_stack
+from tianshu.openai_responses import OpenAIResponsesModel
+from tianshu.restore_access import default_material_paths
+from tianshu.worker import Worker
+
+root = Path(sys.argv[1])
+db = root / "events.db"
+workspace = root / "ws"
+workspace.mkdir()
+log = EventLog(db, blob_dir=default_material_paths(db, root)[1], data_root=root)
+stack = build_stack(log, data_root=root)
+task = stack.tasks.create_task("写报告", [str(workspace)])
+class Transport:
+    def post(self, url, *, body, **kwargs):
+        return {
+            "id": "resp_probe", "status": "completed",
+            "output": [{
+                "type": "function_call", "id": "fc_probe", "call_id": "responses-write",
+                "name": "create_report",
+                "arguments": json.dumps({"name": "r.md", "content": "changed"}),
+                "status": "completed",
+            }],
+            "usage": {"input_tokens": 10, "output_tokens": 2},
+        }
+model = OpenAIResponsesModel("test-model", api_key="review-only", transport=Transport())
+ControlPlane(stack, model=model).handle("run.start", {
+    "task_id": task.task_id, "mode": "execute", "request_id": "responses-probe",
+    "out_name": "r.md",
+})
+with Worker(stack, model=model, heartbeat_interval_ms=None) as worker:
+    worker.run_once()
+"""
+
+
+@pytest.mark.parametrize("derived_before_cancel", [False, True])
+def test_responses_missing_cursor_unknown_write_cannot_be_cancelled(
+    tmp_path, derived_before_cancel,
+):
+    from tianshu.control import ControlPlane
+    from tianshu.jobs import JobStore
+    from tianshu.model import ScriptedModel
+    from tianshu.restore_access import default_material_paths
+    from tianshu.worker import Worker
+
+    db = tmp_path / "events.db"
+    workspace = tmp_path / "ws"
+    child = subprocess.run(
+        [sys.executable, "-c", _MISSING_CURSOR_CANCEL_CHILD, str(tmp_path)],
+        env={**os.environ, "TIANSHU_FAILPOINT": "after_write"},
+        capture_output=True, timeout=30, **CHILD_TEXT,
+    )
+    assert child.returncode == 77 and "[failpoint] after_write" in child.stderr, child.stderr
+    target = workspace / "r.md"
+    assert target.read_bytes() == b"changed"
+
+    class NeverModel(ScriptedModel):
+        def complete(self, messages, tools):
+            raise AssertionError("缺游标 Responses 取消不得重新调用模型")
+
+    with closing(EventLog(
+        db, blob_dir=default_material_paths(db, tmp_path)[1], data_root=tmp_path,
+    )) as log:
+        stack = stack_for(log, data_root=tmp_path)
+        (run_id,) = log.conn.execute("SELECT run_id FROM runs").fetchone()
+        before = log.read_run(run_id)
+        assert any(e.type == "model.result" and "continuation" in e.payload for e in before)
+        assert any(e.type == "tool.intent" for e in before)
+        assert not any(e.type == "tool.result" for e in before)
+        assert not any(e.type == "receipt" for e in before)
+        assert stack.tasks.get_run(run_id).effect_state is None
+        with log.transaction():
+            assert log.conn.execute(
+                "DELETE FROM run_cursors WHERE run_id=?", (run_id,),
+            ).rowcount == 1
+        assert stack.tasks.load_cursor(run_id) is None
+        cursor_events_before = log.read_run(run_id, event_types=("run.cursor",))
+        if derived_before_cancel:
+            assert stack.tasks.restore_responses_cursor(run_id) is not None
+            assert stack.tasks.load_cursor(run_id) is not None
+
+        model_instance = NeverModel([])
+        plane = ControlPlane(stack, model=model_instance)
+        requested = plane.handle("run.cancel", {"run_id": run_id})["run"]
+        assert requested["state"] == "running"
+        assert requested["control_requested"] == "cancel"
+        evidence_types = (
+            "model.intent", "model.result", "tool.intent", "tool.result", "receipt", "run.end",
+        )
+        evidence_before = log.read_run(run_id, event_types=evidence_types)
+        with Worker(stack, model=model_instance, heartbeat_interval_ms=None) as worker:
+            assert worker.run_once()
+            assert not worker.run_once()
+        assert log.read_run(run_id, event_types=evidence_types) == evidence_before
+        assert JobStore(log).job_for_run(run_id).state == "waiting"
+        run = stack.tasks.get_run(run_id)
+        assert run.state == "reconciling"
+        assert run.control_requested == "cancel"
+        assert run.effect_state is None
+        assert stack.tasks.load_cursor(run_id) is not None
+        assert log.read_run(run_id, event_types=("run.cursor",)) == cursor_events_before
+        assert target.read_bytes() == b"changed"
 
 
 @pytest.mark.parametrize(

@@ -16,18 +16,23 @@ from .tool_registry import current_registry
 from .tools import SUBTASK_TOOL_IDS
 
 
+def has_responses_progress(events: list[Event]) -> bool:
+    return any(
+        (event.type == "model.result" and "continuation" in event.payload)
+        or (event.type == "model.intent" and
+            (event.payload.get("context") or {}).get("budget_version")
+            in RESPONSES_CONTEXT_VERSIONS)
+        for event in events
+    )
+
+
 def rebuild_responses_progress(log: EventLog, events: list[Event]):
     # Loop 初始化函数没有 I/O；局部导入避开 TaskStore/Loop 装配环。
     from .loop import _fresh_progress
     from .mission import mission_messages
     from .workflow import workflow_for
 
-    if not any(
-        (e.type == "model.result" and "continuation" in e.payload)
-        or (e.type == "model.intent" and
-            (e.payload.get("context") or {}).get("budget_version") in RESPONSES_CONTEXT_VERSIONS)
-        for e in events
-    ):
+    if not has_responses_progress(events):
         return None
     start = next(e for e in events if e.type == "run.start")
     workflow = workflow_for(log, start.run_id, events=events)

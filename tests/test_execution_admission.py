@@ -208,7 +208,7 @@ def test_run_sessions_are_dedicated_and_timeout_is_never_retried(tmp_path):
     log = settings["workspace"] / "calls.jsonl"
     clients = McpClients({"fake": McpServerConfig(
         name="fake", command=(sys.executable, str(fixture), "--mode", "hang_on_call",
-                              "--call-log", str(log)), call_timeout_ms=80,
+                              "--call-log", str(log)), call_timeout_ms=1000,
     )})
     first = clients.for_run(
         "task", "first", workspace=settings["workspace"], data_root=settings["data_root"],
