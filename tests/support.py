@@ -109,7 +109,7 @@ def shutdown_daemon_and_wait(
 
     def wait_until_exited(wait_timeout: float | None = None) -> bool:
         deadline = time.monotonic() + (timeout if wait_timeout is None else wait_timeout)
-        while True:
+        while time.monotonic() < deadline:
             if reap is not None:
                 reap()
             if exited():
