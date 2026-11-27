@@ -1755,10 +1755,33 @@ def test_cancel_chat_without_cursor_during_worker_handoff(
     workspace = root / "w"
     workspace.mkdir()
     point = "after_receipt" if effect_known else "after_write"
+    initial_code = """
+import os
+import sys
+from pathlib import Path
+
+from tianshu.cli import _scripted_model
+from tianshu.control import ControlPlane
+from tianshu.events import EventLog
+from tianshu.loop import build_stack
+from tianshu.restore_access import default_material_paths
+from tianshu.worker import Worker
+
+root = Path(sys.argv[1])
+db_path = root / "events.db"
+workspace = root / "w"
+log = EventLog(db_path, blob_dir=default_material_paths(db_path, root)[1], data_root=root)
+stack = build_stack(log, data_root=root)
+task = stack.tasks.create_task("报告", [str(workspace)])
+model = _scripted_model("r.md")
+ControlPlane(stack, model=model).handle("run.start", {
+    "task_id": task.task_id, "mode": "execute", "request_id": "chat-handoff",
+    "out_name": "r.md",
+})
+Worker(stack, model=model, heartbeat_interval_ms=None).run_once()
+"""
     initial = subprocess.run(
-        [sys.executable, "-m", "tianshu", "run", "--workspace", str(workspace),
-         "--task", "报告", "--out", "r.md", "--model", "scripted", "--db", str(db_path),
-         "--data-root", str(root)],
+        [sys.executable, "-c", initial_code, str(root)],
         env={**os.environ, "TIANSHU_FAILPOINT": point},
         capture_output=True, timeout=20,
     )

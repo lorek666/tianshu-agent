@@ -121,12 +121,19 @@ def test_chat_resume_without_cursor_does_not_send_or_claim_again(
 ):
     plane, stack, task = env
     if legacy:
+        from tianshu.workflow import prepare_workflow
+
+        workflow = prepare_workflow(
+            stack.tasks, stack.log, task, mode="execute", request_id="legacy-chat",
+        )
         run_id = stack.tasks.start_run(
-            task.task_id, payload={"task": task.goal, "out": ""},
+            task.task_id, payload={"task": task.goal, "out": ""}, workflow=workflow,
         ).run_id
         stack.claims.enqueue(run_id)
     else:
-        run_id = plane.handle("run.start", {"task_id": task.task_id})["run"]["run_id"]
+        run_id = plane.handle("run.start", {
+            "task_id": task.task_id, "mode": "execute", "request_id": "chat-resume",
+        })["run"]["run_id"]
 
     class PausingModel(RecordingModel):
         def complete(self, messages, tools):
@@ -204,17 +211,24 @@ db_path = Path(sys.argv[1])
 root = db_path.parent
 point = sys.argv[2]
 os.environ["TIANSHU_FAILPOINT"] = point
-if point in ("after_intent", "after_write", "after_receipt"):
-    from tianshu.cli import main
-    workspace = root / "workspace"
-    workspace.mkdir()
-    sys.exit(main(["run", "--workspace", str(workspace), "--task", "写报告",
-                   "--out", "r.md", "--model", "scripted", "--db", str(db_path)]))
 log = EventLog(db_path, blob_dir=default_material_paths(db_path, root)[1])
 stack = build_stack(log, data_root=root)
-task = stack.tasks.create_task("解释观点")
-model = ScriptedModel([ModelResponse("end_turn", content="第一次回答")])
-ControlPlane(stack, model=model).handle("run.start", {"task_id": task.task_id})
+if point == "model-result-before-commit":
+    task = stack.tasks.create_task("解释观点")
+    model = ScriptedModel([ModelResponse("end_turn", content="第一次回答")])
+    out_name = ""
+else:
+    from tianshu.cli import _scripted_model
+
+    workspace = root / "workspace"
+    workspace.mkdir()
+    task = stack.tasks.create_task("写报告", [str(workspace)])
+    out_name = "r.md"
+    model = _scripted_model(out_name)
+ControlPlane(stack, model=model).handle("run.start", {
+    "task_id": task.task_id, "mode": "execute", "request_id": "chat-cursor",
+    "out_name": out_name,
+})
 Worker(stack, model=model, heartbeat_interval_ms=None).run_once()
 """, str(db_path), point],
         capture_output=True, text=True, timeout=30,
