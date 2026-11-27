@@ -216,3 +216,44 @@ PID/PGID 发信号，以免误伤复用身份。该结论不推广到允许后�
 根已退出仍不能抹掉 MCP 未完成调用的未知结果；宿主崩溃后缺少身份或仍存活的
 根继续阻断，不自动重放。Windows、通用后代隔离及 #224 整体验收仍未交付。
 本批证据与未决项见[实施记录](changelog/2026-11-23-seatbelt-leaf.md)。
+
+---
+
+## 10. Windows Job Object 进程树切片契约（2026-11-28，候选，未实现）
+
+> 对应 PRD §8.1.2 与 Issue #224。本节只定义后续实现必须满足的契约，不代表代码、Windows CI 或设备验收已经完成。
+
+### 10.1 范围与非目标
+
+- 目标是在 Windows 上提供显式选择的 `process_tree` 后端；建议注册名在实现 PR 中冻结，默认 `local` 与 `auto` 保持不变。
+- 只约束进入同一 Job Object 的受控进程树。文件、网络、凭据仍不是本切片的强制边界；`capabilities.isolation` 保持 `none`，`supports_job_objects=True` 只说明实现具备 Job 机制，不构成隔离证据。只有原生 `IsolationReport` 通过后才声明 `process_tree=enforced`，累计 `isolation_view.level` 不升级。
+- 不覆盖 MCP 长连接进程、Job 外宿主进程、允许 breakaway 的后代，也不承诺防御同 UID 宿主、内核攻击、EDR 或桌面会话差异。
+- 目标后端、API 或平台不可用时抛 `PolicyUnsupported` 或保持 `unknown`，绝不回落 `local`。
+
+### 10.2 创建与生命周期
+
+1. 使用 `CREATE_SUSPENDED` 创建根进程并保留线程句柄；优先用 `PROC_THREAD_ATTRIBUTE_JOB_LIST` 在创建时原子绑定 Job。若目标 Windows 不支持该属性，只能在所有线程恢复前用 `AssignProcessToJobObject` 绑定，失败则终止暂停进程并拒绝执行。
+2. Job handle 不可继承，设置 `KILL_ON_JOB_CLOSE`，禁止 breakaway。父进程崩溃、正常退出或句柄关闭都应由内核终止 Job 内进程；测试必须证明这一点。
+3. `Popen.wait()` 只证明 leader 被回收，不证明 Job 为空。leader 正常退出后也必须查询 Job；仍有活跃进程时执行终止并有界等待。超时、取消、fence 与宿主退出调用 `TerminateJobObject`，随后查询 `QueryInformationJobObject` 的 `ActiveProcesses`。
+4. 只有活跃进程集合归零才可确认 `exited`。查询失败、仍有进程或身份不确定时保持 `unknown`，设置 `descendants_may_survive=true`，阻断冲突恢复；不得自动重放未知副作用。
+5. `ExecutionSubject` 记录实际后端、Job/profile 身份与创建证据；审批和结果视图只显示已经实测的边界，不把 Job Object 描述成完整沙箱。
+
+### 10.3 原生验收与负控
+
+Windows 原生 CI 至少覆盖：
+
+- 子进程与孙进程均在超时/取消后消失；
+- leader 先退出时 Job 内后代仍被清理；
+- detached 创建与多代派生后代不能逃出 Job；
+- 父进程崩溃或关闭最后句柄触发 kill-on-close；
+- breakaway 被拒绝，PID 复用不导致误杀，64 位 HANDLE 不被截断；
+- 创建、绑定、恢复线程、终止和查询 API 的故障均 fail-closed；
+- 无 Job、无 kill-on-close、查询失败的负控必须保持 `unknown` 或拒绝，不能报绿。
+
+Windows CI 是必要证据，不替代 Windows 实机上的文件系统、EDR、桌面会话、SKU 与设备差异验证。实机证据取得前不自动启用该后端，Issue #224 的完整原生沙箱目标保持开放。
+
+### 10.4 提交拆分
+
+- 本契约单独以 `docs(contract):` 提交，说明原方案、新方案、原因与影响代码。
+- 实现 PR 再修改 `exec.py`、`execution_admission.py`、`exec_backends.py`、`isolation.py` 及对应测试，完成 Tier 1 红绿、负控、全量、独立复审和 required CI。
+- 契约合入不等于能力已实现；只有实现 PR 的原生证据齐备后，才能更新支持矩阵并声明 Windows `process_tree=enforced`。

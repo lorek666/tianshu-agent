@@ -1232,6 +1232,23 @@ Sandbox Worker     ← 执行者：拿到的是句柄，不是权限
 
 每种后端、目标 OS / 架构单列支持矩阵与证据；验证失败只关闭相关能力，不降低四目标长期产品范围。分阶段发行范围见 §11.1，不放宽本节隔离判据。不能把命令白名单、另起进程、提示词或 AST 黑名单当作隔离实现。
 
+#### 8.1.2 Windows Job Object 进程树切片契约（新增，未实现）
+
+**原方案**：Windows `local` 后端只等待并终止直接子进程，后代可能存活；`process_tree` 保持 `unknown`，不能用 POSIX 进程组结论代替。
+
+**新方案**：后续可交付一个显式选择、fail-closed 的 Windows Job Object 后端，只声明经原生探针证明的 `process_tree` 边界。默认 `local` 与 `auto` 不改变，目标后端不可用时拒绝，不回落。文件、网络、凭据边界仍分别为 `not_enforced` 或 `unknown`，不得因加入 Job Object 升级为完整沙箱。
+
+**为什么**：Windows 需要一条可复现的进程树终止路径来关闭“leader 退出但后代存活”的缺口；同时必须避免把“进程在同一 Job”误述为文件、网络或凭据隔离。
+
+**契约要求**：
+
+1. 进程创建必须先处于暂停态，再原子或在对线程恢复前绑定不可继承、`KILL_ON_JOB_CLOSE` 的 Job；绑定失败必须终止暂停进程并拒绝执行。禁止 breakaway，detached 创建与多代派生后代仍留在 Job 内。
+2. leader 退出不等于进程树退出。超时、取消、fence 与宿主退出走 `TerminateJobObject`；leader 正常退出后也必须查询 Job，仍有活跃进程时同样终止并有界等待。只有 Job 的活跃进程集合归零才可确认 `exited`。无法确认时保持 `unknown`、`descendants_may_survive=true`，阻断冲突恢复，不自动重放。
+3. `ExecutionSubject` 绑定实际后端与隔离 profile；`IsolationReport` 只在该后端 × Windows × 架构的原生探针通过后声明 `process_tree=enforced`。后端 `capabilities.isolation` 保持 `none`，`supports_job_objects=True` 不作为隔离证据，累计隔离等级不升级。审批与结果视图必须展示“仅进程树受约束”，不得显示完整隔离。
+4. 验收至少覆盖子/孙进程、leader 先退、detached 创建、多代派生、timeout/cancel、父句柄关闭、breakaway、PID 复用、高-bit HANDLE，以及无 Job、无 kill-on-close、API 故障的负控。Windows CI 是必要证据，不替代用户设备、EDR、桌面会话与文件系统实测。
+5. MCP 长连接进程、任意未进入该 Job 的宿主进程和 Job 外后代不在本切片承诺内。实现与契约分开提交；在原生证据齐备前不自动启用，不关闭 Issue #224 的完整原生沙箱目标。
+
+详细机制与验收边界见 [F2-sandbox-policy.md](F2-sandbox-policy.md) §10。
 
 ### 8.2 决策枚举
 
