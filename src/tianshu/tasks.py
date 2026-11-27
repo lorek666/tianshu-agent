@@ -1139,7 +1139,9 @@ class TaskStore(_SubtaskStoreMixin, _TaskCursorRebuildMixin):
                 effect_state = self._cancel_effect_state(
                     run_id, run, self._log.read_run(run_id),
                 )
-            elif parked and self.load_cursor(run_id) is None:
+            elif parked and self._conn.execute(
+                "SELECT 1 FROM run_cursors WHERE run_id=?", (run_id,),
+            ).fetchone() is None:
                 effect_state = self._cancel_effect_state(
                     run_id, run, self._log.read_run(run_id),
                 )
