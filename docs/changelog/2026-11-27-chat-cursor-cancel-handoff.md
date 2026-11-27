@@ -8,8 +8,9 @@
   claim，不写 `job.parked`。该分支显式校验 claim 与作业存在，不用类型忽略掩盖空值。
 - Worker 仅对缺游标路径启用该交接，并在保留 claim 后调用执行侧 `confirm_control`。
   取消核对、`run.end`、作业终结与租约交还仍在同一事务；失败整体回滚。
-- 缺游标取消从持久化模型、工具与 Receipt 证据重算效果。`unknown`、未结算派发、缺少
-  Receipt 的 applied 结果继续阻断并保留现场；已知 applied 不重发模型请求。
+- 缺游标取消从持久化模型、工具与 Receipt 证据重算效果。带来源的 execute 工作流与普通
+  Chat 使用同一核清；`unknown`、未结算派发、缺少 Receipt 的 applied 结果继续阻断并保留
+  现场，已知 applied 不重发模型请求。
 - 游标缺失后的 `run.end` 同时汇总已持久化摘要调用。已有游标时继续使用预算账本，避免
   重复计费；缺失 usage/cost 保持未知，不记成零。
 - UI 在取消待确认时保留禁用的“取消中…”入口、警告与恢复说明，终态后移除；对应

@@ -162,10 +162,7 @@ class _TaskCursorRebuildMixin:
             event.type in ("goal.round_started", "goal.v2_phase_started")
             or (
                 event.type == "run.workflow"
-                and (
-                    event.payload.get("mode") in ("plan", "compact")
-                    or event.payload.get("source_run_id") is not None
-                )
+                and event.payload.get("mode") in ("plan", "compact")
             )
             for event in events
         ):

@@ -1641,8 +1641,9 @@ def test_state_rpc_survives_adversarial_task_goals(root, start_daemon) -> None:
 
 
 @pytest.mark.parametrize("cancel_before_cursor_loss", [False, True])
+@pytest.mark.parametrize("sourced", [False, True])
 def test_workflow_audit_chat_missing_cursor_blocks_unknown_cancel(
-    tmp_path, cancel_before_cursor_loss,
+    tmp_path, cancel_before_cursor_loss, sourced,
 ):
     from tianshu.control import ControlError, ControlPlane
     from tianshu.restore_access import default_material_paths
@@ -1664,6 +1665,7 @@ from tianshu.restore_access import default_material_paths
 from tianshu.worker import Worker
 
 root = Path(sys.argv[1])
+sourced = sys.argv[2] == "1"
 db = root / "events.db"
 os.environ["TIANSHU_FAILPOINT"] = "after_write"
 log = EventLog(db, blob_dir=default_material_paths(db, root)[1], data_root=root)
@@ -1673,13 +1675,28 @@ task = stack.tasks.create_task("写报告", [str(workspace)])
 model = ScriptedModel([ModelResponse("tool_use", tool_calls=[
     ToolCall("workflow-chat-call", "create_report", {"name": "r.md", "content": "changed"})
 ])])
-ControlPlane(stack, model=model).handle("run.start", {
-    "task_id": task.task_id, "mode": "execute", "request_id": "workflow-chat",
-    "out_name": "r.md",
-})
+if sourced:
+    plan_model = ScriptedModel([ModelResponse("end_turn", content="1. write report")])
+    plane = ControlPlane(stack, model=plan_model)
+    plan_id = plane.handle("run.start", {
+        "task_id": task.task_id, "mode": "plan", "request_id": "workflow-plan",
+    })["run"]["run_id"]
+    with Worker(stack, model=plan_model, heartbeat_interval_ms=None) as worker:
+        assert worker.run_once()
+        assert not worker.errors, worker.errors
+    plane.handle("plan.execute", {
+        "plan_run_id": plan_id,
+        "goal_revision": stack.tasks.get_task(task.task_id).goal_revision,
+        "request_id": "workflow-execute",
+    })
+else:
+    ControlPlane(stack, model=model).handle("run.start", {
+        "task_id": task.task_id, "mode": "execute", "request_id": "workflow-chat",
+        "out_name": "r.md",
+    })
 with Worker(stack, model=model, heartbeat_interval_ms=None) as worker:
     worker.run_once()
-""", str(tmp_path)],
+""", str(tmp_path), str(int(sourced))],
         env={**os.environ, "TIANSHU_FAILPOINT": "after_write"},
         capture_output=True, text=True, timeout=30,
     )
@@ -1695,10 +1712,12 @@ with Worker(stack, model=model, heartbeat_interval_ms=None) as worker:
         db_path, blob_dir=default_material_paths(db_path, tmp_path)[1], data_root=tmp_path,
     )) as log:
         stack = stack_for(log, data_root=tmp_path)
-        (run_id,) = log.conn.execute("SELECT run_id FROM runs").fetchone()
+        (run_id,) = log.conn.execute(
+            "SELECT run_id FROM runs ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
         workflow, = log.read_run(run_id, event_types=("run.workflow",))
         assert workflow.payload["mode"] == "execute"
-        assert workflow.payload["source_run_id"] is None
+        assert (workflow.payload["source_run_id"] is not None) is sourced
         assert any(e.type == "tool.intent" for e in log.read_run(run_id))
         assert not any(e.type == "tool.result" for e in log.read_run(run_id))
         model = NeverModel([])
