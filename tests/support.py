@@ -61,6 +61,7 @@ def shutdown_daemon_and_wait(
     terminate: Callable[..., object] | None = None,
     snapshot: bytes | None = None,
     process_identity: tuple[int, str | None] | None = None,
+    reap: Callable[[], object] | None = None,
 ) -> None:
     """等待原 Daemon OS 进程退出，避免 Windows 日志句柄阻止临时目录清理。"""
     from tianshu import daemon
@@ -105,11 +106,14 @@ def shutdown_daemon_and_wait(
 
     def wait_until_exited() -> bool:
         deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
+        while True:
+            if reap is not None:
+                reap()
             if exited():
                 return True
+            if time.monotonic() >= deadline:
+                return False
             threading.Event().wait(0.02)
-        return exited()
 
     daemon.request_shutdown(
         data_root,

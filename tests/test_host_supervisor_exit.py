@@ -2315,13 +2315,10 @@ raise SystemExit(host.run_host(
                 assert daemon.lock_path(root).read_bytes() == attached_snapshot
                 assert ipc.probe(root, timeout=0.2)
         finally:
-            shutdown_daemon_and_wait(root, timeout=5)
-            if daemon_proc is not None:
-                try:
-                    daemon_proc.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    daemon_proc.kill()
-                    daemon_proc.wait(timeout=10)
+            shutdown_daemon_and_wait(
+                root, timeout=5, terminate=host.DaemonSupervisor._terminate,
+                reap=daemon_proc.poll if daemon_proc is not None else None,
+            )
 
 
 @pytest.mark.parametrize("replacement_stop_fails", [False, True])

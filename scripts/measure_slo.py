@@ -651,9 +651,10 @@ def _native_python_child(
     native = _native_python_command(command)
     if native == command:
         return command, env
-    # The child may target a different checkout from the measuring process.
-    paths = env["PYTHONPATH"].split(os.pathsep) if env.get("PYTHONPATH") else []
-    return native, {**env, "PYTHONPATH": os.pathsep.join([*paths, *sys.path])}
+    python_path = list(sys.path)
+    if env.get("PYTHONPATH"):
+        python_path = [*env["PYTHONPATH"].split(os.pathsep), *python_path]
+    return native, {**env, "PYTHONPATH": os.pathsep.join(python_path)}
 
 
 def _launch_host(

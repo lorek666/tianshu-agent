@@ -221,6 +221,58 @@ v36 首次裸全量在系统盘低于产品 2 GiB 准入时实际退出 1，失�
 - 文档回填只改文档；须重新核对非文档清单不变。最终提交及新完整 hosted CI 的
   head/base/合成 merge、全部 job 与原始报告验收以 PR #228 对精确对象的记录为准。
 
+## v37 hosted Windows 拒绝与 v38 测试路径修复（2026-11-25）
+
+v37 head `c1feb4185bec29d64cbaa7b4624c7ea4ccd086fb` 的 run
+[45545260925](https://github.com/lorek666/tianshu-agent/actions/runs/45545260925)
+最终为 `completed/failure`：十项 job 中七项成功，Ubuntu 单分片、Windows shard 0
+与 Windows required 汇总失败；四项 required 中 macOS 与 UI 成功，Ubuntu 与
+Windows 失败。测试对象为合成 merge `169c099160d0ece098ef5e60b69a5f75e3af8167`，
+父提交精确绑定上述 head 与 base `a755e2abf7d75b6baf36a1e47f47646142f0bc8d`。
+五份 pytest/restore ZIP 均核 GitHub `digest`，ZIP member 与解压报告逐字节一致；
+六份阶段 JSON 覆盖 macOS 两片和 Windows 四片。完整拒绝回执 SHA256 为
+`4740c108a9d23df063143800b6f79d0e0ed02ebd0a0deea74b97c72cddd4fef9`。
+
+Windows worker 1 的三项阶段失败是
+`test_state_diagnostic_uses_live_pressure_in_real_children`、
+`test_state_after_same_sender_watchdog_drop_is_not_a_sample` 和
+`test_state_measurement_uses_existing_backlog_before_another_large_write`。三项均在
+真实 Host 启动前由锁根隔离 guard 拒绝：`state 背压诊断的测试锁根未生效；不启动子进程`。
+此前 v37 已修复的三项 Host 清理 `WinError 32` 不再出现。两个 worker 共用 stdout，
+`-vv` 进度行会交叉拼接，甚至出现同一 SLO 节点的 `PASSED` 与最终失败段；结论只取
+GitHub digest 绑定的阶段 JSON 与 `FAILURES`，不采信交叉进度行。
+
+Ubuntu 单独失败于
+`test_post_readiness_bridge_bind_failure_reaps_only_owned_root[False]`。该用例由 pytest
+直接启动附着 Daemon；Linux 子进程退出后、父进程 `wait/poll` 回收前仍保留
+`/proc/<pid>/stat`，原 helper 因而把僵尸状态误判为原 OS 进程仍存活。v38 为清理
+helper 增加可选 `reap`，等待循环每次先回收已知子进程，再核原 birth identity；
+真实用例传入 `daemon_proc.poll`，没有放宽 birth identity、锁快照或强制终止门禁。
+新增红测日志 SHA256
+`138ea16795e14f160a8969f35c2ed4565a4a0d1087a400f008a2c470cf0e649d`，绿灯日志
+SHA256 `d1f603dc61b2d70b05b33bb5865465f03efc1a447d0d4eed32491b6dfe8310ee`。
+
+Windows 根因不在 guard，而在 `scripts/measure_slo.py::_native_python_child()`：Windows
+原生解释器分支用父进程 `sys.path` 覆盖了子进程继承的 `PYTHONPATH`。测试 fixture
+只把 `tests/_startup` 放入环境路径，真实子进程因此未加载
+`sitecustomize.py`，`maintenance._lock_root()` 仍是生产锁根，guard 按设计失败关闭。
+v38 保留继承路径并在其后追加 `sys.path`，同时补参数化单测与真实子进程回归。
+旧行为在私有副本使两项回归实际失败，真实子进程返回生产锁根；修复后均通过。
+负控回执 SHA256 为
+`73cf10c2201844c442e6a69ecc13c065cace09641de5ea64dba6f3a182787204`；
+最终四文件受影响域回归为 `163 passed, 1 skipped`，日志 SHA256
+`bb0accf6cb462e0ecfe8a2409d323712133bc670788da9b10700890321c05168`。
+两项修复均不降低隔离或清理要求，也不证明 hosted Windows 或用户设备已通过。
+
+v38 独立 Host 复审发现一项 P2：初始 birth identity 可读、后续读取返回 `None` 时，
+清理 helper 仍把“身份不可读”当作“进程已退出”。该分支在 Linux `/proc` 读取错误时
+会 fail-open。v39 增加 `readable -> unreadable + pid_alive` 与
+`readable -> unreadable + not pid_alive` 双分支回归；前者必须超时失败且不强制终止，
+后者才可按进程消失返回。修复后在身份为 `None` 时调用现有跨平台 `pid_alive()`，仍保持
+初始身份不可读失败关闭、PID 复用不终止、强制终止前复核锁快照与原身份。旧行为红测
+日志 SHA256 为 `0ec6670435dd3ae54dd4048a2cf11caf2dc4c261ba24310f7a281d34ec3fd90e`，修复绿灯日志 SHA256 为
+`1ccafd8e67328198f09639d51973b1537731591146acaca71578cfcbe74b267b`。该修复只涉及测试清理，不放宽任何产品权限或隔离边界。
+
 250ms 孤儿检查宽限和零孤儿门槛不变，不更改 workflow、权限来源或 C1–C5 契约。
 PID 存活与创建身份分别查询，明确不是原子句柄观察；锁内容也不是认证父链证明。
 owned launcher 的退出不证明任意后代已退出，附着端点检查不冒充拥有 OS 句柄。
