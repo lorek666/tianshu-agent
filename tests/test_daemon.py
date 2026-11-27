@@ -1640,6 +1640,105 @@ def test_state_rpc_survives_adversarial_task_goals(root, start_daemon) -> None:
         client.close()
 
 
+@pytest.mark.parametrize("cancel_before_cursor_loss", [False, True])
+def test_workflow_audit_chat_missing_cursor_blocks_unknown_cancel(
+    tmp_path, cancel_before_cursor_loss,
+):
+    from tianshu.control import ControlError, ControlPlane
+    from tianshu.restore_access import default_material_paths
+    from tianshu.worker import Worker
+
+    db_path = tmp_path / "events.db"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    child = subprocess.run(
+        [sys.executable, "-c", """
+import os
+import sys
+from pathlib import Path
+from tianshu.control import ControlPlane
+from tianshu.events import EventLog
+from tianshu.loop import build_stack
+from tianshu.model import ModelResponse, ScriptedModel, ToolCall
+from tianshu.restore_access import default_material_paths
+from tianshu.worker import Worker
+
+root = Path(sys.argv[1])
+db = root / "events.db"
+os.environ["TIANSHU_FAILPOINT"] = "after_write"
+log = EventLog(db, blob_dir=default_material_paths(db, root)[1], data_root=root)
+stack = build_stack(log, data_root=root)
+workspace = root / "workspace"
+task = stack.tasks.create_task("写报告", [str(workspace)])
+model = ScriptedModel([ModelResponse("tool_use", tool_calls=[
+    ToolCall("workflow-chat-call", "create_report", {"name": "r.md", "content": "changed"})
+])])
+ControlPlane(stack, model=model).handle("run.start", {
+    "task_id": task.task_id, "mode": "execute", "request_id": "workflow-chat",
+    "out_name": "r.md",
+})
+with Worker(stack, model=model, heartbeat_interval_ms=None) as worker:
+    worker.run_once()
+""", str(tmp_path)],
+        env={**os.environ, "TIANSHU_FAILPOINT": "after_write"},
+        capture_output=True, text=True, timeout=30,
+    )
+    assert child.returncode == 77 and "[failpoint] after_write" in child.stderr, child.stderr
+    target = workspace / "r.md"
+    assert target.read_bytes() == b"changed"
+
+    class NeverModel(ScriptedModel):
+        def complete(self, messages, tools):
+            raise AssertionError("缺游标的 Chat 不得重新调用模型")
+
+    with closing(EventLog(
+        db_path, blob_dir=default_material_paths(db_path, tmp_path)[1], data_root=tmp_path,
+    )) as log:
+        stack = stack_for(log, data_root=tmp_path)
+        (run_id,) = log.conn.execute("SELECT run_id FROM runs").fetchone()
+        workflow, = log.read_run(run_id, event_types=("run.workflow",))
+        assert workflow.payload["mode"] == "execute"
+        assert workflow.payload["source_run_id"] is None
+        assert any(e.type == "tool.intent" for e in log.read_run(run_id))
+        assert not any(e.type == "tool.result" for e in log.read_run(run_id))
+        model = NeverModel([])
+        plane = ControlPlane(stack, model=model)
+        if cancel_before_cursor_loss:
+            requested = plane.handle("run.cancel", {"run_id": run_id})["run"]
+            assert requested["state"] == "running"
+            assert requested["control_requested"] == "cancel"
+        with log.transaction():
+            assert log.conn.execute(
+                "DELETE FROM run_cursors WHERE run_id=?", (run_id,),
+            ).rowcount == 1
+        with Worker(stack, model=model, heartbeat_interval_ms=None) as worker:
+            assert worker.run_once()
+            assert not worker.run_once()
+        parked_events = log.read_run(run_id)
+        parked_job = JobStore(log).job_for_run(run_id)
+        assert parked_job.state == "waiting"
+        if not cancel_before_cursor_loss:
+            with pytest.raises(ControlError) as rejected:
+                plane.handle("run.cancel", {"run_id": run_id})
+            assert rejected.value.code == "conflict"
+            assert rejected.value.details == {
+                "reason": "chat_resume_cursor_missing", "recovery_required": True,
+            }
+        with pytest.raises(ControlError) as rejected:
+            plane.handle("run.resume", {"run_id": run_id})
+        assert rejected.value.code == "conflict"
+        assert rejected.value.details == {
+            "reason": "chat_resume_cursor_missing", "recovery_required": True,
+        }
+        assert log.read_run(run_id) == parked_events
+        assert JobStore(log).job_for_run(run_id) == parked_job
+        run = stack.tasks.get_run(run_id)
+        assert run.state == "running"
+        assert run.control_requested == ("cancel" if cancel_before_cursor_loss else None)
+        assert not any(e.type == "run.end" for e in log.read_run(run_id))
+    assert target.read_bytes() == b"changed"
+
+
 @pytest.mark.parametrize("cancel_first,effect_known,rollback", [
     (True, True, False),
     (False, True, False),

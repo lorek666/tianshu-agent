@@ -156,7 +156,14 @@ class _TaskCursorRebuildMixin:
         if events is None:
             events = self._log.read_run(run_id)
         if any(
-            event.type in ("run.workflow", "goal.round_started", "goal.v2_phase_started")
+            event.type in ("goal.round_started", "goal.v2_phase_started")
+            or (
+                event.type == "run.workflow"
+                and (
+                    event.payload.get("mode") in ("plan", "compact")
+                    or event.payload.get("source_run_id") is not None
+                )
+            )
             for event in events
         ):
             return

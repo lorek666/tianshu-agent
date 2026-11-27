@@ -556,6 +556,9 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
 
             events = self._log.read_run(run_id)
             workflow = workflow_for(self._log, run_id, events=events)
+            workflow_requires_cursor = (
+                workflow is not None and not workflow.is_plain_execute_chat
+            )
             mission_messages(self._log, run_id, events=events)
             goal_round = any(e.type in ("goal.round_started", "goal.v2_phase_started")
                              for e in events)
@@ -563,7 +566,7 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
             if stored is None:
                 stored = self._tasks.restore_responses_cursor(run_id)
             if stored is None:
-                if (workflow is not None or goal_round) and any(
+                if (workflow_requires_cursor or goal_round) and any(
                     e.type == "model.intent" for e in events
                 ):
                     raise TianshuError("工作流游标缺失，无法安全续跑；请核对原记录后取消并另开 Run")
@@ -615,7 +618,7 @@ class AgentLoop(_LoopSummaryMixin, _LoopMemoryMixin, _LoopBookkeepingMixin):
             e.type == "model.intent" and e.seq > saved_seq for e in events
         )
         self._recover_summary_attempt_count(run_id, progress, events)
-        if (workflow is not None or goal_round) and stored is None:
+        if (workflow_requires_cursor or goal_round) and stored is None:
             self._tasks.save_cursor(run_id, progress.to_cursor(), claim)
         # 能走到这里说明 claim 有效：先把心跳续上，再开始新的模型调用
         self.heartbeat_once(claim)
