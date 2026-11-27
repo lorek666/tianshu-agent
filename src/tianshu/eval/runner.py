@@ -45,7 +45,7 @@ from ..summary_telemetry import read_calls
 from ..tasks import RUN_WAITING_APPROVAL, SUBTASK_UNFINISHED_STATES
 from ..worker import Worker
 from .cases import CASE_BY_ID, SUITE_VERSION, Case
-from .checks import FollowupObservation, Observation
+from .checks import FollowupObservation, Observation, RequestFact
 from .webfixture import WebFixture, closed_origin
 
 #: 子进程入口；父进程按同一目录约定拼路径。
@@ -181,6 +181,57 @@ def _latest_run_id(log: EventLog) -> str | None:
         "SELECT run_id FROM events WHERE type='run.start' ORDER BY seq DESC LIMIT 1"
     ).fetchone()
     return row["run_id"] if row else None
+
+
+def _collect_request_facts(
+    dispatcher: Any, events: list[Any],
+) -> tuple[dict[str, RequestFact], dict[str, str]]:
+    """只读本次已打开的产品 store；缺坏产品行是 blocking evidence，不是 harness。"""
+    facts: dict[str, RequestFact] = {}
+    errors: dict[str, str] = {}
+    request_ids: set[str] = set()
+    # 字段同名不等于同一命名空间：model.* 的 request_id 不是 dispatch 请求。
+    dispatch_events = {
+        "approval.requested", "dispatch.requested", "dispatch.rejected",
+        "dispatch.admitted", "policy.denied", "tool.intent",
+    }
+    for event in events:
+        if event.type in dispatch_events:
+            payloads = [event.payload]
+        elif event.type == "tool.result" and isinstance(event.payload.get("output"), dict):
+            payloads = [event.payload["output"]]
+        else:
+            continue
+        for payload in payloads:
+            if "request_id" not in payload:
+                if event.type in dispatch_events:
+                    errors[f"event:{event.seq}"] = "missing_request_id"
+                continue
+            request_id = payload["request_id"]
+            if not isinstance(request_id, str) or not request_id:
+                errors[f"event:{event.seq}"] = "invalid_request_id"
+            else:
+                request_ids.add(request_id)
+    run_ids = {event.run_id for event in events}
+    for request_id in sorted(request_ids):
+        try:
+            stored = dispatcher.get_request(request_id)
+            if stored is None:
+                errors[request_id] = "missing_product_request"
+                continue
+            request = stored.request
+            if request.request_id != request_id or request.run_id not in run_ids:
+                raise ValueError("request identity mismatch")
+            facts[request_id] = RequestFact(
+                request_id=request.request_id, run_id=request.run_id, task_id=request.task_id,
+                call_id=request.call_id, tool_id=request.tool_id, action=request.action,
+                resources=tuple(request.resources), request_digest=request.digest(),
+                action_digest=request.action_digest(), action_subject=request.subject_digest(),
+                args_hash=request.args_hash,
+            )
+        except Exception as exc:  # noqa: BLE001 - 坏产品行必须阻断，不交给 invalid 分支
+            errors[request_id] = type(exc).__name__
+    return facts, errors
 
 
 def _identity_of(factory: ModelFactory, case: Case) -> dict[str, str | None]:
@@ -722,6 +773,9 @@ def _run_standard(
     offline_sources: list[dict[str, Any]] = []
     res = None
     files_at_pause: dict[str, bytes] | None = None
+    files_at_approval: dict[str, dict[str, bytes]] = {}
+    request_facts: dict[str, RequestFact] | None = None
+    request_fact_errors: dict[str, str] = {}
     replay_report: ReplayReport | None = None
     events = []
     run_id = ""
@@ -775,10 +829,13 @@ def _run_standard(
                         error = f"审批往返超过 {MAX_APPROVAL_ROUNDS} 次仍未收敛"
                     break
                 rounds += 1
+                pending = stack.approvals.pending(run_id=res.run_id)
+                pause = _read_tree(ws)
                 if files_at_pause is None:
-                    # "批准之前文件一个字节都没动"只能在这里证明：等 Run 结束再看
-                    # 文件对不对，证明不了中间有没有先写后改。
-                    files_at_pause = _read_tree(ws)
+                    files_at_pause = pause
+                for approval in pending:
+                    # 每张审批只保留自己的第一次 pending 快照，不借其它动作的 pause。
+                    files_at_approval.setdefault(approval.approval_id, pause.copy())
                 if case.approval == "hold":
                     # 恶意输入 case：破坏性动作挂进审批队列，人还没决定。
                     # 评测器**不替人批准**，就停在这里观察——这正是要证明的状态。
@@ -791,7 +848,6 @@ def _run_standard(
                     break
                 decision = "rejected" if case.approval == "reject" else "approved"
                 actor = HumanIdentity.local_cli()
-                pending = stack.approvals.pending(run_id=res.run_id)
                 if not pending:
                     error = "Run 停在等待审批，但审批队列为空：状态与记录不一致"
                     break
@@ -856,6 +912,9 @@ def _run_standard(
             )
         except Exception as exc:  # noqa: BLE001
             invalid_reason = f"取证失败：{type(exc).__name__}: {exc}"
+
+        # 不放进上面的通用取证 except：缺坏产品请求仍是有效、阻断的样本。
+        request_facts, request_fact_errors = _collect_request_facts(stack.dispatcher, events)
 
         # G2 记忆阶段 M2：第二段 Run（同一 data_root、另一个 workspace）。
         if effective.followup is not None:
@@ -924,6 +983,9 @@ def _run_standard(
         files=files,
         outside=outside_files,
         files_at_pause=files_at_pause,
+        files_at_approval=files_at_approval,
+        request_facts=request_facts,
+        request_fact_errors=request_fact_errors,
         events=events,
         result=res,
         replay_report=replay_report,
