@@ -643,7 +643,7 @@ class PreparedExecution:
         return self.admission
 
     def _windows_probe_record(
-        self, path: Path, facts: dict[str, object], prefix: str
+        self, path: Path, facts: dict[str, object], prefix: str, api: exec_job_object._NativeAPI,
     ) -> dict[str, int] | None:
         try:
             value = json.loads(path.read_bytes())
@@ -656,7 +656,6 @@ class PreparedExecution:
                 or facts.get(f"{prefix}_pid") != pid
             ):
                 return None
-            api = exec_job_object._load_native_api()
             if api.process_identity(handle) != (pid, birth):
                 return None
         except (OSError, ValueError, TypeError, KeyError, exec_job_object.JobObjectError):
@@ -706,6 +705,13 @@ class PreparedExecution:
         return confirmed, survivors
 
     def _probe_windows_descendant(self) -> IsolationFinding:
+        try:
+            api = exec_job_object._load_native_api()
+        except (AttributeError, OSError) as exc:
+            return IsolationFinding(
+                "process_tree", BOUNDARY_UNKNOWN,
+                f"Windows 探针无法加载进程身份与清理 API：{exc}",
+            )
         root = Path(tempfile.mkdtemp(prefix=".tianshu-detach-probe-", dir=self.workspace))
         descendant_file = root / "descendant.json"
         breakaway_file = root / "breakaway.json"
@@ -795,13 +801,13 @@ class PreparedExecution:
             if not isinstance(facts, dict):
                 facts = {}
             descendant = self._windows_probe_record(
-                descendant_file, facts, "descendant"
+                descendant_file, facts, "descendant", api
             )
             if descendant is not None:
                 records.append(descendant)
             if breakaway_file.exists():
                 breakaway = self._windows_probe_record(
-                    breakaway_file, facts, "breakaway"
+                    breakaway_file, facts, "breakaway", api
                 )
                 breakaway_valid = breakaway is not None
                 if breakaway is not None:
@@ -839,7 +845,7 @@ class PreparedExecution:
             if breakaway_valid:
                 status = BOUNDARY_NOT_ENFORCED
             evidence += f"；探针清理={'confirmed' if cleanup_confirmed else 'unknown'}"
-            if proc is not None:
+            if proc is not None and self._job_backend:
                 try:
                     if proc.close(0) != exec_job_object.TREE_EXITED:
                         status = BOUNDARY_UNKNOWN

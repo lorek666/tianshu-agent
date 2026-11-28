@@ -452,7 +452,7 @@ def test_every_native_api_has_explicit_argtypes_and_restype():
                 "HeapAlloc",
                 "HeapFree",
                 "InitializeProcThreadAttributeList",
-                "UpdateProcThreadAttributeList",
+                "UpdateProcThreadAttribute",
                 "DeleteProcThreadAttributeList",
                 "CreateProcessW",
                 "ResumeThread",
@@ -472,6 +472,7 @@ def test_every_native_api_has_explicit_argtypes_and_restype():
     assert kernel32.CreateJobObjectW.restype is job._HANDLE
     assert kernel32.GetProcessHeap.restype is job._HANDLE
     assert kernel32.GetProcessId.restype is job._DWORD
+    assert kernel32.UpdateProcThreadAttribute.restype is job._BOOL
     assert kernel32.GetProcessTimes.restype is job._BOOL
     assert kernel32.QueryInformationJobObject.argtypes[0] is job._HANDLE
     assert kernel32.QueryInformationJobObject.argtypes[2] is job._LPVOID
@@ -1261,6 +1262,7 @@ def test_windows_probe_requires_confirmed_tree_and_exact_handle_cleanup(
 
     execution = object.__new__(execution_admission.PreparedExecution)
     execution.workspace = tmp_path
+    execution._job_backend = True
     closed = []
     proc = SimpleNamespace(close=lambda timeout: closed.append(timeout) or "exited")
 
@@ -1302,6 +1304,57 @@ def test_windows_probe_requires_confirmed_tree_and_exact_handle_cleanup(
 
     assert finding.status == expected
     assert closed == [0]
+
+
+def test_windows_detached_probe_accepts_popen_lifecycle(tmp_path, monkeypatch):
+    from tianshu import execution_admission
+    from tianshu.exec import LocalExecBackend
+
+    policy = ExecPolicy(
+        argv_allowlist=(sys.executable,), cwd_roots=(tmp_path,),
+        env_allowlist=(), timeout_ms=5000, max_output_bytes=4096,
+    )
+    execution = execution_admission.PreparedExecution(
+        LocalExecBackend(), kind="command", task_id="task", run_id="run",
+        argv=(sys.executable, "-c", "pass"), cwd=tmp_path, env={},
+        policy=policy, workspace=tmp_path, data_root=tmp_path,
+    )
+    # A real Popen is reaped through the normal collector. The short child
+    # replaces only the Windows-specific probe payload for this regression.
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "print('{}')"], stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    monkeypatch.setattr(execution, "_launch_process", lambda *args, **kwargs: proc)
+    monkeypatch.setattr(job, "_load_native_api", lambda: SimpleNamespace())
+
+    finding = execution._probe_windows_descendant()
+
+    assert finding.status == "unknown"
+    assert proc.returncode == 0
+    assert list(tmp_path.glob(".tianshu-detach-probe-*")) == []
+
+
+def test_windows_detached_probe_requires_native_api_before_launch(tmp_path, monkeypatch):
+    from tianshu import execution_admission
+
+    execution = object.__new__(execution_admission.PreparedExecution)
+    execution.workspace = tmp_path
+
+    def missing_export():
+        raise AttributeError("missing Win32 export")
+
+    monkeypatch.setattr(job, "_load_native_api", missing_export)
+    monkeypatch.setattr(
+        execution, "_launch_process",
+        lambda *args, **kwargs: pytest.fail("launched a probe without cleanup API"),
+    )
+
+    finding = execution._probe_windows_descendant()
+
+    assert finding.status == "unknown"
+    assert "missing Win32 export" in finding.evidence
+    assert list(tmp_path.glob(".tianshu-detach-probe-*")) == []
 
 
 def test_probe_allows_the_exact_interpreter_it_starts(tmp_path):
@@ -1610,11 +1663,11 @@ class TestWindowsNative:
                 cwd=tmp_path, stderr=subprocess.PIPE,
             )
             result = env.dispatcher.dispatch(decision.request_id, claim)
+            assert result.status == "failed" and result.effect_state == "applied", result
+            assert result.output["interrupted"] and not result.output["timed_out"], result
             _, stderr = helper.communicate(timeout=10)
             assert helper.returncode == 0, stderr.decode(errors="replace")
             records = _wait_records(record_paths)
-            assert result.status == "failed" and result.effect_state == "applied", result
-            assert result.output["interrupted"] and not result.output["timed_out"]
             history = env.log.read_run(run.run_id)
             ended = [row for row in history if row.type == "execution.ended"]
             assert [row.payload["process_tree"] for row in ended] == ["exited"]
@@ -2042,8 +2095,9 @@ def _handle_identity(handle: int) -> dict[str, int]:
 
 
 def _assert_dead(
-    records: list[dict[str, int]], *, require_birth: bool = True, timeout_ms: int = 0,
+    records: list[dict[str, int]], *, require_birth: bool = True, timeout_ms: int = 2000,
 ) -> None:
+    # The Job accounting count can reach zero before the process object is signaled.
     kernel32 = _identity_api()
     for record in records:
         if require_birth:

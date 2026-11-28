@@ -531,7 +531,11 @@ def test_managed_pipes_report_unknown_tree_after_normal_leader_exit(
 ):
     cwd = _cwd(tmp_path)
     proc = subprocess.Popen(
-        [PY, "-c", "import sys; print('out'); print('err', file=sys.stderr)"],
+        [
+            PY, "-c",
+            "import sys; sys.stdout.buffer.write(b'out\\n'); "
+            "sys.stderr.buffer.write(b'err\\n')",
+        ],
         cwd=cwd,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
@@ -554,6 +558,7 @@ def test_managed_pipes_report_unknown_tree_after_normal_leader_exit(
     assert result.descendants_may_survive is may_survive
 
 
+@pytest.mark.skipif(os.name != "posix", reason="需要 POSIX 进程组 API")
 @pytest.mark.parametrize(
     ("group_observations", "expected"),
     [

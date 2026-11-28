@@ -85,6 +85,18 @@ uv run --frozen pytest -q \
 
 本机裸全量与受影响域回归在冻结代码树重跑，Windows 原生用例在本机 macOS 按预期跳过；最终独立第二读者和 Windows required CI 仍绑定远端候选 head。不得用本机 fake 测试、macOS 跳过或历史 CI 代替 Windows 真子进程证据。
 
+## Windows CI 首次原生失败与修复
+
+[候选 CI 46088305987](https://github.com/lorek666/tianshu-agent/actions/runs/46088305987) 在 Windows 复现了原生 API 绑定错误。正确的导出名是 `UpdateProcThreadAttribute`，旧测试替身复制了错误名称。另有两项普通后端准入用例暴露了错误的清理路径：Windows 探针把普通 `Popen` 当成受管 Job 调用 `close()`。
+
+原型测试使用实际导出名。探针在创建进程前加载身份核验和清理 API，缺少导出时返回 `unknown`。只有 Job 后端才调用 Job 专用的 `close()`，普通子进程由原收集器回收。三个本地负控分别复现绑定失败、真实 `Popen` 清理分支错误和清理 API 缺失时仍尝试启动探针。
+
+同一轮 CI 暴露了两处测试移植问题。跨平台管道断言改用确定的字节输出，POSIX 进程组时钟测试只在提供对应 API 的平台执行。
+
+[原生取证 46090224857](https://github.com/lorek666/tianshu-agent/actions/runs/46090224857) 记录到 Job 活跃数归零后，少数精确进程句柄要再等一个调度周期才收到退出信号。用例保留 PID 和创建时间核验，对同一句柄做有界等待。
+
+[原生定向复核 46090389519](https://github.com/lorek666/tianshu-agent/actions/runs/46090389519) 与[取消重复探针 46090545964](https://github.com/lorek666/tianshu-agent/actions/runs/46090545964) 复核了对精确句柄的等待。首轮取消测试等待辅助进程失败，重跑未复现。该用例先记录派发结果，使早退能够直接显示原因。最终门禁仍由合并候选的完整 CI 提供。
+
 ## 未决边界
 
 - Windows required CI 尚须覆盖真实 stdio、wait/returncode、多代与 detached 后代、leader 先退、breakaway 拒绝、父 Job handle 关闭、Admission 探针、通用/detached 精确 HANDLE 清理、MCP + Job 关闭与首次 `CloseHandle` 失败自动重试。
