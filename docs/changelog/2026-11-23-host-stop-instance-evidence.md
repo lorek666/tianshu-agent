@@ -489,6 +489,53 @@ native 工作树在清理前已由另一会话 rebase 到 `b6200f9`，旧 `c1feb
 资源清理，不改变 helper 失败的红色结论。恢复修复后四条参数回归与新增 helper 门禁均通过，`uv lock --check` 与全仓 Ruff 通过。
 
 本轮从远端 main `b5bf2b8f63a285f2e1344b386699201ed868a90c` 独立重放，避免把
+Windows Job 候选夹带进 native PR。首次三文件受影响域运行未在十分钟内结束；静态
+门禁定位到合并遗漏了 `wait_until_exited()` 的截止时间判断，失败路径会无限等待。
+主控停止该无效运行，补回边界后，截止时间负控与两项清理回归先转绿，完整受影响域
+随后实际退出 0；这不是靠延长超时掩盖失败。旧复审虽确认两项技术修复，但因复审期间
+原工作树被外部换树并删除，只能判 `partial_fixed`，其全量日志不绑定当前独立树。
+当前 code/test tree 绑定 `6beed60569d948cb87d83b0c3c4d895e2fa6b714`（tree
+`ca8111e988d90dbf2f10d0b11bf45993e28295f5`）。新独立复审确认技术修复与定向红绿，但
+原冻结路径 `/Volumes/Date/native-v44-freeze.9M4Qp` 在复审最终阶段已被外部删除，且旧
+changelog 仍指向 `c1d90e3...`，因此交付绑定只能判 `partial_fixed`。最终归档改用上述
+Git object、五个 code/test SHA256、完整 bundle 与只读校验和共同绑定；本次文档修正不改
+code/test tree。2026-11-28 在 Darwin 25.6.0 / arm64、Python 3.12.13 的上述归档树运行
+最终隔离裸全量，清除模型凭据环境变量，并使用独立锁根、权限根与 `TMPDIR`；
+`uv run --frozen pytest` 实际退出 0，结果为 `6356 passed, 12 skipped in 1193.76s`。
+日志为 `/Volumes/Date/delivery-queue-27.XE8VY7li/evidence-native-v44/pytest-full-final.log`，
+SHA256 为 `b4bb9df38ad42eee3e327082c6b7d4ba30eb93105cab474f81c317164d8df3e6`。
+该运行未展开逐项 skip 原因，不把跳过项写成通过；五个 code/test 文件与已复审 tree
+逐字节零变化。hosted required CI 仍待完成；不沿用 `b6200f9`、`0d1c15e` 或外部移动 main
+的旧证据。
+
+## Ubuntu cleanup 竞态修复与最终全量（2026-11-28）
+
+PR #259 首轮 required CI 的 Ubuntu 全量只在
+`tests/test_host_supervisor_exit.py:2361` 失败：shutdown helper 已经确认 OS 进程退出，
+但返回时精确 `Popen` 尚未完成最终 reap，随后 `daemon_proc.poll()` 才取得退出码。旧实现
+在 `exited()` 为真后直接返回；修复在已经确认 OS 退出后、返回前补一次非阻塞 `reap()`，
+不延长等待窗口，也不改变进程身份或终止授权条件。
+
+新增确定性回归固定首次 reap 返回 `None`、OS 已退出，并断言精确调用序列为两次 reap。
+父实现重放为 `1 failed`，候选实现为 `1 passed`；独立第二读者的真实子进程探针进一步
+显示父实现返回时 `returncode=null`、只 reap 一次，候选返回时 `returncode=0`、reap 两次。
+主控在全新私有副本重放同一测试，父实现 RED，候选与复原后均 GREEN；三份日志 SHA256
+分别为 `30c46a957e65273099653629fa9436c99df73ebd23833d99751e79da7b973c2a`、
+`91ac28e87543203edb8fac4612b815f59bf36ac9a72ab315b86b2e36637fba30` 与
+`0c33791aa03cbc8826ba04efd1b062adb3baa875c47625e4de7090bd753d7635`。
+
+修复 code/test HEAD 为 `6e4b001c0d1c319f831df9cf9800e142bdf40de7`，tree 为
+`2561d471727ca0db7c33166d3e497669a55d33cc`。独立第二读者结论为 `fixed`、0 finding，
+报告 SHA256 为 `5ccf3378b213c1b33255fce93093ebaa001f189941356233082fdbfd1912d8e0`；
+三文件受影响域回归退出 0。2026-11-28 在 Darwin 25.6.0 / arm64、Python 3.12.13 的
+隔离环境运行最终裸全量，清除模型凭据环境变量，并使用独立锁根、权限根与 `TMPDIR`；
+`uv run --frozen pytest` 实际退出 0，动态结果为 `6357 passed, 12 skipped in 1438.87s`。
+日志为 `/Volumes/Date/delivery-queue-27.XE8VY7li/evidence-native-v44/pytest-full-cleanup-race.log`，
+SHA256 为 `f5263de0537763d50384a688d444e4d72af06e7d42785e47426230720f3744c1`。
+该运行未展开逐项 skip 原因，不把跳过项写成通过。上面的 `6356 passed` 回执属于父树
+`59532a9`，不能替代本次 `6e4b001` 的新全量；本次纯文档回填不改 code/test tree。
+hosted required CI 仍须绑定推送后的最终 head。
+
 Windows Job 候选夹带进 native PR。`c1d90e3` 把循环条件改为先检查 deadline 后，
 `timeout=0` 会跳过首轮进程观测；完整三文件受影响域实际暴露 5 个清理回归，因此
 该版本不能充当绿色证据。`45d643b` 改为始终先观测冻结进程，再按剩余时间限制等待；

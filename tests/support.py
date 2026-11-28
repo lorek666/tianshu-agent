@@ -113,9 +113,15 @@ def shutdown_daemon_and_wait(
             if reap is not None:
                 reap()
             if exited():
-                if reap is not None:
-                    reap()
-                return True
+                if reap is None:
+                    return True
+                while True:
+                    if reap() is not None:
+                        return True
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return False
+                    threading.Event().wait(min(0.02, remaining))
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return False

@@ -531,6 +531,7 @@ def test_daemon_cleanup_reaps_known_child_before_observing_os_identity(
         nonlocal reaped
         observations.append("reap")
         reaped = True
+        return 0
 
     def birth_identity(pid):
         observations.append("birth")
@@ -567,6 +568,62 @@ def test_daemon_cleanup_reaps_again_after_os_exit_observation(
     shutdown_daemon_and_wait(tmp_path, timeout=0, reap=reap)
     assert observations == ["reap", "reap"]
     assert list(reap_results) == []
+
+def test_daemon_cleanup_waits_for_exact_reap_after_forced_exit(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    from tianshu import execution_admission, leases
+
+    snapshot = json.dumps({"pid": 12345, "instance_id": "daemon-under-test"}).encode()
+    lock_path = daemon.lock_path(tmp_path)
+    lock_path.parent.mkdir(parents=True)
+    lock_path.write_bytes(snapshot)
+    alive = True
+    reap_results = iter([None, None, None, 7])
+
+    def terminate(pid, timeout):
+        nonlocal alive
+        assert pid == 12345
+        alive = False
+
+    monkeypatch.setattr(daemon, "request_shutdown", lambda *args, **kwargs: False)
+    monkeypatch.setattr(execution_admission, "process_birth_identity", lambda pid: "same-birth")
+    monkeypatch.setattr(leases, "pid_alive", lambda pid: alive)
+    shutdown_daemon_and_wait(
+        tmp_path,
+        timeout=0,
+        terminate=terminate,
+        snapshot=snapshot,
+        process_identity=(12345, "same-birth"),
+        reap=lambda: next(reap_results),
+    )
+    assert not alive
+    assert list(reap_results) == []
+
+
+def test_daemon_cleanup_rejects_os_exit_without_exact_reap(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    from tianshu import execution_admission, leases
+
+    lock_path = daemon.lock_path(tmp_path)
+    lock_path.parent.mkdir(parents=True)
+    lock_path.write_text(
+        json.dumps({"pid": 12345, "instance_id": "daemon-under-test"}),
+        encoding="utf-8",
+    )
+    reaps = []
+
+    def reap():
+        reaps.append("reap")
+        return None
+
+    monkeypatch.setattr(daemon, "request_shutdown", lambda *args, **kwargs: True)
+    monkeypatch.setattr(execution_admission, "process_birth_identity", lambda pid: "same-birth")
+    monkeypatch.setattr(leases, "pid_alive", lambda pid: False)
+    with pytest.raises(AssertionError, match="原 Daemon OS 进程未退出"):
+        shutdown_daemon_and_wait(tmp_path, timeout=0, reap=reap)
+    assert reaps == ["reap", "reap"]
 
 
 @pytest.mark.parametrize("allow_missing_lock", [False, True])
