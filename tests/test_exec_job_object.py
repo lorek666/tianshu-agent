@@ -1663,7 +1663,7 @@ class TestWindowsNative:
                 cwd=tmp_path, stderr=subprocess.PIPE,
             )
             result = env.dispatcher.dispatch(decision.request_id, claim)
-            print(f"Control {control}: dispatch={result!r}; "
+            print(f"Control {control}: dispatch={result!a}; "
                   f"files={[p.exists() for p in record_paths]}; "
                   f"helper={helper.poll()}", flush=True)
             _, stderr = helper.communicate(timeout=10)
@@ -2098,8 +2098,9 @@ def _handle_identity(handle: int) -> dict[str, int]:
 
 
 def _assert_dead(
-    records: list[dict[str, int]], *, require_birth: bool = True, timeout_ms: int = 0,
+    records: list[dict[str, int]], *, require_birth: bool = True, timeout_ms: int = 2000,
 ) -> None:
+    # The Job accounting count can reach zero before the process object is signaled.
     kernel32 = _identity_api()
     for record in records:
         if require_birth:
