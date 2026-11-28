@@ -229,7 +229,7 @@ def _declare_prototypes(kernel32: ctypes.CDLL) -> None:
             [_LPVOID, _DWORD, _DWORD, size_ptr],
             _BOOL,
         ),
-        "UpdateProcThreadAttributeList": (
+        "UpdateProcThreadAttribute": (
             [
                 _LPVOID,
                 _DWORD,
@@ -360,7 +360,7 @@ class _NativeAPI:
 
     def update_attributes(self, memory: int, attribute: int, value: int, size: int) -> bool:
         return bool(
-            self.kernel32.UpdateProcThreadAttributeList(
+            self.kernel32.UpdateProcThreadAttribute(
                 memory,
                 0,
                 attribute,

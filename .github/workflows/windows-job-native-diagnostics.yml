@@ -1,0 +1,17 @@
+name: Windows Job native diagnostics
+on:
+  push:
+    branches: [codex/windows-job-native-diagnostics]
+permissions:
+  contents: read
+jobs:
+  diagnostics:
+    runs-on: windows-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv python install 3.12
+      - run: uv sync --frozen
+      - name: Run Windows Job and fallback tests
+        run: uv run --frozen python scripts/pytest_with_stacks.py tests/test_exec_job_object.py tests/test_execution_admission.py tests/test_isolation_gate.py -o addopts= -vv -rs --tb=short --durations=20 --stack-timeout=60
