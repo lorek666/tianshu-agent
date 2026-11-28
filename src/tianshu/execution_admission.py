@@ -569,7 +569,7 @@ class PreparedExecution:
         return self._process_tree_state(proc)
 
     def _collect_process(
-        self, proc, *, policy, blob_dir=None, should_stop=None, close_timeout=0,
+        self, proc, *, policy, blob_dir=None, should_stop=None,
     ) -> tuple[ExecResult, str | None]:
         if self._job_backend:
             try:
@@ -582,7 +582,7 @@ class PreparedExecution:
                     should_stop=should_stop,
                 )
             finally:
-                close_state = proc.close(close_timeout)
+                close_state = proc.close(0)
             if close_state != exec_job_object.TREE_EXITED:
                 state = "unknown"
                 result = replace(result, descendants_may_survive=True)
@@ -800,9 +800,7 @@ class PreparedExecution:
                  str(descendant_file), str(breakaway_file), str(os.getpid())),
                 cwd=self.workspace, env={"PATH": os.defpath},
             )
-            result, tree_state = self._collect_process(
-                proc, policy=policy, close_timeout=5.0,
-            )
+            result, tree_state = self._collect_process(proc, policy=policy)
             try:
                 facts = json.loads(result.stdout)
             except (ValueError, TypeError):
