@@ -156,7 +156,7 @@ payload = JSON（v1）/ msgpack（后续，需版本协商）
 |---|---|---|---|
 | 命令子进程 | `subprocess.Popen` | `subprocess.Popen` | 默认 `local`，不提供 OS 级隔离 |
 | 终端 PTY | POSIX PTY | ConPTY 尚未接入 | Windows 请求 PTY 返回 `PolicyUnsupported` |
-| 超时终止 | 尽力终止 POSIX 进程组 | 终止直接子进程 | Windows 不保证整树退出；Job Object 为后续设计 |
+| 超时终止 | 尽力终止 POSIX 进程组 | `local` 终止直接子进程；显式 Job 候选查询并终止受控 Job | Windows `local` 不保证整树退出；Job 候选待 required CI 与设备验证 |
 | 文件监视 | 目标原语 FSEvents | 目标原语 `ReadDirectoryChangesW` | 本表不承诺系统级文件监视已交付 |
 | 沙箱 | Seatbelt（选用 `seatbelt` 后端且系统有可执行的 `sandbox-exec`） | 原生子进程沙箱后端待交付 | W14 同时提供符合内核条件的 Linux Landlock，实测范围见 §6 |
 | 截屏 / 输入 / 无障碍 | 目标原语 ScreenCaptureKit / CGEvent / AXUIElement | 目标原语 Windows.Graphics.Capture / `SendInput` / UIA | 不作为当前桌面候选已交付能力 |
@@ -173,7 +173,7 @@ payload = JSON（v1）/ msgpack（后续，需版本协商）
 | 层 | 机制 | 现行交付范围 |
 |---|---|---|
 | L1 | 文件工具规范化路径后按 allowlist 核对 | 已交付，作用范围为内置文件工具 |
-| L2 | 进程树清理 | POSIX 使用进程组。Windows 整树清理缺少 Job Object 保证 |
+| L2 | 进程树清理 | POSIX 使用进程组。Windows `local` 仍不可确认；显式 `windows_job_object` 候选已实现，待原生 CI 与设备证据 |
 | L3a | Windows AppContainer / restricted token | 待交付。请求 `app_container` 返回 `PolicyUnsupported` |
 | L3b | macOS Seatbelt | W14 可用后端。依赖当前系统提供 `sandbox-exec`，保护范围以探针结果为准 |
 | L3 | Linux Landlock | W14 可用后端。内核可用时施加文件约束，TCP 规则需要 ABI 4 或以上 |

@@ -225,12 +225,12 @@ def _make_dispatch_env(tmp_path: Path, *, backend) -> _DispatchEnv:
 # ---------------------------------------------------------------- 1. 探针版本与注册表路由
 
 
-def test_probe_version_is_v3_and_process_tree_cleans_workspace_tempdir(tmp_path):
-    assert PROBE_VERSION == "v3"
+def test_probe_version_is_v5_and_process_tree_cleans_workspace_tempdir(tmp_path):
+    assert PROBE_VERSION == "v5"
     ws = tmp_path / "ws"
     dr = tmp_path / "data"
     report = probe_backend(LOCAL_EXEC_BACKEND, workspace=ws, data_root=dr)
-    assert report.probe_version == "v3"
+    assert report.probe_version == "v5"
     # 探针收尾后 workspace 内不得残留 `.tianshu-tree-probe-*` 临时目录
     assert list(ws.iterdir()) == []
 
@@ -658,7 +658,7 @@ def test_macos_seatbelt_live_four_boundaries_all_enforced(tmp_path):
     report = probe_backend(SEATBELT_EXEC_BACKEND, workspace=ws, data_root=dr)
 
     assert report.backend == "seatbelt"
-    assert report.probe_version == "v3"
+    assert report.probe_version == "v5"
     for boundary in ISOLATION_BOUNDARIES:
         finding = report.finding(boundary)
         assert finding.status == BOUNDARY_ENFORCED, (
@@ -957,7 +957,7 @@ def test_linux_landlock_live_probe_and_dispatcher_end_to_end(tmp_path):
     report = probe_backend(backend, workspace=ws, data_root=dr)
 
     assert report.backend == "landlock"
-    assert report.probe_version == "v3"
+    assert report.probe_version == "v5"
     for boundary in ("files_authority", "credentials", "process_tree"):
         assert report.finding(boundary).status == BOUNDARY_ENFORCED, (
             report.finding(boundary).evidence

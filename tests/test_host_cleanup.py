@@ -569,7 +569,6 @@ def test_daemon_cleanup_reaps_again_after_os_exit_observation(
     assert observations == ["reap", "reap"]
     assert list(reap_results) == []
 
-
 def test_daemon_cleanup_waits_for_exact_reap_after_forced_exit(
     monkeypatch, tmp_path: Path,
 ) -> None:

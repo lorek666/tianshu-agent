@@ -53,11 +53,12 @@ def spawn(
 | `pty=True` | `False` | 任意 | `PolicyDenied`（规则 `f2.pty_not_allowed`，改策略能解决） |
 | `pty=False` | 任意 | 任意 | 走管道；`stderr_merged=False`，stderr 可独立读取 |
 
-**Windows 的进程树（TECH-ARCH L2）在 v1 未交付。** 零依赖 stdlib 没有 Job
-Object，`_kill_tree` 只能杀直接子进程，`descendants_may_survive` 如实为 True；
-能力声明 `supports_job_objects=False`。不要因为"POSIX 能杀树"就推断 Windows
-也能——证据与支持矩阵见 [isolation-matrix.md](isolation-matrix.md)，选择不做的
-理由见 [F2-sandbox-policy.md](F2-sandbox-policy.md) §7。
+**Windows 的默认 `local` 进程树仍未交付。** `_kill_tree` 只能杀直接子进程，
+`descendants_may_survive` 如实为 True，能力声明 `supports_job_objects=False`。
+显式 `windows_job_object` 候选使用标准库 `ctypes` 与原生 Job Object 管理受控进程树，
+但 Windows required CI 与设备证据取得前不宣称已交付，也不改变 `local`/`auto` 默认值。
+证据与支持矩阵见 [isolation-matrix.md](isolation-matrix.md)，边界见
+[F2-sandbox-policy.md](F2-sandbox-policy.md) §10。
 
 **默认必须走管道。** 如果"策略打开 PTY"就等于"每次调用都走 PTY"，会静默改变
 一串真实命令的语义：`isatty()` 变真（git 开颜色、less 分页、进度条、Python
@@ -75,8 +76,8 @@ PTY 是终端语义：stdout/stderr 只有一条流，所以 `stderr` 恒为空�
 | `isolation` | `none` | `none` |
 | `supports_pty` | ✅（`pty.openpty`） | ❌（标准库没有 ConPTY） |
 | `supports_signals` | ✅（Unix 信号语义） | ❌（只有退出码 / TerminateProcess） |
-| `supports_process_group` | ✅（`start_new_session` + `killpg`） | ❌（零依赖拿不到 Job Object） |
-| `supports_job_objects` | ❌ | ❌（未接 pywin32/ctypes） |
+| `supports_process_group` | ✅（`start_new_session` + `killpg`） | `local` ❌；Job 候选使用原生 Job，不伪装 Unix 进程组 |
+| `supports_job_objects` | ❌ | `local` ❌；`windows_job_object` ✅ 机制声明，不是隔离证据 |
 | `supports_network_isolation` | ❌ | ❌ |
 
 **Windows 的证据状态（2026-11-13 对账）**：本机 macOS 跳过 Windows 专属用例，GitHub 的 Windows Python 3.12 required job 会运行它们。基准 `ccff93e79cfeb93e47e5a35012fd92fae366e941` 的 run `43298476414` 为绿色；本轮 I/O 修复的证据绑定其对应 PR 当前 SHA。runner 验证不等于 Windows 10/11、ARM64 或用户设备实测，也不增加上表未实现能力。
@@ -98,11 +99,11 @@ PTY 是终端语义：stdout/stderr 只有一条流，所以 `stderr` 恒为空�
 
 - POSIX：`Popen(start_new_session=True)`，超时后 `os.killpg(SIGKILL)` 杀整个
   进程组（子进程是组长；它的孙进程默认同组）。
-- Windows：零依赖拿不到 Job Object → `supports_process_group=False`，只
-  `kill()` 直接子进程，`ExecResult.descendants_may_survive=True`。
-  **孙进程可能存活**，文档和结果里都不假装杀了树。
-- 超时后最多再等 5 秒收尸；读线程另有 5 秒收尾上限，超过就关读端。宁可
-  少收一点输出，也不让调用方永久挂住。
+- Windows `local`：只 `kill()` 直接子进程，`ExecResult.descendants_may_survive=True`。
+  **孙进程可能存活**。显式 `windows_job_object` 候选在 leader 退出后继续查询 Job；
+  只有活跃进程归零才报 `exited`，否则保持 `unknown` 并阻断冲突恢复。
+- 超时后最多再等 5 秒收尸；读线程另有 5 秒收尾上限。读线程若被强制停止，
+  不能把强制收尾当作自然 EOF；仍无法停止时拒绝并发收尾并报错。
 
 ## 有界 stdio（不能停读）
 
@@ -131,4 +132,5 @@ PTY 是终端语义：stdout/stderr 只有一条流，所以 `stderr` 恒为空�
 - 模型可见的 `run_command` 工具（ToolSpec / C4 动作 / Dispatcher 接线）。
 - 异步句柄、取消 API、PTY 交互式写入（当前 PTY 只读，stdin 不写）。
 - Seatbelt / Landlock / AppContainer / 容器。
-- Windows Job Object：零依赖做不了，`supports_job_objects=False` 是如实声明。
+- Windows AppContainer / 容器仍未实现；显式 Job Object 进程树切片处于候选验证阶段，
+  不能作为文件、网络或凭据隔离使用。

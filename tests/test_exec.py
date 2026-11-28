@@ -23,9 +23,11 @@ import hashlib
 import os
 import signal
 import socket
+import subprocess
 import sys
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -518,6 +520,196 @@ def test_posix_signal_death_is_reported_as_signal(tmp_path):
     assert result.exit_code is None
     assert result.signal == signal.SIGTERM
     assert result.timed_out is False, "被信号杀死不是超时"
+
+
+@pytest.mark.parametrize(
+    ("tree_state", "may_survive"),
+    [("exited", False), ("unknown", True)],
+)
+def test_managed_pipes_report_unknown_tree_after_normal_leader_exit(
+    tmp_path, tree_state, may_survive
+):
+    cwd = _cwd(tmp_path)
+    proc = subprocess.Popen(
+        [
+            PY, "-c",
+            "import sys; sys.stdout.buffer.write(b'out\\n'); "
+            "sys.stderr.buffer.write(b'err\\n')",
+        ],
+        cwd=cwd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    observed = []
+    result, state = execution._run_managed_pipes(
+        proc,
+        policy=_policy(cwd),
+        blob_dir=None,
+        finalize_tree=lambda timed_out: observed.append(timed_out) or tree_state,
+    )
+
+    assert observed == [False]
+    assert state == tree_state
+    assert result.exit_code == 0
+    assert result.timed_out is False
+    assert result.stdout == "out\n"
+    assert result.stderr == "err\n"
+    assert result.descendants_may_survive is may_survive
+
+
+@pytest.mark.skipif(os.name != "posix", reason="需要 POSIX 进程组 API")
+@pytest.mark.parametrize(
+    ("group_observations", "expected"),
+    [
+        ([ProcessLookupError()], "exited"),
+        ([None, ProcessLookupError()], "exited"),
+        ([None, None, None, None], "unknown"),
+        ([OSError("probe failed")], "unknown"),
+    ],
+)
+def test_local_timeout_observes_process_group_until_deadline(
+    monkeypatch, group_observations, expected
+):
+    proc = SimpleNamespace(pid=4242, wait=lambda timeout: 0)
+    clock = SimpleNamespace(now=0.0)
+    waits = []
+    observations = iter(group_observations)
+    monkeypatch.setattr(execution, "_JOIN_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(execution.time, "monotonic", lambda: clock.now)
+    monkeypatch.setattr(execution, "_kill_tree", lambda current: True)
+    monkeypatch.setattr(execution.os, "getpgid", lambda pid: 4242)
+
+    class FakeEvent:
+        def wait(self, timeout):
+            waits.append(timeout)
+            clock.now += timeout
+
+    monkeypatch.setattr(execution.threading, "Event", FakeEvent)
+
+    def probe_group(pgid, signal_number):
+        assert (pgid, signal_number) == (4242, 0)
+        outcome = next(observations)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(execution.os, "killpg", probe_group)
+
+    assert execution._finalize_local_tree(proc, True) == expected
+    assert list(observations) == []
+    if expected == "exited" and len(group_observations) == 2:
+        assert waits == [0.02]
+    elif expected == "unknown" and len(group_observations) == 4:
+        assert waits == pytest.approx([0.02, 0.02, 0.01])
+    else:
+        assert waits == []
+
+
+def test_managed_pipe_initialization_failure_stops_tree_and_closes_streams(
+    tmp_path, monkeypatch
+):
+    cwd = _cwd(tmp_path)
+
+    class Stream:
+        def __init__(self):
+            self.closed = False
+
+        def fileno(self):
+            return 11
+
+        def close(self):
+            self.closed = True
+
+    streams = [Stream() for _ in range(3)]
+    proc = SimpleNamespace(
+        stdin=streams[0], stdout=streams[1], stderr=streams[2],
+        wait=lambda timeout: pytest.fail("初始化失败不得等待 leader"),
+    )
+    finalized = []
+
+    def fail_blocking(fd, blocking):
+        raise OSError("injected set_blocking failure")
+
+    monkeypatch.setattr(execution.os, "set_blocking", fail_blocking)
+    with pytest.raises(OSError, match="set_blocking"):
+        execution._run_managed_pipes(
+            proc,
+            policy=_policy(cwd),
+            blob_dir=None,
+            finalize_tree=lambda timed_out: finalized.append(timed_out),
+            close_stdin=True,
+        )
+
+    assert finalized == [True]
+    assert all(stream.closed for stream in streams)
+
+
+def test_held_output_pipe_after_leader_exit_is_unknown(tmp_path, monkeypatch):
+    cwd = _cwd(tmp_path)
+    out_read, out_write = os.pipe()
+    err_read, err_write = os.pipe()
+    proc = SimpleNamespace(
+        stdin=None,
+        stdout=os.fdopen(out_read, "rb", buffering=0),
+        stderr=os.fdopen(err_read, "rb", buffering=0),
+        returncode=0,
+        wait=lambda timeout: 0,
+    )
+    monkeypatch.setattr(execution, "_JOIN_TIMEOUT_S", 0.01)
+    try:
+        result, state = execution._run_managed_pipes(
+            proc,
+            policy=_policy(cwd),
+            blob_dir=None,
+            finalize_tree=lambda timed_out: None,
+        )
+    finally:
+        os.close(out_write)
+        os.close(err_write)
+
+    assert state == "unknown"
+    assert result.descendants_may_survive is True
+
+
+def test_second_pump_start_failure_joins_the_first_started_thread(tmp_path, monkeypatch):
+    out_read, out_write = os.pipe()
+    err_read, err_write = os.pipe()
+    os.close(out_write)
+    os.close(err_write)
+    proc = SimpleNamespace(
+        stdin=None,
+        stdout=os.fdopen(out_read, "rb", buffering=0),
+        stderr=os.fdopen(err_read, "rb", buffering=0),
+        wait=lambda timeout: pytest.fail("pump 初始化失败不得等待 leader"),
+    )
+    started = []
+    joined = []
+    finalized = []
+
+    def start(*_args):
+        if started:
+            raise OSError("second pump")
+        thread = object()
+        started.append(thread)
+        return thread
+
+    monkeypatch.setattr(execution, "_start_pump", start)
+    monkeypatch.setattr(
+        execution, "_join_pumps",
+        lambda threads, *_args, **_kwargs: joined.append(list(threads)) or True,
+    )
+    with pytest.raises(OSError, match="second pump"):
+        execution._run_managed_pipes(
+            proc,
+            policy=_policy(_cwd(tmp_path)),
+            blob_dir=None,
+            finalize_tree=lambda failed: finalized.append(failed),
+        )
+
+    assert joined == [started]
+    assert finalized == [True]
+    assert proc.stdout.closed and proc.stderr.closed
 
 
 # ---------------------------------------------------------------- Windows 专属

@@ -63,7 +63,8 @@ Seatbelt 的文件、网络和凭据策略，固定禁止派生后代。仅适�
 `process_tree=not_enforced`。自动命令与本地 MCP 要求完整四边界，因此该组合
 在启动前被拒绝，不能以 killpg/leader 消失声称整树退出。Linux Landlock 的
 TCP 规则需要 ABI 4 或以上；本候选仍须按实际对象取得新证据。
-Windows 原生子进程沙箱与 Job Object 整树清理待交付。
+Windows 原生子进程沙箱仍待交付；显式 Job Object 整树清理已有候选实现，
+但 Windows required CI 与设备证据取得前不宣称支持。
 
 各平台的判据、实测范围和已知限制见 [F2 规格](F2-sandbox-policy.md) 与 [W14 交付记录](changelog/2026-11-18-w14-dual-sandboxes.md)。
 

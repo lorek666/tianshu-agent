@@ -53,7 +53,7 @@
 | `approval.consumed` | v1 | `approval_id`, `request_digest`, `action_digest`, `decided_by` | 无已知形状差异 |
 | `approval.decided` | v1 | `approval_id`, `request_digest`, `decision`, `decided_by` | 无已知形状差异 |
 | `approval.expired` | v1 | `approval_id`, `reason` | 无已知形状差异 |
-| `approval.requested` | v1 | `approval_id`, `request_id`, `request_digest`, `action_digest`, `action_subject`, `action`, `resources`, `rule_id`, `reason`, `expires_at` | 无已知形状差异（F2 起可选 `isolation`；旧行没有该字段仍合法） |
+| `approval.requested` | v1 | `approval_id`, `request_id`, `request_digest`, `action_digest`, `action_subject`, `action`, `resources`, `rule_id`, `reason`, `expires_at` | v1 可选 `isolation`、`command`、`execution_subject_digest`；v0 不接受后两项。显式 Job 的新命令审批须写摘要，历史缺字段仍可读。 |
 | `approval.revoked` | v1 | `approval_id`, `decided_by` | 无已知形状差异 |
 | `approval.superseded` | v1 | `approval_id`, `reason` | 无已知形状差异 |
 | `dispatch.admitted` | v1 | `request_id`, `request_digest`, `call_id`, `grant_id`, `intent_seq` | 历史形状差异（v0 放宽） |

@@ -1,7 +1,8 @@
 """Agent 自动执行的 subject 绑定、现场准入与受管进程生命周期。
 
-仅内置 local / Seatbelt / Landlock 有可核对的启动实现。未知后端和 Windows
-原生隔离保持 unsupported；能力声明不能代替实际启动配置和现场探针。
+内置 local / Seatbelt / Landlock 有可核对的启动实现；显式 Windows Job Object
+仅提供候选进程树治理，不构成完整沙箱。未知后端保持 unsupported；能力声明不能
+代替实际启动配置和现场探针。
 """
 
 from __future__ import annotations
@@ -16,7 +17,6 @@ import signal
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
@@ -24,28 +24,27 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from .events import canonical_bytes, sha256_hex
+from . import exec_job_object
+from .events import Event, canonical_bytes, sha256_hex
 from .exec import (
     BOUNDARY_ENFORCED,
     BOUNDARY_NOT_ENFORCED,
     BOUNDARY_UNKNOWN,
     ExecResult,
     LocalExecBackend,
-    _build_result,
-    _join_pumps,
-    _pump_file,
-    _start_pump,
-    _StreamCollector,
+    _run_managed_pipes,
     platform_label,
     scrub_sandbox_env,
 )
 from .execpolicy import (
     ISOLATION_BOUNDARIES,
     ExecPolicy,
+    PolicyDenied,
     PolicyUnsupported,
     check_spawn,
 )
 from .isolation import (
+    PROBE_GRACE_MS,
     PROBE_VERSION,
     IsolationFinding,
     IsolationRefused,
@@ -166,6 +165,23 @@ def build_execution_subject(
     return ExecutionSubjectV1(subject_id=_digest(facts), **facts)
 
 
+
+def find_command_approval(log, run_id: str, approval_id: str) -> Mapping[str, Any]:
+    """读取最初向人展示的执行对象，不能用重新预检得到的视图替换。"""
+    return next((event.payload for event in log.read_run(
+        run_id, event_types=("approval.requested",),
+    ) if event.payload["approval_id"] == approval_id), {})
+
+
+def command_approval_matches(approval, backend: str, subject_digest: str | None) -> bool:
+    approved_backend = approval.get("command", {}).get("backend")
+    approved_digest = approval.get("execution_subject_digest")
+    if (backend == "windows_job_object" or approved_backend == "windows_job_object"
+            or approved_digest is not None):
+        return bool(subject_digest and approved_backend == backend
+                    and approved_digest == subject_digest)
+    return True
+
 def _backend_identity(backend: Any) -> str:
     return f"{_RUNTIME_ID}:{type(backend).__module__}.{type(backend).__qualname__}:{id(backend)}"
 
@@ -275,10 +291,23 @@ def reconcile_lifecycle(
     return {**lifecycle, "process_tree": state}
 
 
+def execution_terminal_matches(admitted: Event, terminal: Event) -> bool:
+    """执行端和 Goal 协调端使用同一套终态身份核对。"""
+    lifecycle, payload = admitted.payload["lifecycle"], terminal.payload
+    return (
+        terminal.run_id == admitted.run_id
+        and terminal.task_id == admitted.task_id
+        and payload["lifecycle_id"] == lifecycle["lifecycle_id"]
+        and payload["subject_digest"] == _digest(admitted.payload["subject"])
+        and payload["pid"] == lifecycle["pid"]
+        and payload["birth_identity"] == lifecycle["birth_identity"]
+    )
+
+
 def assert_no_unresolved_executions(log, *, workspace, run_id: str = "") -> None:
     """历史未知调用/进程树阻止同资源自动重启；完成事实也不能清洗未知调用。"""
     root = Path(workspace).resolve()
-    sessions: dict[str, dict[str, Any]] = {}
+    sessions: dict[tuple[str, str], dict[str, Any]] = {}
     for event in log.read_types(("execution.admitted", "execution.ended")):
         payload = event.payload
         if event.type == "execution.admitted":
@@ -286,7 +315,7 @@ def assert_no_unresolved_executions(log, *, workspace, run_id: str = "") -> None
             other = Path(admission["workspace"]).resolve()
             if not (root.is_relative_to(other) or other.is_relative_to(root)):
                 continue
-            identity = admission["lifecycle_id"]
+            identity = (event.run_id, admission["lifecycle_id"])
             row = sessions.setdefault(identity, {"pending": set(), "ended": False})
             row.update(lifecycle=payload["lifecycle"], event=event)
             if payload["stage"] == "call_pending":
@@ -294,10 +323,10 @@ def assert_no_unresolved_executions(log, *, workspace, run_id: str = "") -> None
             elif payload["stage"] == "call_completed":
                 row["pending"].discard(payload.get("request_id", 0))
         else:
-            row = sessions.get(payload["lifecycle_id"])
-            if row is not None:
+            row = sessions.get((event.run_id, payload["lifecycle_id"]))
+            if row is not None and execution_terminal_matches(row["event"], event):
                 row["ended"] = payload["process_tree"] == "exited"
-    for identity, row in sessions.items():
+    for (_, identity), row in sessions.items():
         if row["pending"]:
             raise PolicyUnsupported(
                 "旧 MCP 调用结果未知，禁止新调用或自动重发",
@@ -309,6 +338,11 @@ def assert_no_unresolved_executions(log, *, workspace, run_id: str = "") -> None
         ):
             continue
         admission = row["event"].payload["admission"]
+        if admission["backend"] == "windows_job_object":
+            raise PolicyUnsupported(
+                "旧 Job 的整树退出不可由 PID 证明，禁止同资源自动启动",
+                backend="execution-recovery", feature="recovery_required",
+            )
         state = reconcile_lifecycle(
             row["lifecycle"],
             process_tree_enforced=(
@@ -361,7 +395,8 @@ class PreparedExecution:
         self._preexec: Callable[[], None] | None = None
         self._sandboxed = False
         self._single_process = False
-        self._proc: subprocess.Popen[bytes] | None = None
+        self._job_backend = type(backend) is exec_job_object.WindowsJobObjectExecBackend
+        self._proc: Any | None = None
         self._birth: str | None = None
         self._used = False
         self._ended = False
@@ -385,6 +420,11 @@ class PreparedExecution:
         )
 
         if type(self.backend) is LocalExecBackend:
+            self.subject = self._current_subject()
+            return self
+        if self._job_backend:
+            self._sandboxed = True
+            self._profile_rules = {"windows_job_object": exec_job_object.native_profile()}
             self.subject = self._current_subject()
             return self
         self._tmp = Path(tempfile.mkdtemp(prefix="tianshu-subject-")).resolve()
@@ -459,14 +499,22 @@ class PreparedExecution:
                 feature="subject_pty",
             )
 
-    def _launch_process(self, argv, *, cwd, env) -> subprocess.Popen[bytes]:
+    def _launch_process(self, argv, *, cwd, env) -> Any:
+        if self._job_backend:
+            return exec_job_object.create_managed_process(
+                argv, cwd=cwd, env=self._child_env(env)
+            )
         return subprocess.Popen(
             (*self._prefix, *argv), cwd=cwd, env=self._child_env(env),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             start_new_session=os.name == "posix", preexec_fn=self._preexec, bufsize=0,
         )
 
-    def _process_tree_state(self, proc: subprocess.Popen[bytes]) -> str:
+    def _process_tree_state(self, proc: Any) -> str:
+        if self._job_backend:
+            if getattr(proc, "_closed", False):
+                return proc.tree_state
+            return proc.controller.query()
         if self._single_process:
             # The fixed native profile forbids descendants. The managed child
             # wait is authoritative; a reaped PID/PGID may already be reused.
@@ -482,7 +530,9 @@ class PreparedExecution:
                 pass
         return "unknown"
 
-    def _stop_process(self, proc: subprocess.Popen[bytes]) -> str:
+    def _stop_process(self, proc: Any) -> str:
+        if self._job_backend:
+            return proc.close(2)
         group_identity_safe = False
         if self._single_process:
             if proc.poll() is None:
@@ -519,32 +569,32 @@ class PreparedExecution:
             return "unknown"
         return self._process_tree_state(proc)
 
-    def _collect_process(self, proc, *, policy, blob_dir=None) -> tuple[ExecResult, str]:
-        started = time.monotonic()
-        assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
-        proc.stdin.close()
-        os.set_blocking(proc.stdout.fileno(), False)
-        os.set_blocking(proc.stderr.fileno(), False)
-        out = _StreamCollector(policy.max_output_bytes, blob_dir, "stdout")
-        err = _StreamCollector(policy.max_output_bytes, blob_dir, "stderr")
-        stop_reading = threading.Event()
-        threads = [
-            _start_pump(_pump_file, proc.stdout, out, stop_reading),
-            _start_pump(_pump_file, proc.stderr, err, stop_reading),
-        ]
-        timed_out = False
-        try:
-            proc.wait(timeout=policy.timeout_ms / 1000)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-        finally:
-            state = self._stop_process(proc)
-            _join_pumps(threads, stop_reading)
-        result = _build_result(
-            proc, out, err, timed_out=timed_out, tree_killed=state == "exited",
-            duration_ms=int((time.monotonic() - started) * 1000), stderr_merged=False,
+    def _collect_process(
+        self, proc, *, policy, blob_dir=None, should_stop=None,
+    ) -> tuple[ExecResult, str | None]:
+        if self._job_backend:
+            try:
+                result, state = _run_managed_pipes(
+                    proc,
+                    policy=policy,
+                    blob_dir=blob_dir,
+                    finalize_tree=lambda _timed_out: proc.controller.stop(2),
+                    close_stdin=True,
+                    should_stop=should_stop,
+                )
+            finally:
+                close_state = proc.close(0)
+            if close_state != exec_job_object.TREE_EXITED:
+                state = "unknown"
+                result = replace(result, descendants_may_survive=True)
+            return result, state
+        return _run_managed_pipes(
+            proc,
+            policy=policy,
+            blob_dir=blob_dir,
+            finalize_tree=lambda _timed_out: self._stop_process(proc),
+            close_stdin=True,
         )
-        return result, state
 
     def admit(self, required_boundaries=ISOLATION_BOUNDARIES) -> IsolationAdmissionV1:
         required = tuple(required_boundaries)
@@ -559,7 +609,13 @@ class PreparedExecution:
                 self.report, probe_version=SUBJECT_PROBE_VERSION,
                 findings=tuple(
                     detached if finding.boundary == "process_tree"
-                    and detached.status != BOUNDARY_ENFORCED else finding
+                    and (
+                        detached.status == BOUNDARY_NOT_ENFORCED
+                        or (
+                            detached.status != BOUNDARY_ENFORCED
+                            and finding.status != BOUNDARY_NOT_ENFORCED
+                        )
+                    ) else finding
                     for finding in self.report.findings
                 ),
             )
@@ -587,8 +643,223 @@ class PreparedExecution:
         )
         return self.admission
 
+    def _windows_probe_record(
+        self, path: Path, facts: dict[str, object], prefix: str, api: exec_job_object._NativeAPI,
+    ) -> dict[str, int] | None:
+        try:
+            value = json.loads(path.read_bytes())
+            pid, birth = value["pid"], value["birth"]
+            handle = facts[f"{prefix}_handle"]
+            if (
+                type(pid) is not int or pid <= 0
+                or type(birth) is not int or birth <= 0
+                or type(handle) is not int or handle <= 0
+                or facts.get(f"{prefix}_pid") != pid
+            ):
+                return None
+            if api.process_identity(handle) != (pid, birth):
+                return None
+        except (OSError, ValueError, TypeError, KeyError, exec_job_object.JobObjectError):
+            return None
+        return {"pid": pid, "birth": birth, "handle": handle}
+
+    @staticmethod
+    def _cleanup_windows_probe_records(
+        records: list[dict[str, int]],
+    ) -> tuple[bool, list[int]]:
+        confirmed = True
+        survivors: list[int] = []
+        try:
+            api = exec_job_object._load_native_api()
+        except (OSError, AttributeError):
+            return False, [record["pid"] for record in records]
+        for record in records:
+            handle = record["handle"]
+            identity_checked = False
+            try:
+                identity_checked = api.process_identity(handle) == (record["pid"], record["birth"])
+                if not identity_checked:
+                    confirmed = False
+                    continue
+                # The Job count can reach zero before a process handle is signaled.
+                state = api.wait(handle, PROBE_GRACE_MS)
+                if state == exec_job_object.WAIT_TIMEOUT:
+                    survivors.append(record["pid"])
+                    if not api.terminate_process(handle, 1):
+                        confirmed = False
+                    state = api.wait(handle, PROBE_GRACE_MS)
+                if state != exec_job_object.WAIT_OBJECT_0:
+                    confirmed = False
+            except (exec_job_object.JobObjectError, OSError):
+                confirmed = False
+            finally:
+                if identity_checked:
+                    for attempt in range(3):
+                        try:
+                            if api.close_handle(handle):
+                                break
+                        except (exec_job_object.JobObjectError, OSError):
+                            pass
+                        if attempt < 2:
+                            time.sleep(0.01)
+                    else:
+                        confirmed = False
+        return confirmed, survivors
+
+    def _probe_windows_descendant(self) -> IsolationFinding:
+        try:
+            api = exec_job_object._load_native_api()
+        except (AttributeError, OSError) as exc:
+            return IsolationFinding(
+                "process_tree", BOUNDARY_UNKNOWN,
+                f"Windows 探针无法加载进程身份与清理 API：{exc}",
+            )
+        root = Path(tempfile.mkdtemp(prefix=".tianshu-detach-probe-", dir=self.workspace))
+        descendant_file = root / "descendant.json"
+        breakaway_file = root / "breakaway.json"
+        child = (
+            "import ctypes,json,os,threading;from ctypes import wintypes;"
+            "k=ctypes.WinDLL('kernel32',use_last_error=True);"
+            "k.GetCurrentProcess.restype=ctypes.c_void_p;"
+            "k.GetProcessTimes.argtypes=[ctypes.c_void_p]+"
+            "[ctypes.POINTER(wintypes.FILETIME)]*4;"
+            "k.GetProcessTimes.restype=ctypes.c_int;"
+            "c=wintypes.FILETIME();e=wintypes.FILETIME();"
+            "q=wintypes.FILETIME();u=wintypes.FILETIME();"
+            "assert k.GetProcessTimes(k.GetCurrentProcess(),ctypes.byref(c),"
+            "ctypes.byref(e),ctypes.byref(q),ctypes.byref(u));"
+            "birth=(c.dwHighDateTime<<32)|c.dwLowDateTime;"
+            "open(sys.argv[1],'w').write(json.dumps({'pid':os.getpid(),'birth':birth}));"
+            "print('ready',flush=True);threading.Event().wait(120)"
+        )
+        child = "import sys\n" + child
+        payload = (
+            "import ctypes,json,os,subprocess,sys\n"
+            "from ctypes import wintypes\n"
+            "k=ctypes.WinDLL('kernel32',use_last_error=True)\n"
+            "k.GetCurrentProcess.restype=wintypes.HANDLE\n"
+            "k.OpenProcess.argtypes=[wintypes.DWORD,wintypes.BOOL,wintypes.DWORD]\n"
+            "k.OpenProcess.restype=wintypes.HANDLE\n"
+            "k.DuplicateHandle.argtypes=[wintypes.HANDLE,wintypes.HANDLE,"
+            "wintypes.HANDLE,ctypes.POINTER(wintypes.HANDLE),wintypes.DWORD,"
+            "wintypes.BOOL,wintypes.DWORD]\n"
+            "k.DuplicateHandle.restype=wintypes.BOOL\n"
+            "k.CloseHandle.argtypes=[wintypes.HANDLE]\n"
+            "k.CloseHandle.restype=wintypes.BOOL\n"
+            "def duplicate(p):\n"
+            " parent=k.OpenProcess(0x40,False,int(sys.argv[3]))\n"
+            " if not parent: raise ctypes.WinError(ctypes.get_last_error())\n"
+            " try:\n"
+            "  out=wintypes.HANDLE()\n"
+            "  if not k.DuplicateHandle(k.GetCurrentProcess(),p._handle,parent,"
+            "ctypes.byref(out),0,False,2): raise ctypes.WinError(ctypes.get_last_error())\n"
+            "  return out.value\n"
+            " finally: k.CloseHandle(parent)\n"
+            "facts={}\n"
+            "p=subprocess.Popen([sys.executable,'-I','-S','-c',"
+            f"{child!r},sys.argv[1]],stdin=subprocess.DEVNULL,"
+            "stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,creationflags=0x00000008)\n"
+            "p.stdout.readline()\n"
+            "facts['descendant_pid']=p.pid\n"
+            "facts['descendant_handle']=duplicate(p)\n"
+            "try:\n"
+            " b=subprocess.Popen([sys.executable,'-I','-S','-c',"
+            f"{child!r},sys.argv[2]],stdin=subprocess.DEVNULL,"
+            "stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,"
+            "creationflags=0x01000000|0x00000200)\n"
+            " b.stdout.readline()\n"
+            " facts['breakaway_pid']=b.pid\n"
+            " facts['breakaway_handle']=duplicate(b)\n"
+            "except OSError as exc:\n"
+            " facts['denied_winerror']=exc.winerror\n"
+            "print(json.dumps(facts),flush=True)\n"
+        )
+        evidence = "Windows Job detached/breakaway 探针没有给出可核对结果"
+        status = BOUNDARY_UNKNOWN
+        records: list[dict[str, int]] = []
+        breakaway_valid = False
+        cleanup_confirmed = False
+        survivors: list[int] = []
+        tree_state = "unknown"
+        result: ExecResult | None = None
+        proc = None
+        try:
+            policy = ExecPolicy(
+                argv_allowlist=(sys.executable,), cwd_roots=(self.workspace,),
+                env_allowlist=("PATH",), timeout_ms=5000, max_output_bytes=4096,
+            )
+            # Probe a real interpreter, without the Windows venv redirector's Job.
+            executable = getattr(sys, "_base_executable", sys.executable)
+            proc = self._launch_process(
+                (executable, "-I", "-S", "-c", payload,
+                 str(descendant_file), str(breakaway_file), str(os.getpid())),
+                cwd=self.workspace, env={"PATH": os.defpath},
+            )
+            result, tree_state = self._collect_process(proc, policy=policy)
+            try:
+                facts = json.loads(result.stdout)
+            except (ValueError, TypeError):
+                facts = {}
+            if not isinstance(facts, dict):
+                facts = {}
+            descendant = self._windows_probe_record(
+                descendant_file, facts, "descendant", api
+            )
+            if descendant is not None:
+                records.append(descendant)
+            if breakaway_file.exists():
+                breakaway = self._windows_probe_record(
+                    breakaway_file, facts, "breakaway", api
+                )
+                breakaway_valid = breakaway is not None
+                if breakaway is not None:
+                    records.append(breakaway)
+            if result.exit_code == 0 and not result.timed_out:
+                if (
+                    tree_state == "exited"
+                    and not result.descendants_may_survive
+                    and descendant is not None
+                    and facts.get("denied_winerror") == 5
+                    and descendant_file.exists()
+                    and not breakaway_file.exists()
+                ):
+                    status = BOUNDARY_ENFORCED
+                    evidence = (
+                        "普通 DETACHED_PROCESS 后代在 leader 退出后由 Job 清空，"
+                        "breakaway 创建被 ACCESS_DENIED 拒绝"
+                    )
+                else:
+                    evidence += f"；facts={facts} tree_state={tree_state}"
+            else:
+                evidence += (
+                    f"；facts={facts} exit_code={result.exit_code} "
+                    f"timeout={result.timed_out} tree_state={tree_state}"
+                )
+        except (OSError, subprocess.SubprocessError, exec_job_object.JobObjectError) as exc:
+            evidence += f"：{type(exc).__name__}: {exc}"
+        finally:
+            if proc is not None and self._job_backend:
+                try:
+                    if proc.close(0) != exec_job_object.TREE_EXITED:
+                        status = BOUNDARY_UNKNOWN
+                except (exec_job_object.JobObjectError, OSError):
+                    status = BOUNDARY_UNKNOWN
+            cleanup_confirmed, survivors = self._cleanup_windows_probe_records(records)
+            if survivors:
+                status = BOUNDARY_NOT_ENFORCED
+                evidence += f"；Job 外仍存在精确句柄对应的后代：{survivors}"
+            if not cleanup_confirmed:
+                status = BOUNDARY_UNKNOWN
+            if breakaway_valid:
+                status = BOUNDARY_NOT_ENFORCED
+            evidence += f"；探针清理={'confirmed' if cleanup_confirmed else 'unknown'}"
+            shutil.rmtree(root, ignore_errors=True)
+        return IsolationFinding("process_tree", status, evidence)
+
     def _probe_detached_descendant(self) -> IsolationFinding:
         """负控：真正脱离原 session 的孙进程不得被 killpg 的成功洗白。"""
+        if os.name == "nt":
+            return self._probe_windows_descendant()
         if os.name != "posix":
             return IsolationFinding(
                 "process_tree", BOUNDARY_UNKNOWN,
@@ -690,10 +961,14 @@ class PreparedExecution:
             )
         validate_admission(self.admission, current, self.backend)
 
-    def run(self, *, blob_dir=None, pty=False) -> ExecResult:
+    def run(self, *, blob_dir=None, pty=False, should_stop=None) -> ExecResult:
         self._require_pipes(pty)
+        if should_stop is not None and should_stop():
+            raise PolicyDenied("命令启动前 Run 已停止", rule_id="dispatch.not_running")
         proc = self.open_stdio()
-        result, state = self._collect_process(proc, policy=self.policy, blob_dir=blob_dir)
+        result, state = self._collect_process(
+            proc, policy=self.policy, blob_dir=blob_dir, should_stop=should_stop,
+        )
         self._stop_attempted = True
         if not self._tree_enforced():
             state = "unknown"
@@ -702,15 +977,18 @@ class PreparedExecution:
         self._emit_end(state)
         return result
 
-    def open_stdio(self) -> subprocess.Popen[bytes]:
+    def open_stdio(self) -> Any:
         self._before_start()
         try:
             self._proc = self._launch_process(self.argv, cwd=self.cwd, env=self.env)
-        except OSError:
-            # Popen did not return a child. This known rejection has no live lifecycle.
+        except (PolicyUnsupported, OSError):
             self._emit_end("exited")
             raise
-        self._birth = process_birth_identity(self._proc.pid)
+        except exec_job_object.JobObjectError:
+            self._emit_end("unknown")
+            raise
+        self._birth = (self._proc.birth_identity() if self._job_backend
+                       else process_birth_identity(self._proc.pid))
         _ACTIVE_LIFECYCLES.add(self.lifecycle_id)
         self.record_stage("started")
         return self._proc

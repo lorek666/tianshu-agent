@@ -535,3 +535,11 @@ SHA256 为 `f5263de0537763d50384a688d444e4d72af06e7d42785e47426230720f3744c1`。
 该运行未展开逐项 skip 原因，不把跳过项写成通过。上面的 `6356 passed` 回执属于父树
 `59532a9`，不能替代本次 `6e4b001` 的新全量；本次纯文档回填不改 code/test tree。
 hosted required CI 仍须绑定推送后的最终 head。
+
+Windows Job 候选夹带进 native PR。`c1d90e3` 把循环条件改为先检查 deadline 后，
+`timeout=0` 会跳过首轮进程观测；完整三文件受影响域实际暴露 5 个清理回归，因此
+该版本不能充当绿色证据。`45d643b` 改为始终先观测冻结进程，再按剩余时间限制等待；
+修复后的 `tests/test_host_cleanup.py`、`tests/test_host_supervisor_exit.py` 与
+`tests/test_slo_process_identity.py` 在 macOS 上完整退出 0（保留平台跳过），全仓 Ruff
+也退出 0。旧复审的全量日志不绑定当前独立树；裸全量与 hosted required CI 仍待完成，
+不沿用 `b6200f9`、`0d1c15e` 或外部移动 main 的旧证据。

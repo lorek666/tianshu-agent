@@ -651,6 +651,7 @@ CURRENT_SCHEMAS: dict[str, dict[str, Any]] = {
             "isolation": _ISOLATION_VIEW,
             # 可选只为兼容历史审批；新 exec 审批必须带完整命令详情。
             "command": _APPROVAL_COMMAND,
+            "execution_subject_digest": _SHA256,
         },
         required=(
             "approval_id",
@@ -1317,6 +1318,7 @@ LEGACY_SCHEMAS: dict[str, dict[str, Any]] = {
 }
 # command 是当前审批视图的增量，不属于冻结前的 v0 形状。
 LEGACY_SCHEMAS["approval.requested"]["properties"].pop("command", None)
+LEGACY_SCHEMAS["approval.requested"]["properties"].pop("execution_subject_digest", None)
 
 # 必须在建立 current v2 之前冻结，不能原地扩张共享 _MODEL_USAGE。
 MODEL_RESULT_V1_SCHEMA = copy.deepcopy(CURRENT_SCHEMAS["model.result"])

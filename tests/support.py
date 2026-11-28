@@ -98,7 +98,7 @@ def shutdown_daemon_and_wait(
             return True
         if not pid_alive(pid):
             return True
-        if os.name == "posix":
+        if os.name == "posix" and reap is None:
             from tianshu.host import _pid_is_zombie, _unreaped_child_state
 
             return (
@@ -118,12 +118,14 @@ def shutdown_daemon_and_wait(
                 while True:
                     if reap() is not None:
                         return True
-                    if time.monotonic() >= deadline:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
                         return False
-                    threading.Event().wait(0.02)
-            if time.monotonic() >= deadline:
+                    threading.Event().wait(min(0.02, remaining))
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 return False
-            threading.Event().wait(0.02)
+            threading.Event().wait(min(0.02, remaining))
 
     daemon.request_shutdown(
         data_root,

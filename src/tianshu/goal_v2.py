@@ -516,6 +516,8 @@ class GoalCoordinator:
 
     def _lifecycle_block(self, view):
         from .events import EVENT_TYPES
+        from .execution_admission import execution_terminal_matches
+
         if "execution.admitted" not in EVENT_TYPES:
             return None
         task = self.tasks.get_task(view["task_id"])
@@ -530,20 +532,22 @@ class GoalCoordinator:
                     root.is_relative_to(other) or other.is_relative_to(root) for root in roots
                 ):
                     continue
-                identity = admission["lifecycle_id"]
+                identity = (event.run_id, admission["lifecycle_id"])
                 row = sessions.setdefault(identity, {"pending": set(), "ended": False})
-                row["seq"] = event.seq
+                row["event"] = event
                 if payload["stage"] == "call_pending":
                     row["pending"].add(payload.get("request_id", 0))
                 elif payload["stage"] == "call_completed":
                     row["pending"].discard(payload.get("request_id", 0))
-            elif payload["lifecycle_id"] in sessions:
-                sessions[payload["lifecycle_id"]]["ended"] = payload["process_tree"] == "exited"
+            else:
+                row = sessions.get((event.run_id, payload["lifecycle_id"]))
+                if row is not None and execution_terminal_matches(row["event"], event):
+                    row["ended"] = payload["process_tree"] == "exited"
         for row in sessions.values():
             if row["pending"]:
-                return "effect_unknown", row["seq"]
+                return "effect_unknown", row["event"].seq
             if not row["ended"]:
-                return "recovery_required", row["seq"]
+                return "recovery_required", row["event"].seq
         return None
 
     def _reconcile_lifecycles(self, goal_id):
