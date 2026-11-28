@@ -1291,9 +1291,13 @@ def test_windows_probe_requires_confirmed_tree_and_exact_handle_cleanup(
         close_handle=lambda handle: close_ok,
     )
     monkeypatch.setattr(execution, "_launch_process", launch)
-    monkeypatch.setattr(
-        execution, "_collect_process", lambda *_args, **_kwargs: (result, tree_state)
-    )
+    close_timeouts = []
+
+    def collect(*_args, **kwargs):
+        close_timeouts.append(kwargs["close_timeout"])
+        return result, tree_state
+
+    monkeypatch.setattr(execution, "_collect_process", collect)
     monkeypatch.setattr(execution_admission.exec_job_object, "_load_native_api", lambda: api)
     monkeypatch.setattr(
         execution_admission.os, "kill",
@@ -1303,7 +1307,8 @@ def test_windows_probe_requires_confirmed_tree_and_exact_handle_cleanup(
     finding = execution._probe_windows_descendant()
 
     assert finding.status == expected
-    assert closed == [0]
+    assert closed == [5.0]
+    assert close_timeouts == [5.0]
 
 
 def test_windows_detached_probe_accepts_popen_lifecycle(tmp_path, monkeypatch):
