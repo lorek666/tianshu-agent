@@ -843,6 +843,12 @@ class PreparedExecution:
         except (OSError, subprocess.SubprocessError, exec_job_object.JobObjectError) as exc:
             evidence += f"：{type(exc).__name__}: {exc}"
         finally:
+            if proc is not None and self._job_backend:
+                try:
+                    if proc.close(0) != exec_job_object.TREE_EXITED:
+                        status = BOUNDARY_UNKNOWN
+                except (exec_job_object.JobObjectError, OSError):
+                    status = BOUNDARY_UNKNOWN
             cleanup_confirmed, survivors = self._cleanup_windows_probe_records(records)
             if survivors:
                 status = BOUNDARY_NOT_ENFORCED
@@ -852,12 +858,6 @@ class PreparedExecution:
             if breakaway_valid:
                 status = BOUNDARY_NOT_ENFORCED
             evidence += f"；探针清理={'confirmed' if cleanup_confirmed else 'unknown'}"
-            if proc is not None and self._job_backend:
-                try:
-                    if proc.close(0) != exec_job_object.TREE_EXITED:
-                        status = BOUNDARY_UNKNOWN
-                except (exec_job_object.JobObjectError, OSError):
-                    status = BOUNDARY_UNKNOWN
             shutil.rmtree(root, ignore_errors=True)
         return IsolationFinding("process_tree", status, evidence)
 

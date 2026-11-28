@@ -1264,7 +1264,10 @@ def test_windows_probe_requires_confirmed_tree_and_exact_handle_cleanup(
     execution.workspace = tmp_path
     execution._job_backend = True
     closed = []
-    proc = SimpleNamespace(close=lambda timeout: closed.append(timeout) or "exited")
+    events = []
+    proc = SimpleNamespace(
+        close=lambda timeout: events.append("proc.close") or closed.append(timeout) or "exited"
+    )
 
     def launch(argv, *, cwd, env):
         assert argv[-1] == str(os.getpid())
@@ -1286,7 +1289,7 @@ def test_windows_probe_requires_confirmed_tree_and_exact_handle_cleanup(
 
     api = SimpleNamespace(
         process_identity=identity,
-        wait=lambda handle, timeout: next(waits),
+        wait=lambda handle, timeout: events.append("handle.wait") or next(waits),
         terminate_process=lambda handle, code: True,
         close_handle=lambda handle: close_ok,
     )
@@ -1304,6 +1307,8 @@ def test_windows_probe_requires_confirmed_tree_and_exact_handle_cleanup(
 
     assert finding.status == expected
     assert closed == [0]
+    if identity_valid:
+        assert events and events[0] == "proc.close"
 
 
 def test_windows_detached_probe_accepts_popen_lifecycle(tmp_path, monkeypatch):
