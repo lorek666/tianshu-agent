@@ -81,7 +81,9 @@ uv run --frozen pytest -q \
 
 前一轮最终代码复审另修正了原生整数句柄、259 退出码消歧、句柄关闭重试、管道所有权转移、双读线程收尾、query 失败仍终止与收集异常必关 Job；探针清理进一步取消“先采样 PID、再按 PID 终止”的竞态。本轮四项新修复的变异均实际 RED，恢复后 GREEN；定向套件与本机静态门禁另列实时结果。
 
-本机裸全量与受影响域回归已在最终代码树重跑，Windows 原生用例在本机 macOS 按预期跳过；最终独立第二读者和 Windows required CI 仍绑定远端候选 head。不得用本机 fake 测试、macOS 跳过或历史 CI 代替 Windows 真子进程证据。
+候选同时保留 #259 的清理回归。若 Daemon 在首次非阻塞 reap 和 OS 退出检查之间结束，清理函数在确认退出后再 reap 一次。零超时仍会先做一次检查，等待上限保持不变。
+
+本机裸全量与受影响域回归在冻结代码树重跑，Windows 原生用例在本机 macOS 按预期跳过；最终独立第二读者和 Windows required CI 仍绑定远端候选 head。不得用本机 fake 测试、macOS 跳过或历史 CI 代替 Windows 真子进程证据。
 
 ## 未决边界
 

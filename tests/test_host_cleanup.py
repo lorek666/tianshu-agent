@@ -540,8 +540,33 @@ def test_daemon_cleanup_reaps_known_child_before_observing_os_identity(
     monkeypatch.setattr(execution_admission, "process_birth_identity", birth_identity)
     monkeypatch.setattr(leases, "pid_alive", lambda pid: not reaped)
     shutdown_daemon_and_wait(tmp_path, timeout=0.02, reap=reap)
-    assert observations[:3] == ["birth", "reap", "birth"]
-    assert observations[-1] == "birth"
+    assert observations == ["birth", "reap", "birth", "reap"]
+
+
+def test_daemon_cleanup_reaps_again_after_os_exit_observation(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    from tianshu import execution_admission, leases
+
+    lock_path = daemon.lock_path(tmp_path)
+    lock_path.parent.mkdir(parents=True)
+    lock_path.write_text(
+        json.dumps({"pid": 12345, "instance_id": "daemon-under-test"}),
+        encoding="utf-8",
+    )
+    reap_results = iter([None, 7])
+    observations = []
+
+    def reap():
+        observations.append("reap")
+        return next(reap_results)
+
+    monkeypatch.setattr(daemon, "request_shutdown", lambda *args, **kwargs: True)
+    monkeypatch.setattr(execution_admission, "process_birth_identity", lambda pid: "same-birth")
+    monkeypatch.setattr(leases, "pid_alive", lambda pid: False)
+    shutdown_daemon_and_wait(tmp_path, timeout=0, reap=reap)
+    assert observations == ["reap", "reap"]
+    assert list(reap_results) == []
 
 
 @pytest.mark.parametrize("allow_missing_lock", [False, True])
