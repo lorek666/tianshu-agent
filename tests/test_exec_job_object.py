@@ -2092,3 +2092,92 @@ def _cleanup_records(records, *, require_birth: bool = True) -> None:
             kernel32.WaitForSingleObject(handle, 5000)
         finally:
             kernel32.CloseHandle(handle)
+
+
+
+def test_unknown_completion_blocks_another_data_root_when_terminal_is_visible(
+    tmp_path, monkeypatch, fake_windows,
+):
+    """源库一旦公布未知终态，另一进程的普通写入也必须被拒绝。"""
+    from contextlib import contextmanager
+
+    from test_isolation_gate import _exec_request, _make_env, _policy
+
+    from tianshu import isolation
+    from tianshu.execution_admission import PreparedExecution
+    from tianshu.permissions import HumanIdentity
+
+    backend = job.WindowsJobObjectExecBackend()
+    measured = isolation.IsolationFinding("process_tree", "enforced", "measured")
+    monkeypatch.setattr(isolation, "_probe_process_tree", lambda *_a: measured)
+    monkeypatch.setattr(PreparedExecution, "_probe_detached_descendant", lambda self: measured)
+    env = _make_env(tmp_path, exec_backend=backend)
+    try:
+        task, run, claim = env.new_run(exec_policy=_policy(env.ws))
+        args = {"argv": [sys.executable, "-c", "pass"]}
+        decision = env.dispatcher.prepare(
+            _exec_request(env, run, claim, args=args, task=task), claim, args=args,
+        )
+        assert decision.is_waiting
+        env.approvals.decide(
+            decision.approval_id, decision="approved", actor=HumanIdentity.local_cli(),
+        )
+        fake_windows.active = 1
+        fake_windows.failure = "query"
+        other_root = tmp_path / "other-data"
+        other_root.mkdir()
+        target = env.ws / "cross-root-race.md"
+        child_result = None
+        transaction = env.log.transaction
+
+        @contextmanager
+        def check_other_root_after_commit():
+            nonlocal child_result
+            with transaction() as tx:
+                yield tx
+            if env.log.in_transaction or child_result is not None or not any(
+                e.type == "execution.ended" and e.payload["process_tree"] == "unknown"
+                for e in env.log.read_run(run.run_id)
+            ):
+                return
+            child_result = subprocess.run(
+                [sys.executable, "-c", """
+import json
+import sys
+from dataclasses import replace
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+from test_isolation_gate import _make_env
+from tianshu.dispatcher import build_request
+from tianshu.exec_backends import exec_backend
+
+root, target = map(Path, sys.argv[2:])
+env = replace(_make_env(root, exec_backend=exec_backend('local')), ws=target.parent)
+try:
+    task, run, claim = env.new_run(exec_policy=None)
+    args = {'name': target.name, 'content': 'cross-root marker'}
+    request = build_request(task=task, run=run, claim=claim, call_id='cross-root-write',
+                            tool_id='create_report', target=target, args=args)
+    decision = env.dispatcher.prepare(request, claim, args=args)
+    if decision.is_rejected:
+        print(json.dumps({'rule': decision.rule_id}))
+    else:
+        assert not decision.is_waiting, decision
+        result = env.dispatcher.dispatch(decision.request_id, claim)
+        print(json.dumps({'rule': result.output.get('rule_id')}))
+finally:
+    env.log.close()
+""", str(Path(__file__).resolve().parent), str(other_root), str(target)],
+                capture_output=True, text=True, timeout=20, check=False,
+            )
+
+        monkeypatch.setattr(env.log, "transaction", check_other_root_after_commit)
+        result = env.dispatcher.dispatch(decision.request_id, claim)
+        assert result.status == "failed" and result.effect_state == "unknown"
+        assert child_result is not None
+        assert child_result.returncode == 0, child_result.stderr
+        assert not target.exists(), "另一数据根在未知终态公布后仍写入了文件"
+        assert json.loads(child_result.stdout) == {"rule": "dispatch.workspace_blocked"}
+    finally:
+        env.log.close()

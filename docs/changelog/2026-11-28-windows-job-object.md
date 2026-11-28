@@ -20,7 +20,7 @@ Issue [#224](https://github.com/lorek666/tianshu-agent/issues/224) 的 Windows �
 - 显式 Job 命令要通过通用与 detached/breakaway 两个探针才会请求审批。审批记录保存实际后端及执行对象摘要；消费和启动前各核一次。换后端、同路径脚本内容变化或缺摘要均拒绝，其他后端沿用既有审批规则。
 - 业务命令等待期间观察 Run 控制、认领与工作区租约。取消、已有的 Run fence 或认领失效都触发清树。公开目标修订仍与执行共享守卫；原生用例在 Job 运行时从独立子进程驱动真实的 `run.fenced` 转移，不把改目标已绕过守卫当作验收。
 - 终态由 Job 查询和精确 leader 句柄的 FILETIME 共同绑定。归并核对 Run、Task、subject、PID 和出生身份。未知终态及工作区阻断同事务记录，工具结果明示 `descendants_may_survive`。人工解除普通目录阻断并不能证明旧 Job 已清空，仍禁止自动重启该 Job；无有效终态证据时不根据 PID 重放。
-- 未知终态的 `recovery.blocked` 同时登记用户级权威根，换用另一 `--db` 仍拒绝同工作区写入；权威根写入失败会在结果中明确报告跨数据根阻断未生效。Goal V2 与执行恢复共用 Run、Task、subject、PID 和出生身份核对，身份不符的 `execution.ended` 不会推进阶段。
+- Windows Job 终态未知时，先登记用户级权威根，再在同一事务中提交 `execution.ended` 和本地 `recovery.blocked`。跨进程回归在源库公布终态后立即从另一数据根尝试写入，确认写入被拒绝。若两次提交之间崩溃，权威阻断仍生效。若权威根写入失败，本地证据仍会提交，工具结果明确报告跨数据根阻断未生效。Goal V2 与执行恢复共用 Run、Task、subject、PID 和出生身份核对，身份不符的 `execution.ended` 不会推进阶段。
 - Win32 包装保留 `HeapFree` 的失败结果，并按 `VOID` 声明属性列表删除函数；当 `STILL_ACTIVE` 与 leader signal 发生竞态时重新读取退出码。关闭失败保留原句柄以便有限重试。
 
 ## 共享执行收尾修复
@@ -86,6 +86,7 @@ uv run --frozen pytest -q \
 ## 未决边界
 
 - Windows required CI 尚须覆盖真实 stdio、wait/returncode、多代与 detached 后代、leader 先退、breakaway 拒绝、父 Job handle 关闭、Admission 探针、通用/detached 精确 HANDLE 清理、MCP + Job 关闭与首次 `CloseHandle` 失败自动重试。
+- 跨数据根租约不互斥。共享阻断只拦截登记后检查阻断状态的写入，已经通过核验的调用仍需各自结算。
 - Windows 10/11、ARM64、文件系统、EDR、桌面会话与 SKU 差异仍无用户设备证据。
 - Job Object 不防御同 UID 宿主、内核攻击或 Job 外进程，不提供文件/网络/凭据隔离。
 - Issue #224 保持开放，完整四边界与各架构实机验收未完成。

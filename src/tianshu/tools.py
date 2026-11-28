@@ -648,6 +648,14 @@ def _run_command(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
                          and payload["process_tree"] == "unknown")
                 workspace_root = ctx.admitted.workspace_root if block else None
                 reason = "Windows Job 进程树退出尚未确认"
+                if workspace_root is not None:
+                    # 执行守卫只串行化同一数据根。先登记共享阻断，再公开本地终态；
+                    # 两库之间硬退时，其他数据根仍然会保守地拒绝写入。
+                    unknown_job_tree = True
+                    try:
+                        authority.register_blocked(workspace_root, run_id=ctx.run_id, reason=reason)
+                    except (authority.AuthorityWriteFailed, authority.AuthorityUnavailable) as exc:
+                        authority_error = f"跨数据根阻断未生效（{exc}）"
                 with ctx.log.transaction() as tx:
                     tx.append(ctx.run_id, event_type, payload, task_id=task_id)
                     if workspace_root is not None:
@@ -656,12 +664,6 @@ def _run_command(ws: Workspace, args: dict[str, Any], ctx: ToolContext) -> ToolR
                             "call_ids": [ctx.call_id],
                             "reason": reason,
                         }, task_id=task_id, actor_kind="system")
-                if workspace_root is not None:
-                    unknown_job_tree = True
-                    try:
-                        authority.register_blocked(workspace_root, run_id=ctx.run_id, reason=reason)
-                    except (authority.AuthorityWriteFailed, authority.AuthorityUnavailable) as exc:
-                        authority_error = f"跨数据根阻断未生效（{exc}）"
 
             with PreparedExecution(
                 backend, kind="command", task_id=task_id, run_id=ctx.run_id,
