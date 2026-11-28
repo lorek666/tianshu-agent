@@ -44,6 +44,7 @@ from .execpolicy import (
     check_spawn,
 )
 from .isolation import (
+    PROBE_GRACE_MS,
     PROBE_VERSION,
     IsolationFinding,
     IsolationRefused,
@@ -680,12 +681,13 @@ class PreparedExecution:
                 if not identity_checked:
                     confirmed = False
                     continue
-                state = api.wait(handle, 0)
+                # The Job count can reach zero before a process handle is signaled.
+                state = api.wait(handle, PROBE_GRACE_MS)
                 if state == exec_job_object.WAIT_TIMEOUT:
                     survivors.append(record["pid"])
                     if not api.terminate_process(handle, 1):
                         confirmed = False
-                    state = api.wait(handle, 3000)
+                    state = api.wait(handle, PROBE_GRACE_MS)
                 if state != exec_job_object.WAIT_OBJECT_0:
                     confirmed = False
             except (exec_job_object.JobObjectError, OSError):
@@ -836,6 +838,12 @@ class PreparedExecution:
         except (OSError, subprocess.SubprocessError, exec_job_object.JobObjectError) as exc:
             evidence += f"：{type(exc).__name__}: {exc}"
         finally:
+            if proc is not None and self._job_backend:
+                try:
+                    if proc.close(0) != exec_job_object.TREE_EXITED:
+                        status = BOUNDARY_UNKNOWN
+                except (exec_job_object.JobObjectError, OSError):
+                    status = BOUNDARY_UNKNOWN
             cleanup_confirmed, survivors = self._cleanup_windows_probe_records(records)
             if survivors:
                 status = BOUNDARY_NOT_ENFORCED
@@ -845,12 +853,6 @@ class PreparedExecution:
             if breakaway_valid:
                 status = BOUNDARY_NOT_ENFORCED
             evidence += f"；探针清理={'confirmed' if cleanup_confirmed else 'unknown'}"
-            if proc is not None and self._job_backend:
-                try:
-                    if proc.close(0) != exec_job_object.TREE_EXITED:
-                        status = BOUNDARY_UNKNOWN
-                except (exec_job_object.JobObjectError, OSError):
-                    status = BOUNDARY_UNKNOWN
             shutil.rmtree(root, ignore_errors=True)
         return IsolationFinding("process_tree", status, evidence)
 

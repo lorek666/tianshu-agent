@@ -1246,6 +1246,7 @@ def test_probe_cleanup_does_not_terminate_mismatched_exact_handle(monkeypatch):
     ("tree_state", "may_survive", "identity_valid", "close_ok", "survivor", "expected"),
     [
         ("exited", False, True, True, False, "enforced"),
+        ("exited", False, True, True, "signaling", "enforced"),
         ("exited", True, True, True, False, "unknown"),
         ("unknown", False, True, True, False, "unknown"),
         ("exited", False, True, False, False, "unknown"),
@@ -1264,7 +1265,10 @@ def test_windows_probe_requires_confirmed_tree_and_exact_handle_cleanup(
     execution.workspace = tmp_path
     execution._job_backend = True
     closed = []
-    proc = SimpleNamespace(close=lambda timeout: closed.append(timeout) or "exited")
+    events = []
+    proc = SimpleNamespace(
+        close=lambda timeout: events.append("proc.close") or closed.append(timeout) or "exited"
+    )
 
     def launch(argv, *, cwd, env):
         assert argv[-1] == str(os.getpid())
@@ -1277,7 +1281,15 @@ def test_windows_probe_requires_confirmed_tree_and_exact_handle_cleanup(
         stderr="", truncated=False, stdout_ref=None, stderr_ref=None,
         duration_ms=0, descendants_may_survive=may_survive,
     )
-    waits = iter([job.WAIT_TIMEOUT, job.WAIT_OBJECT_0] if survivor else [job.WAIT_OBJECT_0])
+    terminated = []
+
+    def wait(handle, timeout):
+        assert handle == 99
+        if survivor == "signaling" and timeout == 0:
+            return job.WAIT_TIMEOUT
+        if survivor is True and not terminated:
+            return job.WAIT_TIMEOUT
+        return job.WAIT_OBJECT_0
 
     def identity(handle):
         if not identity_valid:
@@ -1286,8 +1298,8 @@ def test_windows_probe_requires_confirmed_tree_and_exact_handle_cleanup(
 
     api = SimpleNamespace(
         process_identity=identity,
-        wait=lambda handle, timeout: next(waits),
-        terminate_process=lambda handle, code: True,
+        wait=lambda handle, timeout: events.append("handle.wait") or wait(handle, timeout),
+        terminate_process=lambda handle, code: terminated.append((handle, code)) or True,
         close_handle=lambda handle: close_ok,
     )
     monkeypatch.setattr(execution, "_launch_process", launch)
@@ -1303,7 +1315,10 @@ def test_windows_probe_requires_confirmed_tree_and_exact_handle_cleanup(
     finding = execution._probe_windows_descendant()
 
     assert finding.status == expected
+    assert terminated == ([(99, 1)] if survivor is True else [])
     assert closed == [0]
+    if identity_valid:
+        assert events and events[0] == "proc.close"
 
 
 def test_windows_detached_probe_accepts_popen_lifecycle(tmp_path, monkeypatch):
@@ -1663,14 +1678,14 @@ class TestWindowsNative:
                 cwd=tmp_path, stderr=subprocess.PIPE,
             )
             result = env.dispatcher.dispatch(decision.request_id, claim)
+            assert result.status == "failed" and result.effect_state == "applied", result
+            assert result.output["interrupted"] and not result.output["timed_out"], result
             print(f"Control {control}: dispatch={result!a}; "
                   f"files={[p.exists() for p in record_paths]}; "
                   f"helper={helper.poll()}", flush=True)
             _, stderr = helper.communicate(timeout=10)
             assert helper.returncode == 0, stderr.decode(errors="replace")
             records = _wait_records(record_paths)
-            assert result.status == "failed" and result.effect_state == "applied", result
-            assert result.output["interrupted"] and not result.output["timed_out"]
             history = env.log.read_run(run.run_id)
             ended = [row for row in history if row.type == "execution.ended"]
             assert [row.payload["process_tree"] for row in ended] == ["exited"]

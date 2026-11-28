@@ -95,6 +95,8 @@ uv run --frozen pytest -q \
 
 [原生取证 46090224857](https://github.com/lorek666/tianshu-agent/actions/runs/46090224857) 记录到 Job 活跃数归零后，少数精确进程句柄要再等一个调度周期才收到退出信号。用例保留 PID 和创建时间核验，对同一句柄做有界等待。
 
+[原生定向复核 46090389519](https://github.com/lorek666/tianshu-agent/actions/runs/46090389519) 与[取消重复探针 46090545964](https://github.com/lorek666/tianshu-agent/actions/runs/46090545964) 复核了对精确句柄的等待。首轮取消测试等待辅助进程失败，重跑未复现。该用例先记录派发结果，使早退能够直接显示原因。最终门禁仍由合并候选的完整 CI 提供。
+
 ## 未决边界
 
 - Windows required CI 尚须覆盖真实 stdio、wait/returncode、多代与 detached 后代、leader 先退、breakaway 拒绝、父 Job handle 关闭、Admission 探针、通用/detached 精确 HANDLE 清理、MCP + Job 关闭与首次 `CloseHandle` 失败自动重试。
