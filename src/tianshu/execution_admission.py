@@ -44,6 +44,7 @@ from .execpolicy import (
     check_spawn,
 )
 from .isolation import (
+    PROBE_GRACE_MS,
     PROBE_VERSION,
     IsolationFinding,
     IsolationRefused,
@@ -680,12 +681,13 @@ class PreparedExecution:
                 if not identity_checked:
                     confirmed = False
                     continue
-                state = api.wait(handle, 0)
+                # The Job count can reach zero before a process handle is signaled.
+                state = api.wait(handle, PROBE_GRACE_MS)
                 if state == exec_job_object.WAIT_TIMEOUT:
                     survivors.append(record["pid"])
                     if not api.terminate_process(handle, 1):
                         confirmed = False
-                    state = api.wait(handle, 3000)
+                    state = api.wait(handle, PROBE_GRACE_MS)
                 if state != exec_job_object.WAIT_OBJECT_0:
                     confirmed = False
             except (exec_job_object.JobObjectError, OSError):
@@ -745,21 +747,14 @@ class PreparedExecution:
             "k.CloseHandle.argtypes=[wintypes.HANDLE]\n"
             "k.CloseHandle.restype=wintypes.BOOL\n"
             "def duplicate(p):\n"
-            " process_access=0x00101001\n"
             " parent=k.OpenProcess(0x40,False,int(sys.argv[3]))\n"
             " if not parent: raise ctypes.WinError(ctypes.get_last_error())\n"
-            " source=0\n"
             " try:\n"
-            "  source=k.OpenProcess(process_access,False,p.pid)\n"
-            "  if not source: raise ctypes.WinError(ctypes.get_last_error())\n"
             "  out=wintypes.HANDLE()\n"
-            "  if not k.DuplicateHandle(k.GetCurrentProcess(),source,parent,"
-            "ctypes.byref(out),process_access,False,0): "
-            "   raise ctypes.WinError(ctypes.get_last_error())\n"
+            "  if not k.DuplicateHandle(k.GetCurrentProcess(),p._handle,parent,"
+            "ctypes.byref(out),0,False,2): raise ctypes.WinError(ctypes.get_last_error())\n"
             "  return out.value\n"
-            " finally:\n"
-            "  if source: k.CloseHandle(source)\n"
-            "  k.CloseHandle(parent)\n"
+            " finally: k.CloseHandle(parent)\n"
             "facts={}\n"
             "p=subprocess.Popen([sys.executable,'-I','-S','-c',"
             f"{child!r},sys.argv[1]],stdin=subprocess.DEVNULL,"

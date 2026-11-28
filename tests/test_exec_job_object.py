@@ -1246,6 +1246,7 @@ def test_probe_cleanup_does_not_terminate_mismatched_exact_handle(monkeypatch):
     ("tree_state", "may_survive", "identity_valid", "close_ok", "survivor", "expected"),
     [
         ("exited", False, True, True, False, "enforced"),
+        ("exited", False, True, True, "signaling", "enforced"),
         ("exited", True, True, True, False, "unknown"),
         ("unknown", False, True, True, False, "unknown"),
         ("exited", False, True, False, False, "unknown"),
@@ -1280,7 +1281,15 @@ def test_windows_probe_requires_confirmed_tree_and_exact_handle_cleanup(
         stderr="", truncated=False, stdout_ref=None, stderr_ref=None,
         duration_ms=0, descendants_may_survive=may_survive,
     )
-    waits = iter([job.WAIT_TIMEOUT, job.WAIT_OBJECT_0] if survivor else [job.WAIT_OBJECT_0])
+    terminated = []
+
+    def wait(handle, timeout):
+        assert handle == 99
+        if survivor == "signaling" and timeout == 0:
+            return job.WAIT_TIMEOUT
+        if survivor is True and not terminated:
+            return job.WAIT_TIMEOUT
+        return job.WAIT_OBJECT_0
 
     def identity(handle):
         if not identity_valid:
@@ -1289,8 +1298,8 @@ def test_windows_probe_requires_confirmed_tree_and_exact_handle_cleanup(
 
     api = SimpleNamespace(
         process_identity=identity,
-        wait=lambda handle, timeout: events.append("handle.wait") or next(waits),
-        terminate_process=lambda handle, code: True,
+        wait=lambda handle, timeout: events.append("handle.wait") or wait(handle, timeout),
+        terminate_process=lambda handle, code: terminated.append((handle, code)) or True,
         close_handle=lambda handle: close_ok,
     )
     monkeypatch.setattr(execution, "_launch_process", launch)
@@ -1306,6 +1315,7 @@ def test_windows_probe_requires_confirmed_tree_and_exact_handle_cleanup(
     finding = execution._probe_windows_descendant()
 
     assert finding.status == expected
+    assert terminated == ([(99, 1)] if survivor is True else [])
     assert closed == [0]
     if identity_valid:
         assert events and events[0] == "proc.close"

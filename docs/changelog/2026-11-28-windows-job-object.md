@@ -97,6 +97,8 @@ uv run --frozen pytest -q \
 
 [原生定向复核 46090389519](https://github.com/lorek666/tianshu-agent/actions/runs/46090389519) 与[取消重复探针 46090545964](https://github.com/lorek666/tianshu-agent/actions/runs/46090545964) 复核了对精确句柄的等待。首轮取消测试等待辅助进程失败，重跑未复现。该用例先记录派发结果，使早退能够直接显示原因。最终门禁仍由合并候选的完整 CI 提供。
 
+[完整 CI 46099993783](https://github.com/lorek666/tianshu-agent/actions/runs/46099993783) 仍复现了准入误拒。此前调整句柄权限、延长 Job 关闭等待或调整关闭顺序均未消除这一问题。Job 活跃计数归零后，对后代 HANDLE 的首次零等待仍可能返回 `WAIT_TIMEOUT`，探针随即把它登记为存活并尝试终止。修复复用原探针的有界观察窗口，先等已核对 PID 和 FILETIME 的同一个 HANDLE；超时仍记录存活，清理失败仍不能通过准入。负控保留身份不符、超过观察窗口仍存活和无法关闭句柄等情形；不按 PID 重新打开后代进程。新用例在零等待下复现误判，修复后通过。[定向 Windows 运行 46101500664](https://github.com/lorek666/tianshu-agent/actions/runs/46101500664) 复核了 MCP 关闭、进程树准入、取消、认领丢失与 fence；最终验收仍以冻结候选的完整 CI 为准。
+
 ## 未决边界
 
 - Windows required CI 尚须覆盖真实 stdio、wait/returncode、多代与 detached 后代、leader 先退、breakaway 拒绝、父 Job handle 关闭、Admission 探针、通用/detached 精确 HANDLE 清理、MCP + Job 关闭与首次 `CloseHandle` 失败自动重试。
