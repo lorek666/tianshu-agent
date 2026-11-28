@@ -248,6 +248,47 @@ def test_default_backend_is_the_local_backend():
     assert exec_backend("local") is LOCAL_EXEC_BACKEND
 
 
+def test_windows_job_object_is_explicit_opt_in_and_never_auto(monkeypatch):
+    from tianshu import exec_backends, exec_job_object
+
+    capabilities = replace(
+        LOCAL_EXEC_BACKEND.capabilities,
+        name="windows_job_object",
+        isolation="none",
+        supports_pty=False,
+        supports_signals=False,
+        supports_process_group=False,
+        supports_job_objects=True,
+        supports_network_isolation=False,
+    )
+    backend = RecordingBackend(capabilities=capabilities)
+    monkeypatch.setattr(exec_job_object, "availability", lambda: True)
+    monkeypatch.setattr(
+        exec_job_object, "WindowsJobObjectExecBackend", lambda: backend, raising=False
+    )
+    monkeypatch.setattr(exec_backends.sys, "platform", "win32")
+    reset_exec_backends()
+
+    assert exec_backend() is LOCAL_EXEC_BACKEND
+    assert exec_backend("windows_job_object") is backend
+    assert backend.capabilities.isolation == "none"
+    with pytest.raises(PolicyUnsupported) as excinfo:
+        exec_backend("auto")
+    assert excinfo.value.backend == "auto"
+
+
+def test_windows_job_object_unavailable_is_refused(monkeypatch):
+    from tianshu import exec_job_object
+
+    monkeypatch.setattr(exec_job_object, "availability", lambda: False)
+    reset_exec_backends()
+
+    with pytest.raises(PolicyUnsupported) as excinfo:
+        exec_backend("windows_job_object")
+    assert excinfo.value.backend == "windows_job_object"
+    assert excinfo.value.feature == "exec_backend"
+
+
 def test_env_selects_a_registered_backend(monkeypatch):
     fake = RecordingBackend()
     register_exec_backend(fake, name="fake")
@@ -336,6 +377,85 @@ def test_registering_a_known_unimplemented_name_requires_explicit_replace():
 
     assert "container" not in UNIMPLEMENTED_EXEC_BACKENDS
     assert exec_backend("container") is impl
+
+
+def test_replacing_known_backend_cannot_change_its_isolation_promise():
+    register_exec_backend(ContainerDouble(), name="container", replace=True)
+
+    with pytest.raises(TianshuError, match="不相称"):
+        register_exec_backend(
+            RecordingBackend(name="container"), name="container", replace=True
+        )
+
+
+def test_windows_job_object_first_registration_requires_job_capability():
+    capabilities = replace(
+        LOCAL_EXEC_BACKEND.capabilities,
+        name="windows_job_object",
+        isolation="none",
+        supports_pty=False,
+        supports_signals=False,
+        supports_process_group=False,
+        supports_job_objects=False,
+        supports_network_isolation=False,
+    )
+    with pytest.raises(TianshuError, match="supports_job_objects"):
+        register_exec_backend(
+            RecordingBackend(capabilities=capabilities),
+            name="windows_job_object",
+            replace=True,
+        )
+
+
+def test_known_backend_replacement_cannot_change_its_name():
+    register_exec_backend(ContainerDouble(), name="container", replace=True)
+
+    with pytest.raises(TianshuError, match="自报同一名字"):
+        register_exec_backend(
+            RecordingBackend(
+                capabilities=ExecBackendCapabilities(
+                    name="other_container", isolation="container"
+                )
+            ),
+            name="container",
+            replace=True,
+        )
+
+
+def test_windows_job_object_replacement_cannot_claim_stronger_isolation():
+    capabilities = replace(
+        LOCAL_EXEC_BACKEND.capabilities,
+        name="windows_job_object",
+        isolation="none",
+        supports_pty=False,
+        supports_signals=False,
+        supports_process_group=False,
+        supports_job_objects=True,
+        supports_network_isolation=False,
+    )
+    register_exec_backend(
+        RecordingBackend(capabilities=capabilities),
+        name="windows_job_object",
+        replace=True,
+    )
+
+    with pytest.raises(TianshuError, match="不相称"):
+        register_exec_backend(
+            RecordingBackend(
+                capabilities=replace(
+                    LOCAL_EXEC_BACKEND.capabilities,
+                    name="windows_job_object",
+                    isolation="process_tree",
+                    supports_pty=False,
+                    supports_signals=False,
+                    supports_process_group=False,
+                    supports_job_objects=True,
+                    supports_network_isolation=False,
+                )
+            ),
+            name="windows_job_object",
+            replace=True,
+        )
 
 
 # ---------------------------------------------------------------- 3. 注册纪律

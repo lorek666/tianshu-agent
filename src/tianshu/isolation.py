@@ -14,7 +14,7 @@
 - `enforced`：探针观察到该边界确实被挡住；
 - `not_enforced`：探针观察到子进程**能**越过该边界；
 - `unknown`：探针自己没跑成 / 结果读不懂 / 平台能力不足以确认（例如 Windows
-  没有 Job Object 时，即使这次看到孙进程死了，也不能声明"树一定能杀干净"）。
+  默认 local 没有 Job Object 时，即使这次看到孙进程死了，也不能声明"树一定能杀干净"）。
 
 `unknown` 与 `not_enforced` **一样阻断**依赖它的能力：没有证据不等于隔离成立。
 
@@ -29,6 +29,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import shutil
@@ -62,7 +63,7 @@ from .execpolicy import (
 )
 
 #: 探测逻辑版本。缓存键与报告都带它：探针语义变了，旧证据不能继续给新代码用。
-PROBE_VERSION = "v3"
+PROBE_VERSION = "v5"
 
 #: 非杀树探针的子进程超时上限。真实子进程出问题时宁可 unknown，不挂住调用方。
 PROBE_TIMEOUT_MS = 5_000
@@ -521,16 +522,28 @@ def probe_backend(
     root = Path(data_root).resolve()
     ws.mkdir(parents=True, exist_ok=True)
     root.mkdir(parents=True, exist_ok=True)
-    probe_dir = Path(tempfile.mkdtemp(prefix="isolation-probe-", dir=str(root)))
-    try:
-        findings = (
-            _probe_files_authority(backend, ws, probe_dir, timeout_ms),
-            _probe_network(backend, ws, timeout_ms),
-            _probe_credentials(backend, ws, timeout_ms),
-            _probe_process_tree(backend, ws, probe_dir, timeout_ms),
-        )
-    finally:
-        shutil.rmtree(probe_dir, ignore_errors=True)
+    name = _backend_name(backend)
+    if name == "windows_job_object":
+        # This Job profile supplies no OS primitive for these three boundaries.
+        # A failed sample (e.g. missing SYSTEMROOT) cannot prove one in its place.
+        findings = tuple(
+            IsolationFinding(boundary, BOUNDARY_NOT_ENFORCED, "Windows Job 仅约束进程树")
+            for boundary in (
+                ISOLATION_BOUNDARY_FILES, ISOLATION_BOUNDARY_NETWORK,
+                ISOLATION_BOUNDARY_CREDENTIALS,
+            )
+        ) + (_probe_process_tree(backend, ws, root, timeout_ms),)
+    else:
+        probe_dir = Path(tempfile.mkdtemp(prefix="isolation-probe-", dir=str(root)))
+        try:
+            findings = (
+                _probe_files_authority(backend, ws, probe_dir, timeout_ms),
+                _probe_network(backend, ws, timeout_ms),
+                _probe_credentials(backend, ws, timeout_ms),
+                _probe_process_tree(backend, ws, probe_dir, timeout_ms),
+            )
+        finally:
+            shutil.rmtree(probe_dir, ignore_errors=True)
     return IsolationReport(
         backend=_backend_name(backend),
         platform=platform_label(),
@@ -547,10 +560,11 @@ def _probe_policy(
     *,
     env_allowlist: tuple[str, ...],
     timeout_ms: int,
+    executable: str = sys.executable,
 ) -> ExecPolicy:
     """探针用的最小策略：只允许本解释器、只允许 workspace 作为 cwd。"""
     return ExecPolicy(
-        argv_allowlist=(sys.executable,),
+        argv_allowlist=(executable,),
         cwd_roots=(workspace,),
         env_allowlist=env_allowlist,
         max_output_bytes=64 * 1024,
@@ -572,6 +586,7 @@ def _run_child(
     timeout_ms: int,
     env: dict[str, str],
     env_allowlist: tuple[str, ...],
+    executable: str = sys.executable,
 ) -> tuple[ExecResult | None, dict[str, str], str]:
     """spawn 一个探针子进程并解析 `KEY=VALUE` 行。
 
@@ -581,9 +596,9 @@ def _run_child(
     """
     # Probe evidence must not depend on modules or startup hooks in the subject
     # workspace, PYTHONPATH or site directories. Business argv is unaffected.
-    argv = [sys.executable, "-I", "-S", "-c", script, *[str(arg) for arg in args]]
+    argv = [executable, "-I", "-S", "-c", script, *[str(arg) for arg in args]]
     policy = _probe_policy(
-        workspace, env_allowlist=env_allowlist, timeout_ms=timeout_ms
+        workspace, env_allowlist=env_allowlist, timeout_ms=timeout_ms, executable=executable,
     )
     try:
         result = backend.spawn(
@@ -795,6 +810,65 @@ if hasattr(os, "fork"):
             os._exit(0)
         pathlib.Path(sys.argv[1]).write_bytes(str(pid).encode("utf-8"))
         threading.Event().wait(120)
+elif os.name == "nt":
+    import ctypes, json
+    from ctypes import wintypes
+
+    class FileTime(ctypes.Structure):
+        _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetCurrentProcess.argtypes = []
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.DuplicateHandle.argtypes = [
+        wintypes.HANDLE, wintypes.HANDLE, wintypes.HANDLE,
+        ctypes.POINTER(wintypes.HANDLE), wintypes.DWORD, wintypes.BOOL, wintypes.DWORD,
+    ]
+    kernel32.DuplicateHandle.restype = wintypes.BOOL
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.GetProcessTimes.argtypes = [
+        wintypes.HANDLE, ctypes.POINTER(FileTime), ctypes.POINTER(FileTime),
+        ctypes.POINTER(FileTime), ctypes.POINTER(FileTime),
+    ]
+    kernel32.GetProcessTimes.restype = wintypes.BOOL
+    grandchild = subprocess.Popen(
+        [sys.executable, "-I", "-S", "-c", "import threading; threading.Event().wait(120)"]
+    )
+    created, exited, kernel, user = (FileTime() for _ in range(4))
+    if not kernel32.GetProcessTimes(
+        grandchild._handle, ctypes.byref(created), ctypes.byref(exited),
+        ctypes.byref(kernel), ctypes.byref(user),
+    ):
+        grandchild.kill()
+        grandchild.wait()
+        raise ctypes.WinError(ctypes.get_last_error())
+    birth = (int(created.high) << 32) | int(created.low)
+    duplicate = wintypes.HANDLE()
+    try:
+        # Duplicate into the actual probing host, not the short-lived leader.
+        host = kernel32.OpenProcess(0x40, False, int(sys.argv[2]))  # PROCESS_DUP_HANDLE
+        if not host:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            if not kernel32.DuplicateHandle(
+                kernel32.GetCurrentProcess(), grandchild._handle, host,
+                ctypes.byref(duplicate), 0, False, 2,  # DUPLICATE_SAME_ACCESS
+            ):
+                raise ctypes.WinError(ctypes.get_last_error())
+        finally:
+            kernel32.CloseHandle(host)
+    except OSError:
+        grandchild.kill()
+        grandchild.wait()
+        raise
+    pathlib.Path(sys.argv[1]).write_bytes(json.dumps({
+        "pid": grandchild.pid, "birth": birth,
+    }).encode("utf-8"))
+    print("GRANDCHILD_HANDLE=" + str(duplicate.value), flush=True)
+    threading.Event().wait(120)
 else:
     grandchild = subprocess.Popen(
         [sys.executable, "-I", "-S", "-c", "import threading; threading.Event().wait(120)"]
@@ -804,9 +878,212 @@ else:
 """
 
 
+def _read_windows_probe_record(
+    pid_file: Path, parsed: dict[str, str]
+) -> tuple[int, int, int] | None:
+    try:
+        raw = json.loads(pid_file.read_bytes())
+        pid, birth, handle = raw["pid"], raw["birth"], parsed["GRANDCHILD_HANDLE"]
+        values = (pid, birth, handle)
+        if any(
+            isinstance(value, bool) or not isinstance(value, (int, str))
+            for value in values
+        ):
+            return None
+        pid, birth, handle = int(pid), int(birth), int(handle)
+    except (OSError, UnicodeDecodeError, ValueError, TypeError, KeyError):
+        return None
+    if pid <= 0 or birth <= 0 or handle <= 0:
+        return None
+    return pid, birth, handle
+
+
+def _windows_process_identity(handle: int, kernel32: Any) -> tuple[int, int] | None:
+    import ctypes
+    from ctypes import wintypes
+
+    created, exited, kernel, user = (wintypes.FILETIME() for _ in range(4))
+    pid = int(kernel32.GetProcessId(handle))
+    if not pid or not kernel32.GetProcessTimes(
+        handle, ctypes.byref(created), ctypes.byref(exited),
+        ctypes.byref(kernel), ctypes.byref(user),
+    ):
+        return None
+    return pid, (int(created.dwHighDateTime) << 32) | int(created.dwLowDateTime)
+
+
+def _windows_process_active(handle: int, kernel32: Any) -> bool | None:
+    state = int(kernel32.WaitForSingleObject(handle, 0))
+    if state == 0:
+        return False
+    if state == 0x00000102:
+        return True
+    return None
+
+
+def _wait_windows_process_gone(handle: int, kernel32: Any, grace_ms: int) -> bool | None:
+    deadline = time.monotonic() + grace_ms / 1000
+    last: bool | None = True
+    while time.monotonic() < deadline:
+        last = _windows_process_active(handle, kernel32)
+        if last is False:
+            return False
+        if last is None:
+            return None
+        time.sleep(POLL_INTERVAL_S)
+    return last
+
+
+def _terminate_windows_process(handle: int, kernel32: Any) -> bool:
+    if not kernel32.TerminateProcess(handle, 1):
+        return _wait_windows_process_gone(handle, kernel32, PROBE_GRACE_MS) is False
+    return _wait_windows_process_gone(handle, kernel32, PROBE_GRACE_MS) is False
+
+
+def _close_windows_process_handle(handle: int, kernel32: Any) -> bool:
+    for _ in range(3):
+        if kernel32.CloseHandle(handle):
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def _configure_windows_probe_api(kernel32: Any) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32.GetProcessId.argtypes = [wintypes.HANDLE]
+    kernel32.GetProcessId.restype = wintypes.DWORD
+    kernel32.GetProcessTimes.argtypes = [
+        wintypes.HANDLE, ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME), ctypes.POINTER(wintypes.FILETIME),
+        ctypes.POINTER(wintypes.FILETIME),
+    ]
+    kernel32.GetProcessTimes.restype = wintypes.BOOL
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel32.TerminateProcess.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+
+def _probe_windows_process_tree(
+    backend: Any, workspace: Path, timeout_ms: int
+) -> IsolationFinding:
+    tree_dir = Path(tempfile.mkdtemp(prefix=".tianshu-tree-probe-", dir=str(workspace)))
+    pid_file = tree_dir / "grandchild.pid"
+    record: tuple[int, int, int] | None = None
+    handle: int | None = None
+    identity_checked = False
+    cleanup_confirmed = True
+    finding = IsolationFinding(
+        ISOLATION_BOUNDARY_PROCESS_TREE, BOUNDARY_UNKNOWN,
+        "Windows 探针没有给出可核对的精确进程句柄",
+    )
+    try:
+        result, parsed, problem = _run_child(
+            backend, _PROBE_PROCESS_TREE, [pid_file, os.getpid()], workspace=workspace,
+            timeout_ms=min(PROBE_KILL_WINDOW_MS, timeout_ms), env=_base_env(),
+            env_allowlist=("PATH",),
+            # A Windows venv redirector may create its own Job and hide escapes.
+            executable=getattr(sys, "_base_executable", sys.executable),
+        )
+        record = _read_windows_probe_record(pid_file, parsed)
+        if record is not None:
+            handle = record[2]
+        if result is None:
+            finding = IsolationFinding(
+                ISOLATION_BOUNDARY_PROCESS_TREE, BOUNDARY_UNKNOWN, problem,
+            )
+        elif record is None or handle is None:
+            finding = IsolationFinding(
+                ISOLATION_BOUNDARY_PROCESS_TREE, BOUNDARY_UNKNOWN,
+                f"Windows 探针缺少 PID/FILETIME/精确 HANDLE（{problem}）",
+            )
+        else:
+            pid, birth, _ = record
+            detail = (
+                f"超时={result.timed_out} descendants_may_survive="
+                f"{result.descendants_may_survive} 耗时={result.duration_ms}ms"
+                f" 孙进程pid={pid} 精确HANDLE={handle}"
+            )
+            try:
+                kernel32 = _open_kernel32()
+                _configure_windows_probe_api(kernel32)
+                identity_checked = _windows_process_identity(handle, kernel32) == (pid, birth)
+            except Exception:  # noqa: BLE001 - Windows API 不可用：判不了
+                kernel32 = None
+                identity_checked = False
+            if not identity_checked or kernel32 is None:
+                cleanup_confirmed = False
+                finding = IsolationFinding(
+                    ISOLATION_BOUNDARY_PROCESS_TREE, BOUNDARY_UNKNOWN,
+                    f"精确 HANDLE 的 PID/FILETIME 身份不可核对，禁止按 PID 清理（{detail}）",
+                )
+            elif not result.timed_out:
+                finding = IsolationFinding(
+                    ISOLATION_BOUNDARY_PROCESS_TREE, BOUNDARY_UNKNOWN,
+                    f"探测窗口内子进程没有超时，未进入杀树路径（{detail}）",
+                )
+            else:
+                alive = _wait_windows_process_gone(handle, kernel32, PROBE_GRACE_MS)
+                if alive is None:
+                    finding = IsolationFinding(
+                        ISOLATION_BOUNDARY_PROCESS_TREE, BOUNDARY_UNKNOWN,
+                        f"无法按精确 HANDLE 判定孙进程 {pid} 是否存活（{detail}）",
+                    )
+                elif alive:
+                    finding = IsolationFinding(
+                        ISOLATION_BOUNDARY_PROCESS_TREE, BOUNDARY_NOT_ENFORCED,
+                        f"超时杀树后孙进程 {pid} 仍存活（{detail}）",
+                    )
+                elif result.descendants_may_survive:
+                    finding = IsolationFinding(
+                        ISOLATION_BOUNDARY_PROCESS_TREE, BOUNDARY_UNKNOWN,
+                        f"孙进程 {pid} 本次已消失，但后端无法确认杀树"
+                        f"（descendants_may_survive=True，{detail}）",
+                    )
+                else:
+                    finding = IsolationFinding(
+                        ISOLATION_BOUNDARY_PROCESS_TREE, BOUNDARY_ENFORCED,
+                        f"超时后按精确 HANDLE 核验 PID/FILETIME，孙进程 {pid} "
+                        f"在观察窗口内消失（{detail}）",
+                    )
+    finally:
+        if handle is not None:
+            try:
+                kernel32 = _open_kernel32()
+                _configure_windows_probe_api(kernel32)
+                if not identity_checked and record is not None:
+                    identity_checked = _windows_process_identity(handle, kernel32) == record[:2]
+                if not identity_checked:
+                    cleanup_confirmed = False
+                else:
+                    alive = _windows_process_active(handle, kernel32)
+                    if alive is None:
+                        cleanup_confirmed = False
+                    elif alive and not _terminate_windows_process(handle, kernel32):
+                        cleanup_confirmed = False
+                if identity_checked and not _close_windows_process_handle(handle, kernel32):
+                    cleanup_confirmed = False
+            except Exception:  # noqa: BLE001 - Windows API 不可用：判不了
+                cleanup_confirmed = False
+        if finding.status == BOUNDARY_ENFORCED and not cleanup_confirmed:
+            finding = IsolationFinding(
+                ISOLATION_BOUNDARY_PROCESS_TREE, BOUNDARY_UNKNOWN,
+                finding.evidence + "；精确句柄清理未确认",
+            )
+        shutil.rmtree(tree_dir, ignore_errors=True)
+    return finding
+
+
 def _probe_process_tree(
     backend: Any, workspace: Path, probe_dir: Path, timeout_ms: int
 ) -> IsolationFinding:
+    if os.name == "nt":
+        return _probe_windows_process_tree(backend, workspace, timeout_ms)
+
     # 真实沙箱会阻断工作区外的 `probe_dir`（位于 `data_root` 下）；因此孙进程
     # pid 文件必须落在被授权的 `workspace` 内独立临时子目录，并在收尾后清理。
     _ = probe_dir
@@ -879,7 +1156,7 @@ def _probe_process_tree(
                 f"超时杀树后孙进程 {pid} 仍存活（{detail}）",
             )
         if result.descendants_may_survive:
-            # 看到了这一次死亡，但后端自己说"无法确认树已终止"（Windows 无 Job Object）：
+            # 看到了这一次死亡，但后端自己说"无法确认树已终止"：
             # 一次观察不能升级成能力声明。
             return IsolationFinding(
                 ISOLATION_BOUNDARY_PROCESS_TREE,
@@ -985,12 +1262,10 @@ def _wait_pid_gone(pid: int, grace_ms: int) -> bool | None:
 
 
 def _terminate_pid(pid: int) -> None:
-    """探针兜底清理：绝不给系统留下一个跑 120 秒的孙进程。"""
+    """POSIX 探针兜底清理；Windows 必须使用带身份核验的精确 HANDLE。"""
     try:
         if os.name == "posix":
             os.kill(pid, signal.SIGKILL)
-        elif sys.platform.startswith("win"):
-            os.kill(pid, signal.SIGTERM)
     except OSError:
         pass
 

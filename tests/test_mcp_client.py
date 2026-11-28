@@ -7,10 +7,13 @@
 
 from __future__ import annotations
 
+import io
 import json
 import sys
+import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -310,6 +313,50 @@ def test_close_is_idempotent_and_reaps_the_process():
     instance.close()
     instance.close()
     assert instance.exit_code() is not None
+
+
+def test_execution_close_skips_popen_cleanup_and_wakes_waiters():
+    instance = StdioServer(_config("fake"))
+    exited = []
+    stdin = io.BytesIO()
+
+    class ManagedProcess:
+        def __getattr__(self, name):
+            raise AssertionError(f"ManagedProcess 不得走 Popen 清理：{name}")
+
+    instance._proc = ManagedProcess()
+    instance._proc.stdin = stdin
+    instance._execution = SimpleNamespace(
+        __exit__=lambda *_args: exited.append(True),
+    )
+    joined = []
+
+    class Reader:
+        def is_alive(self):
+            return True
+
+        def join(self, timeout):
+            joined.append(timeout)
+
+    instance._reader = Reader()
+    instance._stderr_reader = Reader()
+    awoken = threading.Event()
+    responses = []
+
+    def wait_for_response():
+        responses.append(instance._responses.get(timeout=2))
+        awoken.set()
+
+    waiter = threading.Thread(target=wait_for_response, daemon=True)
+    waiter.start()
+    instance.close()
+
+    assert awoken.wait(1)
+    waiter.join(timeout=1)
+    assert exited == [True]
+    assert stdin.closed
+    assert joined == [1.0, 1.0]
+    assert responses == [(None, {})]
 
 
 # ---------------------------------------------------------------- 多 server

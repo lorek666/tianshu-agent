@@ -857,14 +857,21 @@ class StdioServer(_ToolClient):
         proc = self._proc
         if self._execution is not None:
             self._execution.__exit__(None, None, None)
-        elif proc is not None and os.name == "posix":
-            import signal
+            if proc is not None:
+                stream = proc.stdin
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
+        elif proc is not None:
+            if os.name == "posix":
+                import signal
 
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-        if proc is not None:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
             stream = proc.stdin
             if stream is not None:
                 try:

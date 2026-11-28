@@ -97,7 +97,7 @@ UI 映射优先级（`ui/src/lib/humanize.ts::isolationSentence`，顺序反了�
 | F2-c4 做不到必须 unsupported | 后端选择 + 能力判定 + 隔离门三处都不回落 |
 | F2-c5 受信任执行必须可见 | 审批前 `ApprovalView.isolation` + 结果/事件 + UI（PR #109） |
 | F2-c6 四边界实测证据 | `isolation.py` 探针 + 门接入产品路径 |
-| F2-c7 进程树（L2） | POSIX 交付；Windows ⛔（见 §7 决策） |
+| F2-c7 进程树（L2） | POSIX 交付；Windows `local` ⛔；显式 Job 候选待原生 CI 与设备证据（见 §10） |
 
 ---
 
@@ -127,7 +127,8 @@ UI 映射优先级（`ui/src/lib/humanize.ts::isolationSentence`，顺序反了�
 
 ## 6 未验证（与验收报告一致）
 
-- Windows **实机**：无；Job Object 未实现，进程树 `unknown`。
+- Windows **实机**：无；显式 `windows_job_object` 候选已实现，但 Windows required CI
+  与设备证据取得前，进程树支持状态保持未验证，默认 `local` 仍为 `unknown`。
 - macOS x64 / Linux x64 / arm64 无实机，矩阵保持 `unknown`。
 - 探针不覆盖：内核攻击面（ptrace/注入）、DNS/出站、磁盘配额、CPU 上限、
   TCC 交互。
@@ -196,7 +197,12 @@ Windows 实机验收，而不是直接复用本轮代码。
 
 ## 9. 显式单进程增量（2026-11-23，候选）
 
-上节保留 W14 的历史版本。当前探针升级为 `v3`，旧报告和 subject admission 不复用。
+上节保留 W14 的历史版本。当前探针升级为 `v5`，旧报告和 subject admission 不复用。
+`v3` 的受限 `os.fork()` 拒绝证明继续保留。Windows 进程树探针使用实际解释器，
+避免虚拟环境的 Windows 启动器创建额外的 Job；探针通过 `DuplicateHandle` 把孙进程的
+精确句柄交给指定的宿主。宿主核对 PID 和原始 FILETIME，再用 `WaitForSingleObject`
+观察是否退出，必要时按句柄终止并关闭句柄。身份或终态无法确认时保留 `unknown`，
+禁止按裸 PID 清理。Windows Job 准入要求通用超时与 detached/breakaway 探针都通过。
 进程边界增加一条受限证明路径：直接 `os.fork()` 被内核以 `EPERM` / `EACCES` 拒绝，
 根继续阻塞，实际超时后经受管等待确认被 `SIGKILL` 终止，且无清理未知标记。
 启动或导入失败、无输出、异常 errno、未超时、根退出证据不足均为 `unknown`。
@@ -219,24 +225,24 @@ PID/PGID 发信号，以免误伤复用身份。该结论不推广到允许后�
 
 ---
 
-## 10. Windows Job Object 进程树切片契约（2026-11-28，候选，未实现）
+## 10. Windows Job Object 进程树切片契约与候选实现（2026-11-28）
 
-> 对应 PRD §8.1.2 与 Issue #224。本节只定义后续实现必须满足的契约，不代表代码、Windows CI 或设备验收已经完成。
+> 对应 PRD §8.1.2 与 Issue #224。代码候选已实现；Windows required CI、独立复审结论与设备验收必须绑定最终冻结后，才能把支持状态从候选改为已交付。
 
 ### 10.1 范围与非目标
 
-- 目标是在 Windows 上提供显式选择的 `process_tree` 后端；建议注册名在实现 PR 中冻结，默认 `local` 与 `auto` 保持不变。
+- 目标是在 Windows 上提供显式选择的 `process_tree` 后端；注册名冻结为 `windows_job_object`，默认 `local` 与 `auto` 保持不变。
 - 只约束进入同一 Job Object 的受控进程树。文件、网络、凭据仍不是本切片的强制边界；`capabilities.isolation` 保持 `none`，`supports_job_objects=True` 只说明实现具备 Job 机制，不构成隔离证据。只有原生 `IsolationReport` 通过后才声明 `process_tree=enforced`，累计 `isolation_view.level` 不升级。
-- 不覆盖 MCP 长连接进程、Job 外宿主进程、允许 breakaway 的后代，也不承诺防御同 UID 宿主、内核攻击、EDR 或桌面会话差异。
+- 不覆盖 Job 外宿主进程、允许 breakaway 的后代，也不承诺防御同 UID 宿主、内核攻击、EDR 或桌面会话差异。本地 MCP stdio 只验证与受管进程关闭协议兼容，不扩成长连接可靠性承诺。
 - 目标后端、API 或平台不可用时抛 `PolicyUnsupported` 或保持 `unknown`，绝不回落 `local`。
 
 ### 10.2 创建与生命周期
 
-1. 使用 `CREATE_SUSPENDED` 创建根进程并保留线程句柄；优先用 `PROC_THREAD_ATTRIBUTE_JOB_LIST` 在创建时原子绑定 Job。若目标 Windows 不支持该属性，只能在所有线程恢复前用 `AssignProcessToJobObject` 绑定，失败则终止暂停进程并拒绝执行。
+1. 使用 `CREATE_SUSPENDED` 创建根进程并保留线程句柄；用 `PROC_THREAD_ATTRIBUTE_JOB_LIST` 在创建时原子绑定 Job；系统不支持该属性时拒绝启动，不回落到其他后端。
 2. Job handle 不可继承，设置 `KILL_ON_JOB_CLOSE`，禁止 breakaway。父进程崩溃、正常退出或句柄关闭都应由内核终止 Job 内进程；测试必须证明这一点。
-3. `Popen.wait()` 只证明 leader 被回收，不证明 Job 为空。leader 正常退出后也必须查询 Job；仍有活跃进程时执行终止并有界等待。超时、取消、fence 与宿主退出调用 `TerminateJobObject`，随后查询 `QueryInformationJobObject` 的 `ActiveProcesses`。
+3. 受管等待只证明 leader 已退出，不证明 Job 为空。leader 正常退出后仍须查询 Job；超时、受管取消或仍有活跃进程时调用 `TerminateJobObject`，有界等待 `QueryInformationJobObject` 的 `ActiveProcesses` 归零。宿主硬退由内核在关闭最后一个 Job 句柄时触发清理。
 4. 只有活跃进程集合归零才可确认 `exited`。查询失败、仍有进程或身份不确定时保持 `unknown`，设置 `descendants_may_survive=true`，阻断冲突恢复；不得自动重放未知副作用。
-5. `ExecutionSubject` 记录实际后端、Job/profile 身份与创建证据；审批和结果视图只显示已经实测的边界，不把 Job Object 描述成完整沙箱。
+5. `ExecutionSubject` 记录实际后端、Job/profile 身份与创建证据；显式 Job 后端的命令在审批前至少要求 `process_tree` 实测报告；执行前再绑定 subject 并重测。审批和结果视图只显示已经实测的边界，不把 Job Object 描述成完整沙箱。
 
 6. 新建显式 Job 命令审批时，`approval.requested` 必须记录实际的 `command.backend` 和准入后的 `execution_subject_digest`。已有的逐次人工决定、动作摘要和 Grant 仍然必需。有限授权不代替显式 Job 的逐次审批。
 7. 兑现时，若审批或当前执行选择 Job，执行侧必须核对同一审批记录中的后端和 subject 摘要；执行前的现场复核须与该记录一致。缺证据、后端变更、程序或可识别脚本内容变更、环境或隔离 profile 变更均拒绝原批准。下一次发起请求时按新对象生成审批，旧事件保留。对正在使用其他后端的既有审批不增设字段要求；仍执行原权限校验。
@@ -251,6 +257,9 @@ Windows 原生 CI 至少覆盖：
 - detached 创建与多代派生后代不能逃出 Job；
 - 父进程崩溃或关闭最后句柄触发 kill-on-close；
 - breakaway 被拒绝，PID 复用不导致误杀，64 位 HANDLE 不被截断；
+- 通用与 detached 探针都通过精确 HANDLE + PID/FILETIME 核验、观察和清理，不按裸 PID 终止；
+- MCP stdio 关闭只走 `PreparedExecution`，不调用 `ManagedProcess` 不存在的 Popen 方法，并确认读线程join、等待者唤醒和 Run 终态收尾；
+- `CloseHandle` 首次失败时，controller、backend 与 MCP 生产关闭路径有界自动重试；持续失败保留句柄所有权并报 `unknown`；
 - 创建、绑定、恢复线程、终止和查询 API 的故障均 fail-closed；
 - 无 Job、无 kill-on-close、查询失败的负控必须保持 `unknown` 或拒绝，不能报绿。
 
@@ -259,5 +268,6 @@ Windows CI 是必要证据，不替代 Windows 实机上的文件系统、EDR、
 ### 10.4 提交拆分
 
 - 本契约单独以 `docs(contract):` 提交，说明原方案、新方案、原因与影响代码。
-- 实现 PR 再修改 `exec.py`、`execution_admission.py`、`exec_backends.py`、`isolation.py` 及对应测试，完成 Tier 1 红绿、负控、全量、独立复审和 required CI。
+- 实现 PR 修改 `exec.py`、`execution_admission.py`、`exec_backends.py`、新增
+  `exec_job_object.py` 及对应测试，完成 Tier 1 红绿、负控、全量、独立复审和 required CI。
 - 契约合入不等于能力已实现；只有实现 PR 的原生证据齐备后，才能更新支持矩阵并声明 Windows `process_tree=enforced`。

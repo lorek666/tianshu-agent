@@ -2247,8 +2247,18 @@ raise SystemExit(host.run_host(
         assert not detail.endpoint_exists
 
 
-@pytest.mark.parametrize("owned", [True, False])
-def test_post_readiness_bridge_bind_failure_reaps_only_owned_root(owned):
+@pytest.mark.parametrize(
+    ("owned", "cleanup_failure"),
+    [
+        (True, None),
+        (False, None),
+        (False, "shutdown_refused"),
+        (False, "missing_lock_and_refused_shutdown"),
+    ],
+)
+def test_post_readiness_bridge_bind_failure_reaps_only_owned_root(
+    owned, cleanup_failure, monkeypatch,
+):
     import socket
 
     from tianshu import daemon, ipc
@@ -2277,10 +2287,11 @@ raise SystemExit(host.run_host(
         root = Path(directory)
         daemon_proc = None
         attached_snapshot = None
+        attached_identity = None
         try:
             if not owned:
                 daemon_proc = subprocess.Popen(
-                    [sys.executable, "-m", "tianshu", "daemon", "--model", "scripted",
+                    [_test_interpreter(), "-m", "tianshu", "daemon", "--model", "scripted",
                      "--data-root", str(root)],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=_child_env(),
                 )
@@ -2289,6 +2300,11 @@ raise SystemExit(host.run_host(
                     assert daemon_proc.poll() is None and time.monotonic() < deadline
                     threading.Event().wait(0.02)
                 attached_snapshot = daemon.lock_path(root).read_bytes()
+                from tianshu.execution_admission import process_birth_identity
+
+                attached_pid = int(json.loads(attached_snapshot)["pid"])
+                assert attached_pid == daemon_proc.pid
+                attached_identity = (attached_pid, process_birth_identity(attached_pid))
 
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as reserved:
                 reserved.bind(("127.0.0.1", 0))
@@ -2315,13 +2331,41 @@ raise SystemExit(host.run_host(
                 assert daemon.lock_path(root).read_bytes() == attached_snapshot
                 assert ipc.probe(root, timeout=0.2)
         finally:
-            shutdown_daemon_and_wait(root, timeout=5)
-            if daemon_proc is not None:
+            if daemon_proc is None:
+                shutdown_daemon_and_wait(root, timeout=5)
+            else:
+                if cleanup_failure == "missing_lock_and_refused_shutdown":
+                    daemon.lock_path(root).unlink(missing_ok=True)
+                if cleanup_failure is not None:
+                    monkeypatch.setattr(
+                        daemon, "request_shutdown", lambda *args, **kwargs: False,
+                    )
+                terminated = []
+
+                def terminate_attached(pid, timeout):
+                    terminated.append(pid)
+                    return host.DaemonSupervisor._terminate(daemon_proc, force=True)
+
                 try:
-                    daemon_proc.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    daemon_proc.kill()
-                    daemon_proc.wait(timeout=10)
+                    shutdown_daemon_and_wait(
+                        root,
+                        timeout=0.2 if cleanup_failure is not None else 5,
+                        terminate=terminate_attached,
+                        snapshot=attached_snapshot,
+                        process_identity=attached_identity,
+                        reap=daemon_proc.poll,
+                        allow_missing_lock=(
+                            cleanup_failure == "missing_lock_and_refused_shutdown"
+                        ),
+                    )
+                    assert daemon_proc.poll() is not None
+                    assert terminated == (
+                        [attached_pid] if cleanup_failure is not None else []
+                    )
+                finally:
+                    if daemon_proc.poll() is None:
+                        host.DaemonSupervisor._terminate(daemon_proc, force=True)
+                        daemon_proc.wait(timeout=3)
 
 
 @pytest.mark.parametrize("replacement_stop_fails", [False, True])

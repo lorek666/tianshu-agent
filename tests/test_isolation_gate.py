@@ -243,6 +243,7 @@ def test_partial_boundary_view_is_not_just_trusted(tmp_path):
     assert view["enforced_boundaries"] == ["process_tree"]
     assert view["boundaries"]["files_authority"] == "not_enforced"
     assert view["unverified"] is False
+    assert view["contradicted"] is False
 
 
 def test_unverified_view_keeps_unknown_boundaries(tmp_path):
@@ -720,6 +721,117 @@ def test_approval_view_shows_measured_report_when_requirement_passes(
     assert view["unverified"] is False
     assert view["enforced_boundaries"] == ["process_tree"]
     assert view["level"] == "none"
+
+
+def test_job_evidence_cannot_upgrade_non_tree_boundaries(tmp_path, monkeypatch):
+    from tianshu.exec_job_object import WindowsJobObjectExecBackend
+
+    backend = WindowsJobObjectExecBackend()
+    for suffix, boundary in (
+        ("files_authority", "files_authority"), ("network", "network"),
+        ("credentials", "credentials"), ("process_tree", "process_tree"),
+    ):
+        monkeypatch.setattr(
+            isolation, f"_probe_{suffix}",
+            lambda *args, boundary=boundary: IsolationFinding(boundary, "enforced", "measured"),
+        )
+    report = isolation.probe_backend(backend, workspace=tmp_path, data_root=tmp_path)
+
+    assert report.enforced == ("process_tree",)
+    assert isolation.measured_level(report) == "none"
+    assert isolation.enabled_capabilities(backend, report=report) == []
+
+
+@pytest.mark.parametrize("detached_status", ["enforced", "unknown"])
+def test_explicit_job_backend_requires_tree_evidence_before_approval(
+    env_factory, monkeypatch, detached_status,
+):
+    from tianshu.exec_job_object import WindowsJobObjectExecBackend
+    from tianshu.execution_admission import PreparedExecution
+
+    backend = WindowsJobObjectExecBackend()
+    env = env_factory(exec_backend=backend)
+    monkeypatch.setattr(isolation, "_probe_process_tree", lambda *_a: IsolationFinding(
+        "process_tree", "enforced", "ordinary tree checked",
+    ))
+    monkeypatch.setattr(PreparedExecution, "_probe_detached_descendant", lambda self:
+        IsolationFinding("process_tree", detached_status, "detached tree checked"))
+    task, run, claim = env.new_run(exec_policy=_policy(env.ws))
+    args = {"argv": [PY, "-c", "print(1)"]}
+
+    decision = env.dispatcher.prepare(
+        _exec_request(env, run, claim, args=args, task=task), claim, args=args
+    )
+
+    approvals = [row.payload for row in env.log.read_run(run.run_id)
+                 if row.type == "approval.requested"]
+    if detached_status == "unknown":
+        assert decision.is_rejected, decision
+        assert not approvals
+    else:
+        assert decision.is_waiting, decision
+        assert approvals[0]["isolation"]["enforced_boundaries"] == ["process_tree"]
+        assert approvals[0]["isolation"]["level"] == "none"
+        assert len(approvals[0]["execution_subject_digest"]) == 64
+
+
+@pytest.mark.parametrize("change", ["backend", "executable"])
+def test_job_approval_rejects_changed_execution_subject(env_factory, monkeypatch, change):
+    from tianshu.exec_job_object import WindowsJobObjectExecBackend
+    from tianshu.execution_admission import PreparedExecution
+
+    backend = WindowsJobObjectExecBackend()
+    env = env_factory(exec_backend=backend)
+    measured = IsolationFinding("process_tree", "enforced", "measured")
+    monkeypatch.setattr(isolation, "_probe_process_tree", lambda *_a: measured)
+    monkeypatch.setattr(PreparedExecution, "_probe_detached_descendant", lambda self: measured)
+    script = env.ws / "command.py"
+    marker = env.ws / "ran"
+    script.write_bytes(b"pass\n")
+    args = {"argv": [PY, str(script)]}
+    task, run, claim = env.new_run(exec_policy=_policy(env.ws))
+    decision = env.dispatcher.prepare(
+        _exec_request(env, run, claim, args=args, task=task), claim, args=args,
+    )
+    assert decision.is_waiting, decision
+    env.approvals.decide(
+        decision.approval_id, decision="approved", actor=HumanIdentity.local_cli(),
+    )
+    dispatcher = env.dispatcher
+    if change == "backend":
+        dispatcher = Dispatcher(
+            env.log, env.tasks, env.leases, PolicyEngine(), env.approvals,
+            grants=env.grants, claims=env.claims, snapshots=env.snapshots,
+            data_root=env.data, exec_backend=exec_backend("local"),
+        )
+    else:
+        script.write_bytes(f"from pathlib import Path\nPath({str(marker)!r}).touch()\n".encode())
+        monkeypatch.setattr(PreparedExecution, "_launch_process", lambda *_a, **_kw:
+            pytest.fail("changed script reached business launch"))
+
+    result = dispatcher.dispatch(decision.request_id, claim)
+
+    assert result.status == "rejected", result
+    assert result.effect_state == "none_applied"
+    assert result.output["rule_id"] == "c4.approval_mismatch"
+    assert not marker.exists()
+    assert env.approvals.get(decision.approval_id).state == "approved"
+    assert not any(event.type == "tool.intent" for event in env.log.read_run(run.run_id))
+
+
+def test_explicit_job_backend_does_not_run_without_tree_proof(tmp_path, monkeypatch):
+    from tianshu.exec_job_object import WindowsJobObjectExecBackend
+
+    backend = WindowsJobObjectExecBackend()
+    report = _report(tmp_path, tmp_path, tree="unknown", backend=backend.capabilities.name)
+    monkeypatch.setattr(isolation, "probe_backend_cached", lambda *_args, **_kwargs: report)
+    monkeypatch.setattr(backend, "spawn", lambda *_args, **_kwargs: pytest.fail("没有树证据"))
+    ctx = tools.ToolContext(exec_policy=_policy(tmp_path), exec_backend=backend, data_root=tmp_path)
+
+    result = tools._run_command(Workspace(tmp_path), {"argv": [PY, "-c", "print(1)"]}, ctx)
+
+    assert result.status == "rejected"
+    assert result.effect_state == "none_applied"
 
 
 def test_control_approval_view_carries_isolation(tmp_path):

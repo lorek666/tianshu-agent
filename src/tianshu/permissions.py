@@ -875,6 +875,7 @@ class ApprovalStore:
         ttl_ms: int = APPROVAL_TTL_MS,
         isolation: dict[str, Any] | None = None,
         command: dict[str, Any] | None = None,
+        execution_subject_digest: str | None = None,
     ) -> Approval:
         """登记一个待批请求。同一个摘要已有 pending/approved 时不重复创建。"""
         if decision.is_denied:
@@ -940,6 +941,8 @@ class ApprovalStore:
             if command is not None:
                 # 只复制派发侧已校验的展示字段；授权仍只认 request / args_hash。
                 payload["command"] = dict(command)
+            if execution_subject_digest is not None:
+                payload["execution_subject_digest"] = execution_subject_digest
             tx.append(
                 request.run_id,
                 APPROVAL_REQUESTED,

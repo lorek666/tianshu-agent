@@ -107,6 +107,50 @@ def test_v2_create_is_idempotent_and_does_not_start_runs(env):
     assert env[1].budget.usage(account["account_id"])["limits"] == {"requests": 8}
 
 
+@pytest.mark.parametrize("mismatch", [None, "run", "task", "subject", "pid", "birth"])
+def test_goal_advances_only_after_matching_execution_terminal(env, mismatch):
+    from tianshu.exec_backends import exec_backend
+    from tianshu.execpolicy import ExecPolicy
+    from tianshu.execution_admission import PreparedExecution
+
+    _, stack, _, ws = env
+    owner = stack.tasks.create_task("旧命令", [str(ws)])
+    run = stack.tasks.start_run(owner.task_id)
+    goal = create(env)
+    with PreparedExecution(
+        exec_backend("local"), kind="command", task_id=owner.task_id, run_id=run.run_id,
+        argv=[sys.executable, "-c", "pass"], cwd=ws, env={}, workspace=ws,
+        data_root=stack.data_root,
+        policy=ExecPolicy(argv_allowlist=(sys.executable,), cwd_roots=(ws,),
+                          timeout_ms=1000, max_output_bytes=4096),
+        on_event=lambda kind, payload: stack.log.append(
+            run.run_id, kind, {**payload, "lifecycle": {
+                **payload["lifecycle"], "pid": 32, "birth_identity": "original-birth",
+            }}, task_id=owner.task_id,
+        ),
+    ) as session:
+        session.admit(())
+        session.record_stage("started")
+    stack.log.append(
+        "different-run" if mismatch == "run" else run.run_id,
+        "execution.ended",
+        {
+            "lifecycle_id": session.lifecycle_id, "process_tree": "exited",
+            "subject_digest": "a" * 64 if mismatch == "subject" else session.subject.digest(),
+            "pid": 33 if mismatch == "pid" else 32,
+            "birth_identity": "different-birth" if mismatch == "birth" else "original-birth",
+        },
+        task_id="different-task" if mismatch == "task" else owner.task_id,
+    )
+    result = advance(env, goal)
+    if mismatch is None:
+        assert result["phase_run_id"]
+    else:
+        assert result["phase_run_id"] is None
+        assert result["status"] == "blocked"
+        assert result["blocker"]["category"] == "recovery_required"
+
+
 def test_v2_worker_plan_execute_verify_and_human_finish_are_distinct(env):
     from tianshu.goal_v2 import GoalCoordinator
     goal = create(env)

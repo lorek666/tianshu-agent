@@ -27,9 +27,11 @@ from __future__ import annotations
 import inspect
 import os
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from . import exec_job_object
 from .errors import TianshuError
 from .exec import LOCAL_EXEC_BACKEND, ExecResult
 from .exec_landlock import landlock_available, landlock_exec_backend
@@ -80,6 +82,10 @@ _DEFAULT_UNIMPLEMENTED: dict[str, str] = {
         "当前平台或内核不可用，v1/W14 严禁静默回落到 local"
     ),
     "container": "v1 没有容器后端（TECH-ARCH §6 L4 只写作可选、未交付）",
+    "windows_job_object": (
+        "Windows Job Object 仅原生支持进程树约束；当前平台或必要 API 不可用，"
+        "v1/W14 严禁静默回落到 local"
+    ),
 }
 
 #: 未实现名字 → 注册真实实现时 `capabilities.isolation` 必须落在的集合。
@@ -92,6 +98,17 @@ _EXPECTED_ISOLATION = {
     "seatbelt_leaf": {"app_container"},
     "landlock": {"process_tree", "app_container"},
     "container": {"container"},
+    "windows_job_object": {"none"},
+}
+
+_EXPECTED_FEATURES: dict[str, dict[str, bool]] = {
+    "windows_job_object": {
+        "supports_pty": False,
+        "supports_signals": False,
+        "supports_process_group": False,
+        "supports_job_objects": True,
+        "supports_network_isolation": False,
+    },
 }
 
 #: 可变的"未实现清单"：注册真实实现会移除对应条目。测试可用
@@ -257,12 +274,24 @@ def register_exec_backend(
                 f"收到 capabilities.name={declared!r}"
                 "（用自己的名字冒充更强的后端等于在能力表上撒谎）"
             )
-        expected = _EXPECTED_ISOLATION.get(key, set())
-        if expected and host.capabilities.isolation not in expected:
+    expected = _EXPECTED_ISOLATION.get(key, set())
+    if key in _EXPECTED_ISOLATION and host.capabilities.name != key:
+        raise TianshuError(
+            f"执行后端 {key!r} 是已知后端：注册实现必须自报同一名字，"
+            f"收到 capabilities.name={host.capabilities.name!r}"
+            "（首次注册和替换都不能用别名改变能力承诺）"
+        )
+    if expected and host.capabilities.isolation not in expected:
+        raise TianshuError(
+            f"执行后端 {key!r} 声明的隔离级别是 "
+            f"{host.capabilities.isolation!r}，与名字不相称（期望 {sorted(expected)}）"
+            "（替换已知后端也不能改变名字的隔离承诺）"
+        )
+    for feature, required in _EXPECTED_FEATURES.get(key, {}).items():
+        actual = getattr(host.capabilities, feature)
+        if actual is not required:
             raise TianshuError(
-                f"执行后端 {key!r} 声明的隔离级别是 "
-                f"{host.capabilities.isolation!r}，与名字不相称（期望 {sorted(expected)}）"
-                "（本地代理不能顶替 container/app_container 的名字）"
+                f"执行后端 {key!r} 的能力 {feature} 必须是 {required}，收到 {actual}"
             )
     _BACKENDS[key] = host
     UNIMPLEMENTED_EXEC_BACKENDS.pop(key, None)
@@ -270,7 +299,8 @@ def register_exec_backend(
 
 
 def _populate_builtin_backends() -> None:
-    """加载本机可用内建后端（`local` 恒在；Darwin 注册 `seatbelt`；Linux 注册 `landlock`）。"""
+    """加载本机可用内建后端（`local` 恒在；Darwin 注册 `seatbelt`；Linux 注册
+    `landlock`；Windows 原子 Job 可用时注册 `windows_job_object`）。"""
     _BACKENDS.clear()
     _BACKENDS[DEFAULT_EXEC_BACKEND] = LOCAL_EXEC_BACKEND
     UNIMPLEMENTED_EXEC_BACKENDS.clear()
@@ -280,11 +310,25 @@ def _populate_builtin_backends() -> None:
         register_exec_backend(SEATBELT_LEAF_EXEC_BACKEND, name="seatbelt_leaf", replace=True)
     if landlock_available():
         register_exec_backend(landlock_exec_backend(), name="landlock", replace=True)
+    if exec_job_object.availability():
+        register_exec_backend(
+            exec_job_object.WindowsJobObjectExecBackend(),
+            name="windows_job_object",
+            replace=True,
+        )
 
 
 def reset_exec_backends() -> None:  # pragma: no cover - 只给测试
     """恢复到当前平台的初始内建状态（`local` + 当前平台已实现沙箱 + 剩余未实现清单）。"""
     _populate_builtin_backends()
+
+
+def exec_policy_for_backend(policy: ExecPolicy, backend: ExecBackend) -> ExecPolicy:
+    """An explicit Job Object selection always requires process-tree evidence."""
+    required = policy.isolation_requires
+    if backend.capabilities.name == "windows_job_object" and "process_tree" not in required:
+        return replace(policy, isolation_requires=(*required, "process_tree"))
+    return policy
 
 
 def preferred_exec_backend() -> str:
