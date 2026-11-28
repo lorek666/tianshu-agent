@@ -91,6 +91,8 @@ uv run --frozen pytest -q \
 
 原型测试使用实际导出名。探针在创建进程前加载身份核验和清理 API，缺少导出时返回 `unknown`。只有 Job 后端才调用 Job 专用的 `close()`，普通子进程由原收集器回收。三个本地负控分别复现绑定失败、真实 `Popen` 清理分支错误和清理 API 缺失时仍尝试启动探针。
 
+同一轮 CI 暴露了两处测试移植问题。跨平台管道断言改用确定的字节输出，POSIX 进程组时钟测试只在提供对应 API 的平台执行。
+
 ## 未决边界
 
 - Windows required CI 尚须覆盖真实 stdio、wait/returncode、多代与 detached 后代、leader 先退、breakaway 拒绝、父 Job handle 关闭、Admission 探针、通用/detached 精确 HANDLE 清理、MCP + Job 关闭与首次 `CloseHandle` 失败自动重试。

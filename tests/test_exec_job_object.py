@@ -1663,6 +1663,9 @@ class TestWindowsNative:
                 cwd=tmp_path, stderr=subprocess.PIPE,
             )
             result = env.dispatcher.dispatch(decision.request_id, claim)
+            print(f"Control {control}: dispatch={result!r}; "
+                  f"files={[p.exists() for p in record_paths]}; "
+                  f"helper={helper.poll()}", flush=True)
             _, stderr = helper.communicate(timeout=10)
             assert helper.returncode == 0, stderr.decode(errors="replace")
             records = _wait_records(record_paths)
@@ -2112,6 +2115,12 @@ def _assert_dead(
                 if current["birth"] != record["birth"]:
                     continue  # 原进程已退出；当前 PID 属于后来复用的身份。
             result = kernel32.WaitForSingleObject(handle, timeout_ms)
+            if result == job.WAIT_TIMEOUT and timeout_ms == 0:
+                start = time.monotonic()
+                follow_up = kernel32.WaitForSingleObject(handle, 2000)
+                print(f"Job accounted for PID {record['pid']} before wait object; "
+                      f"follow_up={follow_up} elapsed_ms={(time.monotonic()-start)*1000:.1f}",
+                      flush=True)
             assert result == job.WAIT_OBJECT_0, f"PID {record['pid']} 仍存活：{result}"
         finally:
             kernel32.CloseHandle(handle)
