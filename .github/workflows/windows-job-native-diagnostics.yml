@@ -14,4 +14,8 @@ jobs:
       - run: uv python install 3.12
       - run: uv sync --frozen
       - name: Run Windows Job and fallback tests
-        run: uv run --frozen python scripts/pytest_with_stacks.py tests/test_exec_job_object.py tests/test_execution_admission.py tests/test_isolation_gate.py tests/test_exec.py -k "TestWindowsNative or managed_pipes_report_unknown or local_timeout_observes" -s -o addopts= -vv -rs --tb=short --durations=20 --stack-timeout=60
+        run: |
+          for ($i = 0; $i -lt 8; $i++) {
+            uv run --frozen pytest -o addopts= -q -s --tb=short tests/test_exec_job_object.py::TestWindowsNative::test_dispatch_job_run_control_clears_native_tree[cancel]
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
