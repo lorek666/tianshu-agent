@@ -98,7 +98,7 @@ def shutdown_daemon_and_wait(
             return True
         if not pid_alive(pid):
             return True
-        if os.name == "posix":
+        if os.name == "posix" and reap is None:
             from tianshu.host import _pid_is_zombie, _unreaped_child_state
 
             return (
